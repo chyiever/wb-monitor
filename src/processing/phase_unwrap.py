@@ -259,37 +259,3 @@ def validate_phase_unwrapping(wrapped: np.ndarray, unwrapped: np.ndarray) -> dic
     except Exception as e:
         return {'valid': False, 'error': str(e)}
 
-
-def create_test_wrapped_phase(length: int = 10000, frequency: float = 100.0,
-                            sample_rate: float = 1000000.0, noise_level: float = 0.01) -> np.ndarray:
-    """
-    Create test wrapped phase data for validation and testing.
-
-    This function generates synthetic wrapped phase data with known characteristics
-    for testing the phase unwrapping algorithm.
-
-    Args:
-        length: Number of data points
-        frequency: Signal frequency in Hz
-        sample_rate: Sampling rate in Hz
-        noise_level: Noise amplitude (0 to 1)
-
-    Returns:
-        Wrapped phase data in [-1, 1] range
-    """
-    # Time vector
-    t = np.arange(length) / sample_rate
-
-    # Generate continuous phase with frequency ramp
-    phase = 2 * np.pi * frequency * t + 0.5 * np.pi * frequency * t**2
-
-    # Add noise
-    if noise_level > 0:
-        noise = noise_level * np.random.randn(length)
-        phase += noise
-
-    # Wrap phase to [-π, π] and then to [-1, 1]
-    wrapped_phase = np.mod(phase + np.pi, 2 * np.pi) - np.pi
-    wrapped_normalized = wrapped_phase / np.pi
-
-    return wrapped_normalized

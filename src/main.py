@@ -16,15 +16,12 @@ Date: 2026-03-11
 """
 
 import sys
-import os
 import logging
 import json
-import time
 import numpy as np
 from pathlib import Path
-from typing import Dict, List, Tuple, Any
+from typing import Dict, Any
 from PyQt5.QtWidgets import QApplication, QMessageBox
-from PyQt5.QtCore import QTimer
 
 # Import application modules
 from ui.main_window import MainWindow
@@ -395,6 +392,14 @@ class PCCPMonitorApp:
             # Start optimized Tab1 thread system
             self.tab1_manager.start()
 
+            # 启动后同步一次前面板绘图开关状态。
+            # 说明：按钮初始状态不会主动触发toggled信号，
+            # 若不显式同步，时域线程可能保持旧状态，表现为“需手动点一次才出波形”。
+            if hasattr(self.main_window, 'time_plot_btn'):
+                self._toggle_time_plotting(self.main_window.time_plot_btn.isChecked())
+            if hasattr(self.main_window, 'psd_plot_btn'):
+                self._toggle_psd_plotting(self.main_window.psd_plot_btn.isChecked())
+
             # 记录绘图状态（调试信息）
             plot_status = self.tab1_manager.get_plot_status()
             self.logger.info(f"Plot status after start: {plot_status}")
@@ -503,84 +508,6 @@ class PCCPMonitorApp:
         except Exception as e:
             self.logger.error(f"Application runtime error: {e}")
             return -1
-
-    def _update_tab2_features(self, features: Dict[str, List[Tuple[float, float]]]):
-        """
-        Update Tab2 with new feature data.
-
-        Args:
-            features: Dictionary mapping feature names to (timestamp, value) lists
-        """
-        try:
-            # Update feature plots in Tab2 if available
-            if hasattr(self.main_window, 'feature_plots'):
-                for feature_name, feature_data in features.items():
-                    if feature_data:  # Only process if there's data
-                        # Find which plot widget should display this feature
-                        # This will be connected to Tab2 UI controls later
-                        pass
-
-            # Update feature displays in Tab2
-            if hasattr(self.main_window, 'update_feature_displays'):
-                self.main_window.update_feature_displays(features)
-
-        except Exception as e:
-            self.logger.error(f"Error updating Tab2 features: {e}")
-
-    def _update_tab2_detections(self, detections):
-        """
-        Update Tab2 with new detection results.
-
-        Args:
-            detections: List of DetectionResult objects
-        """
-        try:
-            # Save detection results to storage
-            for detection in detections:
-                self.detection_storage.save_detection(detection)
-
-            # Update detection table and alerts in Tab2
-            if hasattr(self.main_window, 'add_detection_results'):
-                self.main_window.add_detection_results(detections)
-
-            # Log significant detections
-            for detection in detections:
-                self.logger.info(
-                    f"Detection: {detection.feature_name} "
-                    f"value={detection.feature_value:.3f} "
-                    f"threshold={detection.threshold:.3f} "
-                    f"seq={detection.sequence_number}"
-                )
-
-        except Exception as e:
-            self.logger.error(f"Error updating Tab2 detections: {e}")
-
-    def _sync_tab2_settings(self):
-        """同步Tab2界面设置到处理模块"""
-        try:
-            # 获取Tab2启用的特征
-            enabled_features = self.main_window.get_enabled_features()
-            if enabled_features:
-                self.feature_calculator.set_enabled_features(enabled_features)
-
-            # 获取阈值设置
-            threshold_factors = self.main_window.get_threshold_factors()
-            if threshold_factors:
-                self.threshold_detector.set_threshold_factors(threshold_factors)
-
-            self.logger.info(f"Synced Tab2 settings: features={enabled_features}, "
-                           f"thresholds={threshold_factors}")
-
-        except Exception as e:
-            self.logger.error(f"Error syncing Tab2 settings: {e}")
-
-    def _update_tab2_baselines(self, baselines: Dict[str, float]):
-        """更新Tab2的基线显示"""
-        try:
-            if hasattr(self.main_window, 'update_baselines'):
-                self.main_window.update_baselines(baselines)
-        except Exception as e:
-            self.logger.error(f"Error updating Tab2 baselines: {e}")
 
     # 数据存储功能已移至DataStorageThread线程中处理
     # 移除了旧的_save_phase_data_npz方法

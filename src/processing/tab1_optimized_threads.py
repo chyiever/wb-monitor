@@ -226,15 +226,19 @@ class TimedomainPlotThread(QThread):
         """设置显示窗口时长"""
         self.window_duration = duration
 
-    def run(self):
-        """绘图循环"""
-        self.running = True
-        # 每次启动都重置状态，避免停启后残留历史时序
+    def _reset_stream_state(self):
+        """重置时域流状态（用于通信计数器重置/重连场景）。"""
         self.data_buffer.clear()
         self.time_buffer.clear()
         self.packet_count = 0
         self.last_comm_count = None
         self.next_timestamp = 0.0
+
+    def run(self):
+        """绘图循环"""
+        self.running = True
+        # 每次启动都重置状态，避免停启后残留历史时序
+        self._reset_stream_state()
         self.logger.info("Timedomain plot thread started")
 
         while self.running:
@@ -251,13 +255,31 @@ class TimedomainPlotThread(QThread):
     def _process_time_data(self, data: ProcessedData):
         """处理时域数据"""
         try:
-            # 丢弃重复或倒序包，避免同一段数据重复绘制形成“多条轨迹”视觉效果
-            if self.last_comm_count is not None and data.comm_count <= self.last_comm_count:
-                self.logger.warning(
-                    f"Skipping stale/duplicate packet in time plot thread: "
-                    f"comm_count={data.comm_count}, last={self.last_comm_count}"
-                )
-                return
+            # 丢弃重复或小范围倒序包，但允许“计数器重置/重连”后自动恢复绘图。
+            if self.last_comm_count is not None:
+                if data.comm_count == self.last_comm_count:
+                    self.logger.warning(
+                        f"Skipping duplicate packet in time plot thread: "
+                        f"comm_count={data.comm_count}, last={self.last_comm_count}"
+                    )
+                    return
+
+                if data.comm_count < self.last_comm_count:
+                    # 例如 139 -> 0，判定为通信端计数器重置（重连或发送端复位）
+                    backward_gap = self.last_comm_count - data.comm_count
+                    if backward_gap >= 20:
+                        self.logger.info(
+                            f"Detected comm_count reset in time plot thread: "
+                            f"last={self.last_comm_count}, current={data.comm_count}. "
+                            "Resetting time-domain stream state."
+                        )
+                        self._reset_stream_state()
+                    else:
+                        self.logger.warning(
+                            f"Skipping stale out-of-order packet in time plot thread: "
+                            f"comm_count={data.comm_count}, last={self.last_comm_count}"
+                        )
+                        return
 
             # 调试日志
             if data.comm_count % 50 == 0:

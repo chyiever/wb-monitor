@@ -1,11 +1,13 @@
-"""
-Feature Extraction Module for PCCP Monitoring System
+"""Feature package boundary.
 
-This module provides various feature extraction algorithms for signal analysis
-including time-domain, frequency-domain, and statistical features.
+Responsibilities:
+- Compute feature values from preprocessed waveform segments.
 
-Author: Claude
-Date: 2026-03-11
+In scope:
+- Feature math and rolling statistics needed by detection.
+
+Out of scope:
+- TCP IO, plotting, and persistent storage.
 """
 
 from .feature_calculator import FeatureCalculator

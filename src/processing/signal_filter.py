@@ -428,35 +428,3 @@ class FilterBank:
     def get_filter(self, name: str) -> Optional[SignalFilter]:
         """Get a specific filter by name."""
         return self.filters.get(name)
-
-
-def create_test_signal(length: int = 10000, sample_rate: float = 1000000.0,
-                      frequencies: list = None, noise_level: float = 0.1) -> np.ndarray:
-    """
-    Create a test signal for filter validation.
-
-    Args:
-        length: Signal length in samples
-        sample_rate: Sampling rate in Hz
-        frequencies: List of frequency components in Hz
-        noise_level: Noise amplitude (relative to signal)
-
-    Returns:
-        Test signal array
-    """
-    if frequencies is None:
-        frequencies = [1000, 5000, 50000]  # Default test frequencies
-
-    t = np.arange(length) / sample_rate
-    signal_data = np.zeros(length)
-
-    # Add frequency components
-    for freq in frequencies:
-        signal_data += np.sin(2 * np.pi * freq * t)
-
-    # Add noise
-    if noise_level > 0:
-        noise = noise_level * np.random.randn(length)
-        signal_data += noise
-
-    return signal_data

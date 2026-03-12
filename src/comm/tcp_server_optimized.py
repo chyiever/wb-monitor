@@ -23,10 +23,11 @@ from PyQt5.QtCore import QObject, pyqtSignal
 
 class DataPacket:
     """Data packet structure"""
-    def __init__(self, data_array: np.ndarray, timestamp: float, packet_count: int):
+    def __init__(self, data_array: np.ndarray, timestamp: float, packet_count: int, raw_packet_count: Optional[int] = None):
         self.phase_data = data_array
         self.timestamp = timestamp
         self.comm_count = packet_count
+        self.raw_comm_count = packet_count if raw_packet_count is None else raw_packet_count
         self.data_size = len(data_array) * 8
 
 
@@ -61,6 +62,10 @@ class OptimizedTCPServer(QObject):
         self.packets_received = 0
         self.total_data_received = 0
         self.last_stats_time = time.time()
+
+        # Communication counter normalization (per connection/session)
+        self._comm_base_raw: Optional[int] = None
+        self._last_raw_comm_count: Optional[int] = None
 
         # Performance monitoring
         self.performance_stats = {
@@ -144,6 +149,8 @@ class OptimizedTCPServer(QObject):
                 self.packets_received = 0
                 self.total_data_received = 0
                 self.last_stats_time = time.time()
+                self._comm_base_raw = None
+                self._last_raw_comm_count = None
                 self.performance_stats = {
                     'receive_times': [],
                     'tcp_queue_sizes': [],
@@ -173,7 +180,10 @@ class OptimizedTCPServer(QObject):
                     time.sleep(0.001)
                     continue
 
-                comm_count, data_length = struct.unpack('>II', header_bytes)
+                raw_comm_count, data_length = struct.unpack('>II', header_bytes)
+
+                # Normalize comm_count so each new communication session starts from 0.
+                comm_count = self._normalize_comm_count(raw_comm_count)
 
                 # Basic validation only
                 if data_length == 0 or data_length > 10000000:
@@ -187,7 +197,7 @@ class OptimizedTCPServer(QObject):
                     continue
 
                 # Process data - no duplicate checking, accept all valid packets
-                packet = self._process_data(data_buff, data_length, comm_count)
+                packet = self._process_data(data_buff, data_length, comm_count, raw_comm_count)
                 if packet:
                     self.packets_received += 1
                     self.total_data_received += data_length
@@ -238,11 +248,40 @@ class OptimizedTCPServer(QObject):
 
         return bytes(data) if len(data) == size else None
 
-    def _process_data(self, data_buff: bytes, data_length: int, comm_count: int) -> Optional[DataPacket]:
+    def _normalize_comm_count(self, raw_comm_count: int) -> int:
+        """Normalize raw communication counter to start from 0 per connection.
+
+        The sender may begin from arbitrary raw values. We rebase the first packet
+        to 0 so upper-layer processing can assume session-local indexing.
+        """
+        if self._comm_base_raw is None:
+            self._comm_base_raw = raw_comm_count
+            self._last_raw_comm_count = raw_comm_count
+            self.logger.info(
+                f"Communication counter base initialized: raw_base={self._comm_base_raw}, normalized_start=0"
+            )
+            return 0
+
+        # If sender counter goes backward significantly, treat as sender-side reset.
+        if self._last_raw_comm_count is not None and raw_comm_count < self._last_raw_comm_count:
+            self.logger.info(
+                f"Detected raw comm_count reset: last_raw={self._last_raw_comm_count}, "
+                f"current_raw={raw_comm_count}. Re-basing normalized counter to 0."
+            )
+            self._comm_base_raw = raw_comm_count
+            self._last_raw_comm_count = raw_comm_count
+            return 0
+
+        self._last_raw_comm_count = raw_comm_count
+        return raw_comm_count - self._comm_base_raw
+
+    def _process_data(self, data_buff: bytes, data_length: int, comm_count: int, raw_comm_count: int) -> Optional[DataPacket]:
         """Process received data"""
         try:
             # 调试日志：记录接收到的数据
-            self.logger.info(f"Processing data: length={data_length}, comm_count={comm_count}")
+            self.logger.info(
+                f"Processing data: length={data_length}, comm_count={comm_count}, raw_comm_count={raw_comm_count}"
+            )
 
             # Check data length (must be multiple of 8 for <32,32> fixed point)
             if data_length % 8 != 0:
@@ -262,7 +301,7 @@ class OptimizedTCPServer(QObject):
             # timestamp 仅作为绘图缓冲区的起始提示（seconds），
             # 绘图缓冲区会以实际样本数连续延伸，此值只在首包或断连重锚时有意义。
             # 用 0.0 即可，缓冲区内部自行维护连续时间轴。
-            return DataPacket(data_array, 0.0, comm_count)
+            return DataPacket(data_array, 0.0, comm_count, raw_packet_count=raw_comm_count)
 
         except Exception as e:
             self.logger.error(f"Error processing data packet #{comm_count}: {e}")

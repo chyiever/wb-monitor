@@ -1,11 +1,13 @@
-"""
-Storage Module for Detection Results
+"""Storage package boundary.
 
-This module provides functionality to save detection results to files
-for later analysis and record keeping.
+Responsibilities:
+- Persist detection/monitoring artifacts to disk.
 
-Author: Claude
-Date: 2026-03-11
+In scope:
+- File naming, directory lifecycle, and serialization formats.
+
+Out of scope:
+- Detection decisions, signal processing, and UI behavior.
 """
 
 from .detection_storage import DetectionStorage

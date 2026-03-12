@@ -1,8 +1,13 @@
-"""
-Configuration module for PCCP monitoring system.
+"""Configuration package boundary.
 
-Author: Claude
-Date: 2026-03-12
+Responsibilities:
+- Provide immutable runtime constants and helper accessors for sampling/layout config.
+
+In scope:
+- Shared system rates, derived timing values, and config utility functions.
+
+Out of scope:
+- Stateful business logic, IO side effects, and UI wiring.
 """
 
 from .system_config import (

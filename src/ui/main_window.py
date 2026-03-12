@@ -285,82 +285,6 @@ class MainWindow(QMainWindow):
 
         return group
 
-    def _create_feature_group(self) -> QGroupBox:
-        """创建特征计算设置组"""
-        group = QGroupBox("特征计算")
-        layout = QGridLayout(group)
-
-        # 特征选择
-        self.feature_checkboxes = {}
-        features = [
-            ("短时能量", "short_energy"),
-            ("短时过零率", "zero_crossing"),
-            ("峰值因子", "peak_factor"),
-            ("均方根", "rms")
-        ]
-
-        for i, (name, key) in enumerate(features):
-            checkbox = QCheckBox(name)
-            if key == "short_energy":
-                checkbox.setChecked(True)  # 默认选中短时能量
-            self.feature_checkboxes[key] = checkbox
-            layout.addWidget(checkbox, i, 0, 1, 2)
-
-        # 时间窗口
-        layout.addWidget(QLabel("时间窗口(s):"), len(features), 0)
-        self.window_size_spin = QDoubleSpinBox()
-        self.window_size_spin.setRange(0.01, 1.0)
-        self.window_size_spin.setValue(0.05)
-        self.window_size_spin.setSingleStep(0.01)
-        layout.addWidget(self.window_size_spin, len(features), 1)
-
-        # 重叠率
-        layout.addWidget(QLabel("重叠率(%):"), len(features)+1, 0)
-        self.overlap_spin = QSpinBox()
-        self.overlap_spin.setRange(0, 90)
-        self.overlap_spin.setValue(50)
-        layout.addWidget(self.overlap_spin, len(features)+1, 1)
-
-        return group
-
-    def _create_detection_group(self) -> QGroupBox:
-        """创建检测设置组"""
-        group = QGroupBox("信号检测")
-        layout = QGridLayout(group)
-
-        # 阈值系数
-        layout.addWidget(QLabel("阈值系数:"), 0, 0)
-        self.threshold_spin = QDoubleSpinBox()
-        self.threshold_spin.setRange(1.0, 10.0)
-        self.threshold_spin.setValue(3.0)
-        self.threshold_spin.setSingleStep(0.1)
-        layout.addWidget(self.threshold_spin, 0, 1)
-
-        # 最大触发时长
-        layout.addWidget(QLabel("最大触发时长(s):"), 1, 0)
-        self.max_trigger_spin = QDoubleSpinBox()
-        self.max_trigger_spin.setRange(0.01, 3.0)
-        self.max_trigger_spin.setValue(0.1)
-        self.max_trigger_spin.setSingleStep(0.01)
-        layout.addWidget(self.max_trigger_spin, 1, 1)
-
-        # 基线更新
-        self.auto_baseline_check = QCheckBox("自动更新基线")
-        self.auto_baseline_check.setChecked(True)
-        layout.addWidget(self.auto_baseline_check, 2, 0, 1, 2)
-
-        # 基线更新间隔
-        layout.addWidget(QLabel("基线更新间隔(s):"), 3, 0)
-        self.baseline_interval_spin = QSpinBox()
-        self.baseline_interval_spin.setRange(5, 300)
-        self.baseline_interval_spin.setValue(10)
-        layout.addWidget(self.baseline_interval_spin, 3, 1)
-
-        # 手动更新基线按钮
-        self.update_baseline_btn = QPushButton("手动更新基线")
-        layout.addWidget(self.update_baseline_btn, 4, 0, 1, 2)
-
-        return group
 
     def _create_simple_storage_group(self) -> QGroupBox:
         """创建简化的存储设置组 - 仅相位数据存储"""
@@ -382,32 +306,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("存储路径:"), 2, 0, 1, 2)
         self.storage_path_edit = QLineEdit("D:/PCCP/FIPdata")
         layout.addWidget(self.storage_path_edit, 3, 0, 1, 2)
-
-        return group
-        """创建存储设置组"""
-        group = QGroupBox("数据存储")
-        layout = QGridLayout(group)
-
-        # 实时存储
-        self.realtime_storage_check = QCheckBox("实时存储")
-        layout.addWidget(self.realtime_storage_check, 0, 0, 1, 2)
-
-        # 存储间隔
-        layout.addWidget(QLabel("存储间隔(s):"), 1, 0)
-        self.storage_interval_spin = QSpinBox()
-        self.storage_interval_spin.setRange(10, 300)
-        self.storage_interval_spin.setValue(30)
-        layout.addWidget(self.storage_interval_spin, 1, 1)
-
-        # 触发存储
-        self.trigger_storage_check = QCheckBox("触发存储")
-        self.trigger_storage_check.setChecked(True)
-        layout.addWidget(self.trigger_storage_check, 2, 0, 1, 2)
-
-        # 存储路径
-        layout.addWidget(QLabel("存储路径:"), 3, 0, 1, 2)
-        self.storage_path_edit = QLineEdit("D:/PCCP/FIPdata")
-        layout.addWidget(self.storage_path_edit, 4, 0, 1, 2)
 
         return group
 
@@ -799,17 +697,6 @@ class MainWindow(QMainWindow):
         # TODO: 实现配置重置
         pass
 
-    def _manual_update_baseline(self):
-        """手动更新基线"""
-        # TODO: 触发基线更新信号
-        pass
-
-    def _clear_alarm_history(self):
-        """清空告警历史"""
-        self.alarm_table.setRowCount(0)
-        self.total_alarms_label.setText("0")
-        self.today_alarms_label.setText("0")
-
     def get_current_config(self) -> Dict[str, Any]:
         """获取当前配置 - Tab1简化版本"""
         config = {
@@ -830,7 +717,7 @@ class MainWindow(QMainWindow):
             },
             "storage": {
                 "realtime": {
-                    "enabled": self.realtime_storage_check.isChecked(),
+                    "enabled": self.phase_storage_check.isChecked(),
                     "interval": self.storage_interval_spin.value()
                 },
                 "path": self.storage_path_edit.text()
