@@ -1,0 +1,55 @@
+{
+  "communication": {
+    "ip": "0.0.0.0",
+    "port": 3677,
+    "reconnect_interval": 3,
+    "buffer_size": 50000,
+    "tcp_nodelay": true
+  },
+  "preprocessing": {
+    "filter": {
+      "type": "bandpass",
+      "low_freq": 100,
+      "high_freq": 10000,
+      "order": 4
+    },
+    "downsample": {
+      "factor": 1,
+      "method": "decimate"
+    }
+  },
+  "features": {
+    "enabled": ["short_energy"],
+    "window_size": 0.05,
+    "overlap_ratio": 0.5,
+    "short_energy": {"enabled": true},
+    "zero_crossing": {"enabled": false},
+    "peak_factor": {"enabled": false},
+    "rms": {"enabled": false}
+  },
+  "detection": {
+    "threshold_factor": 3.0,
+    "max_trigger_duration": 0.1,
+    "baseline_update_interval": 10,
+    "auto_update_baseline": true
+  },
+  "storage": {
+    "realtime": {
+      "enabled": false,
+      "interval": 30,
+      "downsample_factor": 5,
+      "path": "D:/PCCP/FIPdata"
+    },
+    "trigger": {
+      "enabled": true,
+      "pre_trigger": 5,
+      "post_trigger": 10,
+      "path": "D:/PCCP/FIPmonitor"
+    }
+  },
+  "visualization": {
+    "time_window": 10,
+    "grid_enabled": true,
+    "refresh_rate": 50
+  }
+}

@@ -1,0 +1,40 @@
+"""
+Configuration module for PCCP monitoring system.
+
+Author: Claude
+Date: 2026-03-12
+"""
+
+from .system_config import (
+    ORIGINAL_SAMPLE_RATE,
+    SYSTEM_DOWNSAMPLE_FACTOR,
+    EFFECTIVE_SAMPLE_RATE,
+    TIME_DISPLAY_DOWNSAMPLE,
+    TIME_DISPLAY_SAMPLE_RATE,
+    PACKET_DURATION,
+    PACKETS_PER_SECOND,
+    MAX_TIME_DISPLAY_POINTS,
+    MAX_PSD_SAMPLES,
+    TIME_BUFFER_MAX_POINTS,
+    PERFORMANCE_LOG_INTERVAL,
+    FEATURE_PROCESSING_INTERVAL,
+    get_sample_rate_info,
+    log_sample_rate_info
+)
+
+__all__ = [
+    'ORIGINAL_SAMPLE_RATE',
+    'SYSTEM_DOWNSAMPLE_FACTOR',
+    'EFFECTIVE_SAMPLE_RATE',
+    'TIME_DISPLAY_DOWNSAMPLE',
+    'TIME_DISPLAY_SAMPLE_RATE',
+    'PACKET_DURATION',
+    'PACKETS_PER_SECOND',
+    'MAX_TIME_DISPLAY_POINTS',
+    'MAX_PSD_SAMPLES',
+    'TIME_BUFFER_MAX_POINTS',
+    'PERFORMANCE_LOG_INTERVAL',
+    'FEATURE_PROCESSING_INTERVAL',
+    'get_sample_rate_info',
+    'log_sample_rate_info'
+]
