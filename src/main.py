@@ -29,11 +29,9 @@ from comm.tcp_server_optimized import OptimizedTCPServer
 from processing.phase_unwrap import PhaseUnwrapper
 from processing.signal_filter import SignalFilter
 from processing.downsampling import Downsampler
-from processing.tab1_optimized_threads import OptimizedTab1ThreadManager  # 优化的Tab1多线程系统
-from visualization.wave_plotter import PSDCalculator  # 只需要PSD计算器
-from features.feature_calculator import FeatureCalculator
-from detection.threshold_detector import ThresholdDetector
-from storage.detection_storage import DetectionStorage
+from processing.tab1_optimized_threads import OptimizedTab1ThreadManager
+from visualization.wave_plotter import PSDCalculator
+from fip_tab2 import FIPTab2Manager
 
 # Import system configuration
 from config import (
@@ -44,7 +42,6 @@ from config import (
     TIME_DISPLAY_SAMPLE_RATE,
     PACKET_DURATION,
     PERFORMANCE_LOG_INTERVAL,
-    FEATURE_PROCESSING_INTERVAL,
     get_sample_rate_info
 )
 
@@ -91,10 +88,8 @@ class PCCPMonitorApp:
         # Tab1优化线程系统
         self.tab1_manager = None
 
-        # Tab2 components
-        self.feature_calculator = None
-        self.threshold_detector = None
-        self.detection_storage = None
+        # Independent Tab2 manager
+        self.fip_tab2_manager = None
 
         # Setup connections
         self._setup_connections()
@@ -216,6 +211,11 @@ class PCCPMonitorApp:
         if hasattr(self.main_window, 'downsample_spin'):
             self.main_window.downsample_spin.valueChanged.connect(self._update_downsample_factor)
 
+        if hasattr(self.main_window, 'tab2_settings_changed'):
+            self.main_window.tab2_settings_changed.connect(self._sync_tab2_settings)
+        if hasattr(self.main_window, 'tab2_clear_alarms_requested'):
+            self.main_window.tab2_clear_alarms_requested.connect(self._clear_tab2_alarms)
+
     def _initialize_processors(self):
         """Initialize data processing components."""
         try:
@@ -289,18 +289,10 @@ class PCCPMonitorApp:
             # 启动前先同步一次前面板预处理参数，确保处理链路与UI一致
             self._refresh_preprocessing_parameters(source="init")
 
-            # Initialize Tab2 components - 使用原始采样率初始化
-            self.feature_calculator = FeatureCalculator(
-                sample_rate=ORIGINAL_SAMPLE_RATE,  # 运行时会根据实际降采样因子调整
-                window_size_ms=50.0,
-                overlap_ratio=0.5
-            )
-
-            self.threshold_detector = ThresholdDetector()
-
-            # Initialize detection storage
-            storage_path = self.config.get('storage', {}).get('path', 'D:/PCCP/FIPmonitor')
-            self.detection_storage = DetectionStorage(storage_path=storage_path)
+            storage_path = self.main_window.get_tab2_storage_settings().get("path", "D:/PCCP/FIPmonitor")
+            self.fip_tab2_manager = FIPTab2Manager(self.main_window, storage_path=storage_path)
+            self.tab1_manager.data_processor.data_processed.connect(self.fip_tab2_manager.process_processed_data)
+            self._sync_tab2_settings()
 
             self.logger.info("All processors initialized successfully")
 
@@ -348,11 +340,6 @@ class PCCPMonitorApp:
                 tcp_stats = self.tcp_server.get_statistics()
                 self.main_window.update_statistics(tcp_stats)
 
-            # Tab2 feature processing (简化处理，使用已降采样的数据)
-            if packet.comm_count % FEATURE_PROCESSING_INTERVAL == 0:
-                # 这部分保留在主线程，因为Tab2不是本次优化重点
-                # TODO: 将来可以进一步优化Tab2的线程架构
-                pass
 
         except Exception as e:
             self.logger.error(f"Error processing data packet #{packet.comm_count}: {e}")
@@ -379,11 +366,9 @@ class PCCPMonitorApp:
                 self.main_window.psd_plot
             )
 
-            # Reset Tab2 components
-            if self.feature_calculator:
-                self.feature_calculator.reset()
-            if self.threshold_detector:
-                self.threshold_detector.reset()
+            if self.fip_tab2_manager:
+                self.fip_tab2_manager.reset()
+                self._sync_tab2_settings()
 
             # Start TCP server
             if not self.tcp_server.start_server():
@@ -391,6 +376,8 @@ class PCCPMonitorApp:
 
             # Start optimized Tab1 thread system
             self.tab1_manager.start()
+            if self.fip_tab2_manager:
+                self.fip_tab2_manager.start()
 
             # 启动后同步一次前面板绘图开关状态。
             # 说明：按钮初始状态不会主动触发toggled信号，
@@ -416,6 +403,8 @@ class PCCPMonitorApp:
             self.logger.info("Stopping monitoring system...")
 
             # Stop optimized Tab1 thread system
+            if self.fip_tab2_manager:
+                self.fip_tab2_manager.stop()
             if self.tab1_manager:
                 self.tab1_manager.stop()
 
@@ -565,6 +554,19 @@ class PCCPMonitorApp:
         except Exception as e:
             self.logger.error(f"Error updating storage settings: {e}")
 
+    def _sync_tab2_settings(self):
+        """Push the latest Tab2 UI settings into the independent Tab2 manager."""
+        try:
+            if self.fip_tab2_manager:
+                self.fip_tab2_manager.sync_from_ui()
+        except Exception as e:
+            self.logger.error(f"Error syncing Tab2 settings: {e}")
+
+    def _clear_tab2_alarms(self):
+        """Clear the Tab2 alarm table."""
+        if self.main_window:
+            self.main_window.clear_alarm_table()
+
     # 滤波器参数更新已移至优化的线程系统中处理
 
     def _map_filter_type_from_ui(self, ui_filter_type: str) -> str:
@@ -690,12 +692,11 @@ class PCCPMonitorApp:
     def cleanup(self):
         """Cleanup resources before exit."""
         try:
+            if self.fip_tab2_manager:
+                self.fip_tab2_manager.stop()
+
             if self.tcp_server:
                 self.tcp_server.stop_server()
-
-            # Cleanup detection storage
-            if self.detection_storage:
-                self.detection_storage.cleanup()
 
             self.logger.info("Application cleanup completed")
 

@@ -43,6 +43,8 @@ class MainWindow(QMainWindow):
     psd_settings_changed = pyqtSignal(dict)
     time_settings_changed = pyqtSignal(dict)
     filter_settings_changed = pyqtSignal(dict)  # 新增滤波器设置变化信号
+    tab2_settings_changed = pyqtSignal()
+    tab2_clear_alarms_requested = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -446,124 +448,179 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(right_panel, stretch=3)
 
     def _create_detection_params_panel(self) -> QWidget:
-        """创建检测参数面板"""
+        """Create the Tab2 parameter panel."""
         widget = QWidget()
-        widget.setMaximumWidth(350)
+        widget.setMaximumWidth(420)
         layout = QVBoxLayout(widget)
 
-        # 特征选择组
-        feature_group = QGroupBox("特征选择")
-        feature_layout = QVBoxLayout(feature_group)
-
-        # 特征检测勾选框（与Tab1同步）
-        self.detection_feature_checkboxes = {}
         features = [
-            ("短时能量检测", "short_energy"),
-            ("短时过零率检测", "zero_crossing"),
-            ("峰值因子检测", "peak_factor"),
-            ("均方根检测", "rms")
+            ("Short Energy", "short_energy"),
+            ("Zero Crossing", "zero_crossing"),
+            ("Peak Factor", "peak_factor"),
+            ("RMS", "rms"),
         ]
+        self.tab2_feature_order = [key for _, key in features]
 
-        for name, key in features:
-            checkbox = QCheckBox(name)
+        feature_group = QGroupBox("Feature Selection")
+        feature_layout = QGridLayout(feature_group)
+        feature_layout.addWidget(QLabel("Feature"), 0, 0)
+        feature_layout.addWidget(QLabel("Compute"), 0, 1)
+        feature_layout.addWidget(QLabel("Plot"), 0, 2)
+        self.detection_feature_checkboxes = {}
+        for row, (name, key) in enumerate(features, start=1):
+            compute_checkbox = QCheckBox(name)
+            plot_checkbox = QCheckBox()
             if key == "short_energy":
-                checkbox.setChecked(True)
-            self.detection_feature_checkboxes[key] = checkbox
-            feature_layout.addWidget(checkbox)
-
+                compute_checkbox.setChecked(True)
+                plot_checkbox.setChecked(True)
+            plot_checkbox.toggled.connect(self._handle_tab2_plot_checkbox_change)
+            self.detection_feature_checkboxes[key] = {
+                "compute": compute_checkbox,
+                "plot": plot_checkbox,
+            }
+            feature_layout.addWidget(compute_checkbox, row, 0)
+            feature_layout.addWidget(plot_checkbox, row, 2)
         layout.addWidget(feature_group)
 
-        # 检测参数组
-        detection_group = QGroupBox("检测参数")
+        preprocess_group = QGroupBox("Tab2 Preprocess")
+        preprocess_layout = QGridLayout(preprocess_group)
+        self.tab2_filter_enable_check = QCheckBox("Enable band-pass")
+        self.tab2_filter_enable_check.setChecked(True)
+        preprocess_layout.addWidget(self.tab2_filter_enable_check, 0, 0, 1, 2)
+        preprocess_layout.addWidget(QLabel("Low cutoff (Hz)"), 1, 0)
+        self.tab2_low_freq_spin = QSpinBox()
+        self.tab2_low_freq_spin.setRange(1, 100000)
+        self.tab2_low_freq_spin.setValue(100)
+        preprocess_layout.addWidget(self.tab2_low_freq_spin, 1, 1)
+        preprocess_layout.addWidget(QLabel("High cutoff (Hz)"), 2, 0)
+        self.tab2_high_freq_spin = QSpinBox()
+        self.tab2_high_freq_spin.setRange(2, 100000)
+        self.tab2_high_freq_spin.setValue(10000)
+        preprocess_layout.addWidget(self.tab2_high_freq_spin, 2, 1)
+        preprocess_layout.addWidget(QLabel("Filter order"), 3, 0)
+        self.tab2_filter_order_spin = QSpinBox()
+        self.tab2_filter_order_spin.setRange(1, 10)
+        self.tab2_filter_order_spin.setValue(4)
+        preprocess_layout.addWidget(self.tab2_filter_order_spin, 3, 1)
+        layout.addWidget(preprocess_group)
+
+        window_group = QGroupBox("Window Settings")
+        window_layout = QGridLayout(window_group)
+        window_layout.addWidget(QLabel("Window (s)"), 0, 0)
+        self.tab2_window_spin = QDoubleSpinBox()
+        self.tab2_window_spin.setRange(0.05, 2.0)
+        self.tab2_window_spin.setSingleStep(0.05)
+        self.tab2_window_spin.setValue(0.2)
+        self.tab2_window_spin.setDecimals(2)
+        window_layout.addWidget(self.tab2_window_spin, 0, 1)
+        window_layout.addWidget(QLabel("Overlap (%)"), 1, 0)
+        self.tab2_overlap_spin = QDoubleSpinBox()
+        self.tab2_overlap_spin.setRange(0.0, 95.0)
+        self.tab2_overlap_spin.setSingleStep(5.0)
+        self.tab2_overlap_spin.setValue(50.0)
+        self.tab2_overlap_spin.setDecimals(1)
+        window_layout.addWidget(self.tab2_overlap_spin, 1, 1)
+        window_layout.addWidget(QLabel("Plot span (s)"), 2, 0)
+        self.tab2_plot_duration_spin = QSpinBox()
+        self.tab2_plot_duration_spin.setRange(10, 300)
+        self.tab2_plot_duration_spin.setValue(60)
+        window_layout.addWidget(self.tab2_plot_duration_spin, 2, 1)
+        layout.addWidget(window_group)
+
+        detection_group = QGroupBox("Threshold Detection")
         detection_layout = QGridLayout(detection_group)
-
-        # 每个特征的阈值设置
-        detection_layout.addWidget(QLabel("特征"), 0, 0)
-        detection_layout.addWidget(QLabel("阈值系数"), 0, 1)
-        detection_layout.addWidget(QLabel("基线值"), 0, 2)
-
+        detection_layout.addWidget(QLabel("Feature"), 0, 0)
+        detection_layout.addWidget(QLabel("Threshold"), 0, 1)
+        detection_layout.addWidget(QLabel("Baseline"), 0, 2)
         self.threshold_controls = {}
-        for i, (name, key) in enumerate(features):
-            # 特征名称
-            detection_layout.addWidget(QLabel(name.replace("检测", "")), i+1, 0)
-
-            # 阈值系数控制
+        for row, (name, key) in enumerate(features, start=1):
+            detection_layout.addWidget(QLabel(name), row, 0)
             threshold_spin = QDoubleSpinBox()
-            threshold_spin.setRange(1.0, 10.0)
+            threshold_spin.setRange(1.0, 20.0)
             threshold_spin.setValue(3.0)
             threshold_spin.setSingleStep(0.1)
-            detection_layout.addWidget(threshold_spin, i+1, 1)
-
-            # 基线值显示
+            detection_layout.addWidget(threshold_spin, row, 1)
             baseline_label = QLabel("0.000")
             baseline_label.setStyleSheet("background-color: #f0f0f0; padding: 2px;")
-            detection_layout.addWidget(baseline_label, i+1, 2)
-
-            self.threshold_controls[key] = {
-                'threshold': threshold_spin,
-                'baseline': baseline_label
-            }
-
+            detection_layout.addWidget(baseline_label, row, 2)
+            self.threshold_controls[key] = {"threshold": threshold_spin, "baseline": baseline_label}
         layout.addWidget(detection_group)
 
-        # 告警信息组
-        alarm_group = QGroupBox("告警信息")
-        alarm_layout = QVBoxLayout(alarm_group)
+        storage_group = QGroupBox("Trigger Storage")
+        storage_layout = QGridLayout(storage_group)
+        self.tab2_trigger_storage_check = QCheckBox("Enable trigger storage")
+        self.tab2_trigger_storage_check.setChecked(True)
+        storage_layout.addWidget(self.tab2_trigger_storage_check, 0, 0, 1, 2)
+        storage_layout.addWidget(QLabel("Pre-trigger (s)"), 1, 0)
+        self.tab2_pre_trigger_spin = QDoubleSpinBox()
+        self.tab2_pre_trigger_spin.setRange(0.1, 30.0)
+        self.tab2_pre_trigger_spin.setValue(1.0)
+        self.tab2_pre_trigger_spin.setDecimals(1)
+        storage_layout.addWidget(self.tab2_pre_trigger_spin, 1, 1)
+        storage_layout.addWidget(QLabel("Post-trigger (s)"), 2, 0)
+        self.tab2_post_trigger_spin = QDoubleSpinBox()
+        self.tab2_post_trigger_spin.setRange(0.1, 30.0)
+        self.tab2_post_trigger_spin.setValue(3.0)
+        self.tab2_post_trigger_spin.setDecimals(1)
+        storage_layout.addWidget(self.tab2_post_trigger_spin, 2, 1)
+        storage_layout.addWidget(QLabel("Storage path"), 3, 0, 1, 2)
+        self.tab2_storage_path_edit = QLineEdit("D:/PCCP/FIPmonitor")
+        storage_layout.addWidget(self.tab2_storage_path_edit, 4, 0, 1, 2)
+        layout.addWidget(storage_group)
 
-        # 告警统计
+        alarm_group = QGroupBox("Alarm Summary")
+        alarm_layout = QVBoxLayout(alarm_group)
         stats_layout = QGridLayout()
-        stats_layout.addWidget(QLabel("总告警次数:"), 0, 0)
+        stats_layout.addWidget(QLabel("Total alarms"), 0, 0)
         self.total_alarms_label = QLabel("0")
         stats_layout.addWidget(self.total_alarms_label, 0, 1)
-
-        stats_layout.addWidget(QLabel("今日告警次数:"), 1, 0)
+        stats_layout.addWidget(QLabel("Today"), 1, 0)
         self.today_alarms_label = QLabel("0")
         stats_layout.addWidget(self.today_alarms_label, 1, 1)
-
         alarm_layout.addLayout(stats_layout)
-
-        # 最近告警列表
         self.alarm_table = QTableWidget()
         self.alarm_table.setColumnCount(3)
-        self.alarm_table.setHorizontalHeaderLabels(["时间", "持续时间", "触发特征"])
-        self.alarm_table.setMaximumHeight(200)
+        self.alarm_table.setHorizontalHeaderLabels(["Time", "Duration", "Feature Count"])
+        self.alarm_table.setMaximumHeight(220)
         alarm_layout.addWidget(self.alarm_table)
-
         layout.addWidget(alarm_group)
 
-        # 清空告警按钮
-        self.clear_alarms_btn = QPushButton("清空告警记录")
+        self.clear_alarms_btn = QPushButton("Clear alarm history")
         layout.addWidget(self.clear_alarms_btn)
-
         layout.addStretch()
         return widget
 
     def _create_feature_display_panel(self) -> QWidget:
-        """创建特征显示面板"""
+        """Create the Tab2 feature plotting area."""
         widget = QWidget()
         layout = QVBoxLayout(widget)
-
-        # 创建三个特征曲线显示区域
         self.feature_plots = []
-        self.feature_plot_curves = {}
-
-        for i in range(3):
-            plot_widget = pg.PlotWidget(title=f"短时特征曲线{i+1}")
-            plot_widget.setLabel('left', '特征值')
-            plot_widget.setLabel('bottom', '时间', units='s')
+        self.feature_plot_curves = []
+        self.feature_threshold_lines = []
+        for index in range(4):
+            plot_widget = pg.PlotWidget(title=f"Feature Plot {index + 1}")
+            plot_widget.setLabel('left', 'Value')
+            plot_widget.setLabel('bottom', 'Time', units='s')
             plot_widget.showGrid(x=True, y=True)
-
-            # 为每个图添加阈值线
-            threshold_line = pg.InfiniteLine(
-                pos=0, angle=0, pen=pg.mkPen('r', width=2, style=Qt.DashLine),
-                label="阈值", labelOpts={'position': 0.9}
-            )
+            curve = plot_widget.plot(pen=pg.mkPen(width=2))
+            threshold_line = pg.InfiniteLine(pos=0, angle=0, pen=pg.mkPen('r', width=1, style=Qt.DashLine))
             plot_widget.addItem(threshold_line)
-
             self.feature_plots.append(plot_widget)
+            self.feature_plot_curves.append(curve)
+            self.feature_threshold_lines.append(threshold_line)
             layout.addWidget(plot_widget)
-
         return widget
+
+    def _handle_tab2_plot_checkbox_change(self, checked: bool) -> None:
+        """Keep the number of plotted features within four."""
+        if checked and len([1 for item in self.detection_feature_checkboxes.values() if item["plot"].isChecked()]) > 4:
+            sender = self.sender()
+            if sender is not None:
+                sender.blockSignals(True)
+                sender.setChecked(False)
+                sender.blockSignals(False)
+            return
+        self._emit_tab2_settings_changed()
 
     def _create_tab3(self):
         """创建Tab3 - eDAS数据界面（暂时禁用）"""
@@ -726,14 +783,13 @@ class MainWindow(QMainWindow):
 
         # 如果Tab2控件存在，添加特征和检测配置
         if hasattr(self, 'detection_feature_checkboxes'):
-            config["features"] = {
-                "enabled": [key for key, checkbox in self.detection_feature_checkboxes.items() if checkbox.isChecked()],
-            }
-
-        if hasattr(self, 'threshold_controls'):
-            config["detection"] = {
-                "thresholds": {key: ctrl['threshold'].value()
-                              for key, ctrl in self.threshold_controls.items()}
+            config["tab2"] = {
+                "compute_features": self.get_tab2_compute_enabled_features(),
+                "plot_features": self.get_tab2_plot_enabled_features(),
+                "preprocess": self.get_tab2_preprocess_settings(),
+                "window": self.get_tab2_window_settings(),
+                "thresholds": self.get_threshold_factors(),
+                "trigger_storage": self.get_tab2_storage_settings(),
             }
 
         return config
@@ -754,123 +810,105 @@ class MainWindow(QMainWindow):
         self.packet_count_label.setText(str(stats.get('packets_received', 0)))
         self.loss_rate_label.setText(f"{stats.get('loss_rate', 0):.2f}%")
 
-    def update_feature_displays(self, features: Dict[str, List[Tuple[float, float]]]):
-        """
-        更新Tab2特征显示
+    def update_feature_displays(self, features: Dict[str, Dict[str, Any]]):
+        """Update the Tab2 feature plots."""
+        feature_names = list(features.keys())[:4]
+        for index, plot_widget in enumerate(self.feature_plots):
+            if index >= len(feature_names):
+                self.feature_plot_curves[index].setData([], [])
+                self.feature_threshold_lines[index].setValue(0.0)
+                plot_widget.setTitle(f"Feature Plot {index + 1}")
+                continue
 
-        Args:
-            features: 特征数据字典，格式为 {特征名: [(时间戳, 值)]}
-        """
-        try:
-            # 更新基线值显示
-            for feature_name, feature_data in features.items():
-                if feature_name in self.threshold_controls and feature_data:
-                    # 取最新值作为当前特征值的参考
-                    latest_value = feature_data[-1][1]
-                    # 这里应该显示基线值，但我们可以先显示当前值作为参考
-                    # 实际的基线值会通过其他机制更新
-                    pass
+            feature_name = feature_names[index]
+            payload = features[feature_name]
+            self.feature_plot_curves[index].setData(payload.get("times", []), payload.get("values", []))
+            self.feature_threshold_lines[index].setValue(float(payload.get("threshold", 0.0)))
+            plot_widget.setTitle(feature_name)
 
-            # TODO: 添加特征曲线绘制到Tab2的图表控件
-
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Error updating feature displays: {e}")
-
-    def add_detection_results(self, detections):
-        """
-        添加检测结果到Tab2
-
-        Args:
-            detections: DetectionResult对象列表
-        """
-        try:
-            from datetime import datetime
-
-            for detection in detections:
-                # 添加到告警表格
-                row_count = self.alarm_table.rowCount()
-                self.alarm_table.insertRow(row_count)
-
-                # 时间列
-                time_str = datetime.fromtimestamp(detection.timestamp).strftime("%H:%M:%S")
-                self.alarm_table.setItem(row_count, 0, QTableWidgetItem(time_str))
-
-                # 持续时间列 (如果检测还在进行，显示为进行中)
-                if detection.duration is not None:
-                    duration_str = f"{detection.duration:.2f}s"
-                else:
-                    duration_str = "进行中"
-                self.alarm_table.setItem(row_count, 1, QTableWidgetItem(duration_str))
-
-                # 触发特征列
-                feature_display_names = {
-                    'short_energy': '短时能量',
-                    'zero_crossing': '过零率',
-                    'peak_factor': '峰值因子',
-                    'rms': 'RMS'
-                }
-                feature_name = feature_display_names.get(detection.feature_name, detection.feature_name)
-                self.alarm_table.setItem(row_count, 2, QTableWidgetItem(feature_name))
-
-                # 滚动到最新行
-                self.alarm_table.scrollToBottom()
-
-            # 更新告警统计
-            total_alarms = self.alarm_table.rowCount()
-            self.total_alarms_label.setText(str(total_alarms))
-
-            # 计算今日告警数（简化实现，实际应该基于日期判断）
-            # 这里假设程序运行期间的所有告警都是今日告警
-            self.today_alarms_label.setText(str(total_alarms))
-
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"Error adding detection results: {e}")
+    def add_alarm_event(self, event):
+        """Add one aggregated alarm event to the UI table."""
+        row_count = self.alarm_table.rowCount()
+        self.alarm_table.insertRow(row_count)
+        self.alarm_table.setItem(row_count, 0, QTableWidgetItem(f"{event.start_time:.3f}s"))
+        self.alarm_table.setItem(row_count, 1, QTableWidgetItem(f"{event.duration:.3f}s"))
+        self.alarm_table.setItem(row_count, 2, QTableWidgetItem(str(event.trigger_feature_count)))
+        self.alarm_table.scrollToBottom()
+        total_alarms = self.alarm_table.rowCount()
+        self.total_alarms_label.setText(str(total_alarms))
+        self.today_alarms_label.setText(str(total_alarms))
 
     def update_baselines(self, baselines: Dict[str, float]):
-        """
-        更新基线值显示
-
-        Args:
-            baselines: 基线值字典
-        """
+        """Update baseline labels shown in the Tab2 parameter panel."""
         try:
             for feature_name, baseline_value in baselines.items():
                 if feature_name in self.threshold_controls:
-                    baseline_label = self.threshold_controls[feature_name]['baseline']
-                    baseline_label.setText(f"{baseline_value:.3f}")
-
+                    self.threshold_controls[feature_name]['baseline'].setText(f"{baseline_value:.3f}")
         except Exception as e:
-            import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Error updating baselines: {e}")
 
-    def get_enabled_features(self) -> Dict[str, bool]:
-        """
-        获取Tab2中启用的特征
+    def get_tab2_compute_enabled_features(self) -> Dict[str, bool]:
+        """Return the compute-enabled features from Tab2."""
+        return {
+            key: controls["compute"].isChecked()
+            for key, controls in self.detection_feature_checkboxes.items()
+        }
 
-        Returns:
-            启用特征的字典
-        """
-        if hasattr(self, 'detection_feature_checkboxes'):
-            return {key: checkbox.isChecked()
-                   for key, checkbox in self.detection_feature_checkboxes.items()}
-        return {}
+    def get_tab2_plot_enabled_features(self) -> Dict[str, bool]:
+        """Return the plot-enabled features from Tab2."""
+        return {
+            key: controls["plot"].isChecked()
+            for key, controls in self.detection_feature_checkboxes.items()
+        }
 
     def get_threshold_factors(self) -> Dict[str, float]:
-        """
-        获取Tab2中设置的阈值系数
+        """Return the current per-feature threshold multipliers."""
+        return {key: ctrl['threshold'].value() for key, ctrl in self.threshold_controls.items()}
 
-        Returns:
-            阈值系数字典
-        """
-        if hasattr(self, 'threshold_controls'):
-            return {key: ctrl['threshold'].value()
-                   for key, ctrl in self.threshold_controls.items()}
-        return {}
+    def get_tab2_preprocess_settings(self) -> Dict[str, Any]:
+        """Return the current Tab2 preprocess settings."""
+        return {
+            "enabled": self.tab2_filter_enable_check.isChecked(),
+            "low_hz": self.tab2_low_freq_spin.value(),
+            "high_hz": self.tab2_high_freq_spin.value(),
+            "order": self.tab2_filter_order_spin.value(),
+        }
+
+    def get_tab2_window_settings(self) -> Dict[str, float]:
+        """Return the current Tab2 window and display settings."""
+        return {
+            "window_seconds": self.tab2_window_spin.value(),
+            "overlap_ratio": self.tab2_overlap_spin.value() / 100.0,
+            "display_duration_seconds": float(self.tab2_plot_duration_spin.value()),
+        }
+
+    def get_tab2_storage_settings(self) -> Dict[str, Any]:
+        """Return the current trigger storage settings."""
+        return {
+            "enabled": self.tab2_trigger_storage_check.isChecked(),
+            "pre_trigger_seconds": self.tab2_pre_trigger_spin.value(),
+            "post_trigger_seconds": self.tab2_post_trigger_spin.value(),
+            "path": self.tab2_storage_path_edit.text(),
+        }
+
+    def clear_alarm_table(self):
+        """Clear the alarm table and counters."""
+        self.alarm_table.setRowCount(0)
+        self.total_alarms_label.setText("0")
+        self.today_alarms_label.setText("0")
+
+    def clear_feature_displays(self):
+        """Clear all feature plots."""
+        for index, plot_widget in enumerate(self.feature_plots):
+            self.feature_plot_curves[index].setData([], [])
+            self.feature_threshold_lines[index].setValue(0.0)
+            plot_widget.setTitle(f"Feature Plot {index + 1}")
+
+    def _emit_tab2_settings_changed(self):
+        """Emit a unified Tab2 settings-changed signal."""
+        if hasattr(self, 'tab2_settings_changed'):
+            self.tab2_settings_changed.emit()
 
     def _toggle_time_plot(self, enabled: bool):
         """切换时域绘图"""
@@ -994,6 +1032,38 @@ class MainWindow(QMainWindow):
             # 降采样参数变化时，也需要更新PSD设置（因为PSD计算依赖采样率）
             if hasattr(self, 'downsample_spin'):
                 self.downsample_spin.valueChanged.connect(self._update_psd_settings)
+
+            tab2_widgets = [
+                getattr(self, 'tab2_filter_enable_check', None),
+                getattr(self, 'tab2_low_freq_spin', None),
+                getattr(self, 'tab2_high_freq_spin', None),
+                getattr(self, 'tab2_filter_order_spin', None),
+                getattr(self, 'tab2_window_spin', None),
+                getattr(self, 'tab2_overlap_spin', None),
+                getattr(self, 'tab2_plot_duration_spin', None),
+                getattr(self, 'tab2_trigger_storage_check', None),
+                getattr(self, 'tab2_pre_trigger_spin', None),
+                getattr(self, 'tab2_post_trigger_spin', None),
+                getattr(self, 'tab2_storage_path_edit', None),
+            ]
+            for controls in getattr(self, 'detection_feature_checkboxes', {}).values():
+                tab2_widgets.append(controls.get('compute'))
+                tab2_widgets.append(controls.get('plot'))
+            for ctrl in getattr(self, 'threshold_controls', {}).values():
+                tab2_widgets.append(ctrl.get('threshold'))
+
+            for widget in tab2_widgets:
+                if widget is None:
+                    continue
+                if hasattr(widget, 'valueChanged'):
+                    widget.valueChanged.connect(self._emit_tab2_settings_changed)
+                elif hasattr(widget, 'toggled'):
+                    widget.toggled.connect(self._emit_tab2_settings_changed)
+                elif hasattr(widget, 'textChanged'):
+                    widget.textChanged.connect(self._emit_tab2_settings_changed)
+
+            if hasattr(self, 'clear_alarms_btn'):
+                self.clear_alarms_btn.clicked.connect(self.tab2_clear_alarms_requested.emit)
 
         except Exception as e:
             import logging
