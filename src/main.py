@@ -25,12 +25,11 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 
 # Import application modules
 from ui.main_window import MainWindow
-from comm.tcp_server_optimized import OptimizedTCPServer
+from fip_tab1 import OptimizedTCPServer
 from processing.phase_unwrap import PhaseUnwrapper
 from processing.signal_filter import SignalFilter
 from processing.downsampling import Downsampler
-from processing.tab1_optimized_threads import OptimizedTab1ThreadManager
-from visualization.wave_plotter import PSDCalculator
+from fip_tab1 import OptimizedTab1ThreadManager, PSDCalculator, RawDataPacket
 from fip_tab2 import FIPTab2Manager
 
 # Import system configuration
@@ -321,8 +320,6 @@ class PCCPMonitorApp:
                 )
 
             # 简单的数据包格式转换
-            from processing.tab1_optimized_threads import RawDataPacket
-
             raw_packet = RawDataPacket(
                 timestamp=packet.timestamp,
                 phase_data=packet.phase_data,

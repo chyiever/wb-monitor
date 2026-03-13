@@ -2,237 +2,185 @@
 
 ## 项目概述
 
-PCCP (Prestressed Concrete Cylinder Pipe) 断丝监测软件，基于光纤干涉仪和分布式光纤传感(DAS)技术的实时监测系统。
+本项目是一个基于 Python 3.9 + PyQt5 的 PCCP 断丝监测软件原型，当前已完成两条核心链路：
 
-### 功能特点
+- `Tab1 / FIP`：干涉仪声发射数据的 TCP 接收、预处理、时域绘图、PSD 绘图与相位数据存储
+- `Tab2 / SigID`：基于 Tab1 下采样结果的短时特征提取、阈值检测、告警聚合、特征显示与触发存储
 
-- **Tab1 干涉仪(声发射)链路** - TCP通信、数据解析、相位展开、滤波、降采样、时域绘图、PSD绘图、数据存储
-- **TCP通信模块** - 高吞吐数据接收、会话计数归一化、连接状态管理
-- **实时可视化** - PyQtGraph 时域波形与功率谱显示
-- **信号检测** - 基于阈值的异常检测和告警（Tab2）
-- **数据存储** - NPZ格式相位数据记录与管理
+当前 GUI 中还保留了 `eDAS` 与 `SigLoc` 页签，但这两个模块仍是占位状态，尚未开发。
 
-## Tab1 已开发内容（截至 2026-03-12）
+## 当前开发状态
 
-### 1) 数据通信与解析
-- 已实现 `OptimizedTCPServer`（`src/comm/tcp_server_optimized.py`）
-- TCP包格式：8字节头（`raw_comm_count` + `data_length`）+ 数据体
-- 数据体解析：大端 `int64`（`<32,32>` 定点）转换为 `float64`
-- 每次通信成功后会话计数自动归一化：主流程接收计数从 0 开始
+### Tab1 已完成
 
-### 2) 预处理链路（线程化）
-- 已实现 `OptimizedTab1ThreadManager`（`src/processing/tab1_optimized_threads.py`）
-- `DataProcessingThread` 完成：
-   - 相位展开（`PhaseUnwrapper`）
-   - 数字滤波（`SignalFilter`）
-   - 系统降采样（`Downsampler`）
-- 时域数据使用“滤波后 + 降采样”结果
-- PSD数据使用“相位展开后、未滤波”数据（符合当前设计要求）
+- TCP 服务端接收 LabVIEW RT 发送的 FIP 数据
+- 解析 `>II` 头部和 `>q` 大端 `int64` 负载
+- 将 `<32,32>` 定点数转换为 `float64`
+- 相位展开、数字滤波、系统降采样
+- 时域波形实时显示
+- PSD 实时计算与绘图
+- 相位展开数据按 NPZ 格式保存
+- Tab1 代码已整理为独立包 `src/fip_tab1`
 
-### 3) 时域绘图
-- 已实现 `TimedomainPlotThread` + 主线程曲线更新
-- 绘图方式：单条曲线 `setData` 覆盖更新（避免重复创建曲线）
-- 显示策略：窗口化显示 + 更新节流（默认每5包更新）
-- 已处理问题：
-   - 启动后时域不自动刷新
-   - 通信计数回退导致时域不更新
-   - 时间轴抖动/重叠
+### Tab2 已完成
 
-### 4) PSD计算与绘图
-- 已实现 `PSDPlotThread` + `PSDCalculator`（Welch）
-- 计算函数：`scipy.signal.welch`
-- PSD 更新节奏：默认每5包更新一次
-- 显示策略：线性功率转 dB，并做范围裁剪
+- 独立的 Tab2 多线程流水线 `src/fip_tab2`
+- 从 Tab1 接收处理后的下采样数据
+- Tab2 自身可选带通预处理
+- 短时特征提取
+- 基于滑动基线和阈值因子的异常检测
+- 连续异常窗口聚合为告警事件
+- 最多 4 路特征曲线实时显示
+- 告警表、基线显示、阈值配置
+- 触发前后信号片段和对应特征结果保存
 
-### 5) 存储
-- 已实现 `DataStorageThread`
-- 存储对象：相位展开数据（`unwrapped_data`）
-- 格式：`.npz` 压缩存储，支持启停与路径配置
+## 当前代码结构
 
-## 系统要求
+```text
+wb-monitor/
+├─ config/
+│  └─ app_config.json
+├─ docs/
+│  ├─ 2026-3-11-声发射TCP通信丢包问题解决记录.md
+│  ├─ 2026-3-12-Tab1-声发射数据通信绘图功能开发问文档.md
+│  └─ 2026-3-12-Tab2-声发射信号短时特征提取与异常检测（初步）.md
+├─ logs/
+├─ output/
+├─ resources/
+├─ src/
+│  ├─ config/
+│  │  ├─ __init__.py
+│  │  └─ system_config.py
+│  ├─ fip_tab1/
+│  │  ├─ __init__.py
+│  │  ├─ fip_plotter.py
+│  │  ├─ fip_tab1_manager.py
+│  │  └─ fip_tcp_server.py
+│  ├─ fip_tab2/
+│  │  ├─ __init__.py
+│  │  ├─ fip_detection_worker.py
+│  │  ├─ fip_feature_worker.py
+│  │  ├─ fip_plot_worker.py
+│  │  ├─ fip_tab2_manager.py
+│  │  ├─ fip_trigger_storage.py
+│  │  └─ fip_types.py
+│  ├─ processing/
+│  │  ├─ __init__.py
+│  │  ├─ downsampling.py
+│  │  ├─ phase_unwrap.py
+│  │  └─ signal_filter.py
+│  ├─ ui/
+│  │  └─ main_window.py
+│  └─ main.py
+├─ requirements.txt
+└─ run.py
+```
 
-- **Python**: 3.9.x
-- **操作系统**: Windows 10/11 (64位)
-- **内存**: >= 4GB RAM
-- **网络**: TCP/IP 支持
+## 运行方式
 
-## 安装依赖
+### 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 运行程序
+### 启动程序
 
-### 正常模式
 ```bash
 python run.py
 ```
 
-### 调试模式
+也可以直接运行：
+
+```bash
+python src/main.py
+```
+
+### 调试参数
+
 ```bash
 python run.py --debug
-```
-
-### 指定日志文件
-```bash
 python run.py --log monitor.log
-```
-
-### 自定义配置
-```bash
 python run.py --config my_config.json
 ```
 
-## 项目架构（当前）
+说明：当前 `run.py` 已支持参数解析，但 `src/main.py` 里尚未完整接入自定义配置文件参数，`--config` 仍属于预留入口。
 
-```
-wb-monitor/
-├── config/
-│   └── app_config.json
-├── docs/
-│   ├── 2026-3-11-声发射TCP通信丢包问题解决记录.md
-│   ├── 2026-3-12-Tab1-声发射数据通信绘图功能开发问文档.md
-│   ├── PCCP断丝监测软件 开发需求文档.txt
-│   └── README.md
-├── libs/
-├── logs/
-├── output/
-├── ref/
-│   └── TCP.py
-├── resources/
-├── src/
-│   ├── comm/
-│   │   ├── __init__.py
-│   │   └── tcp_server_optimized.py
-│   ├── config/
-│   │   ├── __init__.py
-│   │   └── system_config.py
-│   ├── detection/
-│   │   ├── __init__.py
-│   │   └── threshold_detector.py
-│   ├── features/
-│   │   ├── __init__.py
-│   │   └── feature_calculator.py
-│   ├── processing/
-│   │   ├── __init__.py
-│   │   ├── downsampling.py
-│   │   ├── phase_unwrap.py
-│   │   ├── signal_filter.py
-│   │   └── tab1_optimized_threads.py
-│   ├── storage/
-│   │   ├── __init__.py
-│   │   └── detection_storage.py
-│   ├── ui/
-│   │   └── main_window.py
-│   ├── visualization/
-│   │   └── wave_plotter.py
-│   └── main.py
-├── README.md
-├── requirements.txt
-└── run.py
-```
+## 主要模块说明
 
-## 开发阶段
+### 1. Tab1 主链路
 
-### 第一阶段（Tab1，已完成）
-- [x] TCP通信与数据解析
-- [x] 相位展开、滤波、降采样预处理链路
-- [x] 时域绘图线程化更新
-- [x] PSD计算与绘图线程化更新
-- [x] Tab1 数据存储（NPZ）
+- 入口：`src/main.py`
+- TCP 接收：`src/fip_tab1/fip_tcp_server.py`
+- Tab1 线程管理：`src/fip_tab1/fip_tab1_manager.py`
+- PSD 计算与绘图工具：`src/fip_tab1/fip_plotter.py`
+- 通用预处理组件：
+  - `src/processing/phase_unwrap.py`
+  - `src/processing/signal_filter.py`
+  - `src/processing/downsampling.py`
 
-### 第二阶段（Tab2，进行中）
-- [x] 特征计算基础能力
-- [x] 阈值检测基础能力
-- [ ] Tab2 全流程联调与性能优化
+### 2. Tab2 主链路
 
-### 第三阶段（规划）
-- [ ] DAS数据处理
-- [ ] 信号定位算法
-- [ ] 高级分析与诊断功能
+- 管理器：`src/fip_tab2/fip_tab2_manager.py`
+- 特征提取：`src/fip_tab2/fip_feature_worker.py`
+- 阈值检测：`src/fip_tab2/fip_detection_worker.py`
+- 特征显示缓存：`src/fip_tab2/fip_plot_worker.py`
+- 触发存储：`src/fip_tab2/fip_trigger_storage.py`
+- 共享数据类型：`src/fip_tab2/fip_types.py`
 
-## 技术规格
+### 3. 界面
 
-### 数据格式
-- **协议**: TCP/IP
-- **数据包**: 8字节头部 + 1.6MB数据体
-- **数据类型**: <32,32>定点数 (大端序)
-- **采样率**: 1MHz
-- **传输频率**: 5包/秒
+- 主界面：`src/ui/main_window.py`
+- Tab1 提供：
+  - 通信设置
+  - 预处理参数
+  - 相位数据存储设置
+  - 时域/PSD 显示与启停
+- Tab2 提供：
+  - 特征勾选
+  - Tab2 独立预处理参数
+  - 滑动窗与显示时长参数
+  - 各特征阈值因子
+  - 告警清空与触发存储设置
 
-### 性能指标
-- **丢包率**: 0%
-- **接收延迟**: <50ms
-- **处理延迟**: <100ms
-- **内存占用**: <2GB
+## 关键数据流
 
-## 配置说明
+### Tab1
 
-配置文件位置: `config/app_config.json`
+`LabVIEW TCP -> OptimizedTCPServer -> RawDataPacket -> 相位展开 -> 滤波 -> 降采样 -> 时域绘图 / PSD / Tab2 转发 / NPZ 存储`
 
-主要配置项:
-- `communication`: TCP连接参数
-- `preprocessing`: 信号预处理
-- `features`: 特征计算设置
-- `detection`: 检测算法参数
-- `storage`: 数据存储配置
+### Tab2
 
-## 故障排除
+`Tab1 processed_data -> FIPFeatureWorker -> FIPDetectionWorker / FIPFeaturePlotWorker / FIPTriggerStorageWorker`
 
-### 常见问题
+## 当前默认参数
 
-1. **连接失败**
-   - 检查IP地址和端口设置
-   - 确认防火墙允许端口3677
-   - 验证网络连接
+- 原始采样率：`1 MHz`
+- 默认系统降采样倍数：`5`
+- Tab1 默认有效采样率：`200 kHz`
+- Tab1 时域显示数据：`downsampled_data[::2]`，即默认约 `100 kHz`
+- Tab1 默认 PSD 更新节流：每 `5` 包更新一次
+- Tab2 默认启用特征：`short_energy`
+- Tab2 默认阈值因子：各特征初始为 `3.0`
+- Tab2 默认触发存储：
+  - pre-trigger：`1.0 s`
+  - post-trigger：`3.0 s`
 
-2. **丢包率高**
-   - 检查网络质量
-   - 调整TCP缓冲区大小
-   - 确认客户端发送频率
+## 文档索引
 
-3. **性能问题**
-   - 启用调试日志定位瓶颈
-   - 检查系统资源使用
-   - 优化处理参数
+- [docs/2026-3-11-声发射TCP通信丢包问题解决记录.md](E:\codes\pccpHOST\wb-monitor\docs\2026-3-11-声发射TCP通信丢包问题解决记录.md)
+- [docs/2026-3-12-Tab1-声发射数据通信绘图功能开发问文档.md](E:\codes\pccpHOST\wb-monitor\docs\2026-3-12-Tab1-声发射数据通信绘图功能开发问文档.md)
+- [docs/2026-3-12-Tab2-声发射信号短时特征提取与异常检测（初步）.md](E:\codes\pccpHOST\wb-monitor\docs\2026-3-12-Tab2-声发射信号短时特征提取与异常检测（初步）.md)
 
-## 开发指南
+## 已知现状
 
-### 代码规范
-- 遵循PEP 8编码规范
-- 使用类型提示
-- 添加详细的文档字符串
-- 英文注释和变量名
+- `Tab1` 和 `Tab2` 已能正常运行
+- `src` 中老的 `features`、`detection`、`storage` 等历史目录已清理
+- `Tab1` 已重构为 `fip_tab1` 独立包，结构与 `fip_tab2` 更一致
+- `run.py --config` 目前尚未完整贯通到主程序配置加载逻辑
 
-### 测试
-```bash
-# 运行调试模式
-python run.py --debug
+## 后续建议
 
-# 查看日志
-tail -f logs/pccp_monitor.log
-```
-
-## 版权信息
-
-- **版本**: 1.0.0
-- **作者**: Claude
-- **日期**: 2026-03-11
-- **许可**: MIT License
-
-## 更新日志
-
-### v1.0.0 (2026-03-11)
-- 完成TCP通信模块优化
-- 实现零丢包率数据接收
-- 基础GUI界面和实时可视化
-- 数据处理管道建立
-- 项目架构重构
-
-### v1.0.1 (2026-03-12)
-- 完成 Tab1 全链路线程化（通信-处理-时域-PSD-存储）
-- 修复时域启动后不自动显示问题
-- 修复通信计数回退导致时域不更新问题
-- 实现每次通信成功后 `comm_count` 会话内从 0 开始计数
-- 清理无用测试/调试脚本与旧模块，更新项目结构文档
+- 继续把 `ui/main_window.py` 拆分为更细的 Tab1 / Tab2 UI 子模块
+- 为 `fip_tab1` 与 `fip_tab2` 增加自动化冒烟测试
+- 在 README 中补充一份实际 TCP 发包格式示例

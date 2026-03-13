@@ -925,3 +925,11 @@ class WaveformPlotter(QObject):
         }
 
         return stats
+
+
+__all__ = [
+    "ArraySegmentBuffer",
+    "PlotDataBuffer",
+    "PSDCalculator",
+    "WaveformPlotter",
+]
