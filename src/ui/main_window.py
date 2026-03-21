@@ -12,12 +12,13 @@ import sys
 import os
 import logging
 from typing import Dict, Any, List, Tuple
+import numpy as np
 from PyQt5.QtWidgets import (
     QMainWindow, QApplication, QTabWidget, QWidget, QVBoxLayout,
     QHBoxLayout, QGridLayout, QGroupBox, QLabel, QPushButton,
     QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox,
     QTextEdit, QTableWidget, QTableWidgetItem, QSplitter,
-    QFrame, QStatusBar, QMenuBar, QAction
+    QFrame, QStatusBar, QMenuBar, QAction, QMessageBox
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QIcon
@@ -45,6 +46,9 @@ class MainWindow(QMainWindow):
     filter_settings_changed = pyqtSignal(dict)  # 新增滤波器设置变化信号
     tab2_settings_changed = pyqtSignal()
     tab2_clear_alarms_requested = pyqtSignal()
+    tab3_start_requested = pyqtSignal()
+    tab3_stop_requested = pyqtSignal()
+    tab3_settings_changed = pyqtSignal()
 
     def __init__(self):
         super().__init__()
@@ -120,7 +124,6 @@ class MainWindow(QMainWindow):
         self._create_tab4()  # 信号定位（暂时禁用）
 
         # 禁用Tab3和Tab4
-        self.tab_widget.setTabEnabled(2, False)
         self.tab_widget.setTabEnabled(3, False)
 
     def _create_header(self) -> QWidget:
@@ -623,15 +626,280 @@ class MainWindow(QMainWindow):
         self._emit_tab2_settings_changed()
 
     def _create_tab3(self):
-        """创建Tab3 - eDAS数据界面（暂时禁用）"""
+        """Create Tab3 - DAS receive, alignment, plots, and raw storage."""
         tab3 = QWidget()
         self.tab_widget.addTab(tab3, "eDAS")
 
-        layout = QVBoxLayout(tab3)
-        placeholder = QLabel("DAS数据处理模块\n（暂未开发）")
-        placeholder.setAlignment(Qt.AlignCenter)
-        placeholder.setStyleSheet("font-size: 24px; color: gray;")
-        layout.addWidget(placeholder)
+        main_layout = QHBoxLayout(tab3)
+
+        left_panel = QWidget()
+        left_panel.setMaximumWidth(420)
+        left_layout = QVBoxLayout(left_panel)
+        left_layout.setSpacing(6)
+
+        self._tab3_space_time_levels_locked = False
+        self._tab3_colormap_options = [
+            ("Jet", "jet"),
+            ("Viridis", "viridis"),
+            ("Plasma", "plasma"),
+            ("Inferno", "inferno"),
+            ("Magma", "magma"),
+            ("Seismic", "seismic"),
+            ("Gray", "gray"),
+            ("Hot", "hot"),
+            ("Cool", "cool"),
+        ]
+
+        comm_group = QGroupBox("DAS Communication")
+        comm_layout = QGridLayout(comm_group)
+        comm_layout.setHorizontalSpacing(6)
+        comm_layout.addWidget(QLabel("IP"), 0, 0)
+        self.tab3_ip_edit = QLineEdit("0.0.0.0")
+        comm_layout.addWidget(self.tab3_ip_edit, 0, 1)
+        comm_layout.addWidget(QLabel("Port"), 0, 2)
+        self.tab3_port_spin = QSpinBox()
+        self.tab3_port_spin.setRange(1024, 65535)
+        self.tab3_port_spin.setValue(3678)
+        comm_layout.addWidget(self.tab3_port_spin, 0, 3)
+        comm_layout.addWidget(QLabel("Status"), 1, 0)
+        self.tab3_conn_status_label = QLabel("Disconnected")
+        self.tab3_conn_status_label.setStyleSheet("color: red; font-weight: bold;")
+        comm_layout.addWidget(self.tab3_conn_status_label, 1, 1, 1, 3)
+        comm_layout.addWidget(QLabel("Packets"), 2, 0)
+        self.tab3_packet_count_label = QLabel("0")
+        comm_layout.addWidget(self.tab3_packet_count_label, 2, 1)
+        comm_layout.addWidget(QLabel("Last Comm"), 2, 2)
+        self.tab3_last_comm_label = QLabel("-")
+        comm_layout.addWidget(self.tab3_last_comm_label, 2, 3)
+        left_layout.addWidget(comm_group)
+
+        header_group = QGroupBox("Live Header")
+        header_layout = QGridLayout(header_group)
+        header_layout.setHorizontalSpacing(6)
+        header_layout.setVerticalSpacing(4)
+        header_layout.addWidget(QLabel("Channels"), 0, 0)
+        self.tab3_channel_count_label = QLabel("-")
+        header_layout.addWidget(self.tab3_channel_count_label, 0, 1)
+        header_layout.addWidget(QLabel("Sample Rate"), 0, 2)
+        self.tab3_sample_rate_label = QLabel("-")
+        header_layout.addWidget(self.tab3_sample_rate_label, 0, 3)
+        header_layout.addWidget(QLabel("Data Bytes"), 1, 0)
+        self.tab3_data_bytes_label = QLabel("-")
+        header_layout.addWidget(self.tab3_data_bytes_label, 1, 1)
+        header_layout.addWidget(QLabel("Packet Duration"), 1, 2)
+        self.tab3_packet_duration_label = QLabel("-")
+        header_layout.addWidget(self.tab3_packet_duration_label, 1, 3)
+        left_layout.addWidget(header_group)
+
+        align_group = QGroupBox("Alignment Status")
+        align_layout = QGridLayout(align_group)
+        align_layout.addWidget(QLabel("FIP Comm"), 0, 0)
+        self.tab3_align_fip_comm_label = QLabel("-")
+        align_layout.addWidget(self.tab3_align_fip_comm_label, 0, 1)
+        align_layout.addWidget(QLabel("DAS Comm"), 1, 0)
+        self.tab3_align_das_comm_label = QLabel("-")
+        align_layout.addWidget(self.tab3_align_das_comm_label, 1, 1)
+        align_layout.addWidget(QLabel("Status"), 2, 0)
+        self.tab3_alignment_status_label = QLabel("waiting")
+        align_layout.addWidget(self.tab3_alignment_status_label, 2, 1)
+        align_layout.addWidget(QLabel("FIP Missing"), 3, 0)
+        self.tab3_fip_missing_label = QLabel("0")
+        align_layout.addWidget(self.tab3_fip_missing_label, 3, 1)
+        align_layout.addWidget(QLabel("DAS Missing"), 4, 0)
+        self.tab3_das_missing_label = QLabel("0")
+        align_layout.addWidget(self.tab3_das_missing_label, 4, 1)
+        align_layout.addWidget(QLabel("Recent Gaps"), 5, 0, 1, 2)
+        self.tab3_missing_ranges_label = QLabel("-")
+        self.tab3_missing_ranges_label.setWordWrap(True)
+        align_layout.addWidget(self.tab3_missing_ranges_label, 6, 0, 1, 2)
+        left_layout.addWidget(align_group)
+
+        curve_group = QGroupBox("Curve Controls")
+        curve_layout = QGridLayout(curve_group)
+        curve_layout.addWidget(QLabel("Curve 1"), 0, 0)
+        self.tab3_curve1_combo = QComboBox()
+        self.tab3_curve1_combo.addItems(["Off", "DAS Channel", "FIP"])
+        self.tab3_curve1_combo.setCurrentText("DAS Channel")
+        curve_layout.addWidget(self.tab3_curve1_combo, 0, 1)
+        curve_layout.addWidget(QLabel("Curve 2"), 1, 0)
+        self.tab3_curve2_combo = QComboBox()
+        self.tab3_curve2_combo.addItems(["Off", "DAS Channel", "FIP"])
+        self.tab3_curve2_combo.setCurrentText("FIP")
+        curve_layout.addWidget(self.tab3_curve2_combo, 1, 1)
+        curve_layout.addWidget(QLabel("DAS Channel"), 2, 0)
+        self.tab3_das_channel_spin = QSpinBox()
+        self.tab3_das_channel_spin.setRange(0, 4000)
+        curve_layout.addWidget(self.tab3_das_channel_spin, 2, 1)
+        curve_layout.addWidget(QLabel("Display Seconds"), 3, 0)
+        self.tab3_display_seconds_spin = QDoubleSpinBox()
+        self.tab3_display_seconds_spin.setRange(0.2, 10.0)
+        self.tab3_display_seconds_spin.setValue(1.0)
+        self.tab3_display_seconds_spin.setDecimals(1)
+        curve_layout.addWidget(self.tab3_display_seconds_spin, 3, 1)
+        self.tab3_filter_enable_check = QCheckBox("Apply DAS band-pass")
+        curve_layout.addWidget(self.tab3_filter_enable_check, 4, 0, 1, 2)
+        curve_layout.addWidget(QLabel("Low Hz"), 5, 0)
+        self.tab3_low_freq_spin = QSpinBox()
+        self.tab3_low_freq_spin.setRange(1, 500000)
+        self.tab3_low_freq_spin.setValue(100)
+        curve_layout.addWidget(self.tab3_low_freq_spin, 5, 1)
+        curve_layout.addWidget(QLabel("High Hz"), 6, 0)
+        self.tab3_high_freq_spin = QSpinBox()
+        self.tab3_high_freq_spin.setRange(2, 500000)
+        self.tab3_high_freq_spin.setValue(2000)
+        curve_layout.addWidget(self.tab3_high_freq_spin, 6, 1)
+        left_layout.addWidget(curve_group)
+
+        space_group = QGroupBox("Space-Time Controls")
+        space_layout = QGridLayout(space_group)
+        space_layout.setHorizontalSpacing(6)
+        space_layout.addWidget(QLabel("Channel Start"), 0, 0)
+        self.tab3_channel_start_spin = QSpinBox()
+        self.tab3_channel_start_spin.setRange(0, 4000)
+        self.tab3_channel_start_spin.setValue(0)
+        space_layout.addWidget(self.tab3_channel_start_spin, 0, 1)
+        space_layout.addWidget(QLabel("Channel End"), 0, 2)
+        self.tab3_channel_end_spin = QSpinBox()
+        self.tab3_channel_end_spin.setRange(0, 4000)
+        self.tab3_channel_end_spin.setValue(199)
+        space_layout.addWidget(self.tab3_channel_end_spin, 0, 3)
+        space_layout.addWidget(QLabel("Time Downsample"), 1, 0)
+        self.tab3_time_downsample_spin = QSpinBox()
+        self.tab3_time_downsample_spin.setRange(1, 100)
+        self.tab3_time_downsample_spin.setValue(1)
+        space_layout.addWidget(self.tab3_time_downsample_spin, 1, 1)
+        space_layout.addWidget(QLabel("Space Downsample"), 1, 2)
+        self.tab3_space_downsample_spin = QSpinBox()
+        self.tab3_space_downsample_spin.setRange(1, 100)
+        self.tab3_space_downsample_spin.setValue(1)
+        space_layout.addWidget(self.tab3_space_downsample_spin, 1, 3)
+        left_layout.addWidget(space_group)
+
+        storage_group = QGroupBox("Joint Raw Storage")
+        storage_layout = QGridLayout(storage_group)
+        self.tab3_storage_toggle_btn = QPushButton()
+        self.tab3_storage_toggle_btn.setCheckable(True)
+        storage_layout.addWidget(self.tab3_storage_toggle_btn, 0, 0, 1, 2)
+        storage_layout.addWidget(QLabel("Path"), 1, 0, 1, 2)
+        self.tab3_storage_path_edit = QLineEdit("D:/PCCP/FIPeDASDATA")
+        storage_layout.addWidget(self.tab3_storage_path_edit, 2, 0, 1, 2)
+        storage_layout.addWidget(QLabel("Interval(s)"), 3, 0)
+        self.tab3_storage_interval_spin = QDoubleSpinBox()
+        self.tab3_storage_interval_spin.setRange(1.0, 60.0)
+        self.tab3_storage_interval_spin.setValue(10.0)
+        self.tab3_storage_interval_spin.setDecimals(1)
+        storage_layout.addWidget(self.tab3_storage_interval_spin, 3, 1)
+        storage_layout.addWidget(QLabel("Cache(s)"), 4, 0)
+        self.tab3_cache_seconds_spin = QDoubleSpinBox()
+        self.tab3_cache_seconds_spin.setRange(5.0, 60.0)
+        self.tab3_cache_seconds_spin.setValue(10.0)
+        self.tab3_cache_seconds_spin.setDecimals(1)
+        storage_layout.addWidget(self.tab3_cache_seconds_spin, 4, 1)
+        storage_layout.addWidget(QLabel("Last File"), 5, 0, 1, 2)
+        self.tab3_last_storage_label = QLabel("-")
+        self.tab3_last_storage_label.setWordWrap(True)
+        storage_layout.addWidget(self.tab3_last_storage_label, 6, 0, 1, 2)
+        left_layout.addWidget(storage_group)
+
+        control_group = QGroupBox("Tab3 Control")
+        control_layout = QVBoxLayout(control_group)
+        control_layout.setSpacing(8)
+        self.tab3_start_stop_btn = QPushButton("Start DAS Monitoring")
+        self.tab3_start_stop_btn.setCheckable(True)
+        control_layout.addWidget(self.tab3_start_stop_btn)
+        self.tab3_plot_toggle_btn = QPushButton()
+        self.tab3_plot_toggle_btn.setCheckable(True)
+        self.tab3_plot_toggle_btn.setChecked(True)
+        control_layout.addWidget(self.tab3_plot_toggle_btn)
+        left_layout.addWidget(control_group)
+        left_layout.addStretch()
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+        right_layout.setSpacing(6)
+        splitter = QSplitter(Qt.Vertical)
+        right_layout.addWidget(splitter)
+
+        self.tab3_curve1_plot = pg.PlotWidget(title="Curve 1")
+        self.tab3_curve1_plot.showGrid(x=True, y=True)
+        self.tab3_curve1_plot.setLabel("bottom", "Time", units="s")
+        self.tab3_curve1_plot.setLabel("left", "Amplitude")
+        self.tab3_curve1_das_curve = self.tab3_curve1_plot.plot(pen=pg.mkPen("#1f77b4", width=2))
+        self.tab3_curve1_fip_curve = self.tab3_curve1_plot.plot(pen=pg.mkPen("#d62728", width=2))
+        splitter.addWidget(self.tab3_curve1_plot)
+
+        self.tab3_curve2_plot = pg.PlotWidget(title="Curve 2")
+        self.tab3_curve2_plot.showGrid(x=True, y=True)
+        self.tab3_curve2_plot.setLabel("bottom", "Time", units="s")
+        self.tab3_curve2_plot.setLabel("left", "Amplitude")
+        self.tab3_curve2_das_curve = self.tab3_curve2_plot.plot(pen=pg.mkPen("#1f77b4", width=2))
+        self.tab3_curve2_fip_curve = self.tab3_curve2_plot.plot(pen=pg.mkPen("#d62728", width=2))
+        splitter.addWidget(self.tab3_curve2_plot)
+
+        tab3_space_time_panel = QWidget()
+        tab3_space_time_layout = QVBoxLayout(tab3_space_time_panel)
+        tab3_space_time_layout.setContentsMargins(0, 0, 0, 0)
+        tab3_space_time_layout.setSpacing(4)
+
+        tab3_space_time_controls = QWidget()
+        tab3_space_time_controls_layout = QHBoxLayout(tab3_space_time_controls)
+        tab3_space_time_controls_layout.setContentsMargins(0, 0, 0, 0)
+        tab3_space_time_controls_layout.setSpacing(6)
+        tab3_space_time_controls_layout.addWidget(QLabel("Colormap"))
+        self.tab3_colormap_combo = QComboBox()
+        for text, value in self._tab3_colormap_options:
+            self.tab3_colormap_combo.addItem(text, value)
+        self.tab3_colormap_combo.setCurrentText("Jet")
+        tab3_space_time_controls_layout.addWidget(self.tab3_colormap_combo)
+        tab3_space_time_controls_layout.addWidget(QLabel("Vmin"))
+        self.tab3_vmin_spin = QDoubleSpinBox()
+        self.tab3_vmin_spin.setRange(-1e9, 1e9)
+        self.tab3_vmin_spin.setDecimals(6)
+        self.tab3_vmin_spin.setSingleStep(0.01)
+        self.tab3_vmin_spin.setValue(-0.1)
+        self.tab3_vmin_spin.setMinimumWidth(95)
+        tab3_space_time_controls_layout.addWidget(self.tab3_vmin_spin)
+        tab3_space_time_controls_layout.addWidget(QLabel("Vmax"))
+        self.tab3_vmax_spin = QDoubleSpinBox()
+        self.tab3_vmax_spin.setRange(-1e9, 1e9)
+        self.tab3_vmax_spin.setDecimals(6)
+        self.tab3_vmax_spin.setSingleStep(0.01)
+        self.tab3_vmax_spin.setValue(0.1)
+        self.tab3_vmax_spin.setMinimumWidth(95)
+        tab3_space_time_controls_layout.addWidget(self.tab3_vmax_spin)
+        tab3_space_time_controls_layout.addStretch()
+        tab3_space_time_layout.addWidget(tab3_space_time_controls)
+
+        tab3_space_time_plot_row = QWidget()
+        tab3_space_time_plot_layout = QHBoxLayout(tab3_space_time_plot_row)
+        tab3_space_time_plot_layout.setContentsMargins(0, 0, 0, 0)
+        tab3_space_time_plot_layout.setSpacing(6)
+
+        self.tab3_space_time_plot = pg.PlotWidget(title="DAS Space-Time")
+        self.tab3_space_time_plot.setLabel("bottom", "Time", units="s")
+        self.tab3_space_time_plot.setLabel("left", "Channel")
+        self.tab3_space_time_image = pg.ImageItem(axisOrder="row-major")
+        self.tab3_space_time_plot.addItem(self.tab3_space_time_image)
+        tab3_space_time_plot_layout.addWidget(self.tab3_space_time_plot, 1)
+
+        self.tab3_space_time_histogram = pg.HistogramLUTWidget()
+        self.tab3_space_time_histogram.setMinimumWidth(120)
+        self.tab3_space_time_histogram.setMaximumWidth(140)
+        self.tab3_space_time_histogram.setImageItem(self.tab3_space_time_image)
+        tab3_space_time_plot_layout.addWidget(self.tab3_space_time_histogram)
+
+        tab3_space_time_layout.addWidget(tab3_space_time_plot_row, 1)
+        splitter.addWidget(tab3_space_time_panel)
+        splitter.setSizes([250, 250, 400])
+
+        main_layout.addWidget(left_panel, stretch=1)
+        main_layout.addWidget(right_panel, stretch=3)
+
+        self._update_tab3_monitor_button_state(False)
+        self._update_tab3_plot_button_state(True)
+        self._update_tab3_storage_button_state(False)
+        self._apply_tab3_space_time_colormap()
+        self._apply_tab3_space_time_levels()
 
     def _create_tab4(self):
         """创建Tab4 - 信号定位界面（暂时禁用）"""
@@ -792,6 +1060,9 @@ class MainWindow(QMainWindow):
                 "trigger_storage": self.get_tab2_storage_settings(),
             }
 
+        if hasattr(self, 'tab3_ip_edit'):
+            config["tab3"] = self.get_tab3_settings()
+
         return config
 
     def update_connection_status(self, connected: bool, message: str):
@@ -891,6 +1162,346 @@ class MainWindow(QMainWindow):
             "post_trigger_seconds": self.tab2_post_trigger_spin.value(),
             "path": self.tab2_storage_path_edit.text(),
         }
+
+    def get_tab3_settings(self) -> Dict[str, Any]:
+        """Return the current Tab3 DAS settings."""
+        return {
+            "communication": {
+                "ip": self.tab3_ip_edit.text(),
+                "port": self.tab3_port_spin.value(),
+            },
+            "plot": {
+                "curve1_type": self.tab3_curve1_combo.currentText(),
+                "curve2_type": self.tab3_curve2_combo.currentText(),
+                "das_channel": self.tab3_das_channel_spin.value(),
+                "display_seconds": self.tab3_display_seconds_spin.value(),
+                "apply_filter": self.tab3_filter_enable_check.isChecked(),
+                "low_hz": self.tab3_low_freq_spin.value(),
+                "high_hz": self.tab3_high_freq_spin.value(),
+                "channel_start": self.tab3_channel_start_spin.value(),
+                "channel_end": self.tab3_channel_end_spin.value(),
+                "time_downsample": self.tab3_time_downsample_spin.value(),
+                "space_downsample": self.tab3_space_downsample_spin.value(),
+                "plot_enabled": self.is_tab3_plot_enabled(),
+                "colormap": self.tab3_colormap_combo.currentData(),
+                "vmin": self.tab3_vmin_spin.value(),
+                "vmax": self.tab3_vmax_spin.value(),
+            },
+            "storage": {
+                "enabled": self.tab3_storage_toggle_btn.isChecked(),
+                "path": self.tab3_storage_path_edit.text(),
+                "interval_seconds": self.tab3_storage_interval_spin.value(),
+                "cache_seconds": self.tab3_cache_seconds_spin.value(),
+            },
+        }
+
+    def update_tab3_connection_status(self, connected: bool, message: str):
+        """Update Tab3 DAS connection state."""
+        self.tab3_conn_status_label.setText("Connected" if connected else "Disconnected")
+        self.tab3_conn_status_label.setStyleSheet(
+            "color: green; font-weight: bold;" if connected else "color: red; font-weight: bold;"
+        )
+        self.status_bar.showMessage(message, 3000)
+
+    def update_tab3_header_status(self, payload: Dict[str, Any]):
+        """Update Tab3 header labels."""
+        self.tab3_channel_count_label.setText(str(payload.get("channel_count", "-")))
+        sample_rate_hz = payload.get("sample_rate_hz", "-")
+        self.tab3_sample_rate_label.setText(f"{sample_rate_hz} Hz")
+        self.tab3_data_bytes_label.setText(str(payload.get("data_bytes", "-")))
+        duration = payload.get("packet_duration_seconds", "-")
+        self.tab3_packet_duration_label.setText(f"{duration} s")
+        self.tab3_last_comm_label.setText(str(payload.get("comm_count", "-")))
+
+    def update_tab3_packet_statistics(self, stats: Dict[str, Any]):
+        """Update Tab3 packet counters."""
+        self.tab3_packet_count_label.setText(str(stats.get("packets_received", 0)))
+
+    def update_tab3_alignment_status(self, payload: Dict[str, Any]):
+        """Update Tab3 alignment summary labels."""
+        self.tab3_align_fip_comm_label.setText(str(payload.get("fip_last_comm_count", -1)))
+        self.tab3_align_das_comm_label.setText(str(payload.get("das_last_comm_count", -1)))
+        self.tab3_alignment_status_label.setText(str(payload.get("alignment_status", "waiting")))
+        self.tab3_fip_missing_label.setText(str(payload.get("fip_missing_count", 0)))
+        self.tab3_das_missing_label.setText(str(payload.get("das_missing_count", 0)))
+        gaps = payload.get("missing_ranges", [])
+        self.tab3_missing_ranges_label.setText(", ".join(gaps) if gaps else "-")
+
+    def update_tab3_storage_status(self, path: str):
+        """Show the latest Tab3 storage file path."""
+        self.tab3_last_storage_label.setText(path)
+
+    def update_tab3_fip_curve(self, comm_count: int, values, sample_rate_hz: float):
+        """Update cached FIP comparison curves shown in Tab3."""
+        if len(values) == 0 or not self.is_tab3_plot_enabled():
+            return
+        times = (comm_count * 0.2) + np.arange(len(values), dtype=np.float64) / max(sample_rate_hz, 1.0)
+        self._render_tab3_curve(self.tab3_curve1_fip_curve, self.tab3_curve1_combo.currentText(), times, values, "FIP")
+        self._render_tab3_curve(self.tab3_curve2_fip_curve, self.tab3_curve2_combo.currentText(), times, values, "FIP")
+
+    def update_tab3_plot_payload(self, payload: Dict[str, Any]):
+        """Apply the latest DAS plot payload to Tab3 widgets."""
+        self.update_tab3_header_status(payload.get("header", {}))
+        if not self.is_tab3_plot_enabled():
+            return
+        das_times = payload.get("das_curve_time", [])
+        das_values = payload.get("das_curve_values", [])
+        self._render_tab3_curve(self.tab3_curve1_das_curve, self.tab3_curve1_combo.currentText(), das_times, das_values, "DAS Channel")
+        self._render_tab3_curve(self.tab3_curve2_das_curve, self.tab3_curve2_combo.currentText(), das_times, das_values, "DAS Channel")
+
+        matrix = payload.get("space_time_matrix")
+        x_axis = payload.get("space_time_x")
+        y_axis = payload.get("space_time_y")
+        if matrix is None or len(np.shape(matrix)) != 2 or matrix.size == 0:
+            self._reset_tab3_space_time_image()
+            return
+        matrix = np.asarray(matrix, dtype=np.float64)
+        levels = self._compute_tab3_space_time_levels(matrix)
+        x_scale = 1.0
+        x_offset = 0.0
+        if x_axis is not None and len(x_axis) > 1:
+            x_scale = float(x_axis[1] - x_axis[0])
+            x_offset = float(x_axis[0])
+        y_scale = 1.0
+        y_offset = 0.0
+        if y_axis is not None and len(y_axis) > 1:
+            y_scale = float(y_axis[1] - y_axis[0])
+            y_offset = float(y_axis[0])
+        x_width = max(x_scale, 1e-12) * matrix.shape[1]
+        y_height = max(y_scale, 1e-12) * matrix.shape[0]
+        if not self._tab3_space_time_levels_locked:
+            self._set_tab3_space_time_levels(levels[0], levels[1], lock=False)
+            levels = (self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value())
+        else:
+            levels = (self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value())
+        self.tab3_space_time_image.setImage(matrix, autoLevels=False, levels=levels)
+        self.tab3_space_time_image.setRect(x_offset, y_offset, x_width, y_height)
+        self._apply_tab3_space_time_levels()
+
+    def reset_tab3_views(self):
+        """Clear Tab3 plots and status labels."""
+        self.tab3_curve1_das_curve.setData([], [])
+        self.tab3_curve1_fip_curve.setData([], [])
+        self.tab3_curve2_das_curve.setData([], [])
+        self.tab3_curve2_fip_curve.setData([], [])
+        self._reset_tab3_space_time_image()
+        self.tab3_last_storage_label.setText("-")
+        self.tab3_packet_count_label.setText("0")
+        self.tab3_last_comm_label.setText("-")
+        self.tab3_missing_ranges_label.setText("-")
+
+    def show_tab3_error(self, message: str):
+        """Show one Tab3-specific error popup."""
+        self.status_bar.showMessage(message, 5000)
+        msg_box = QMessageBox(self)
+        msg_box.setIcon(QMessageBox.Warning)
+        msg_box.setWindowTitle("Tab3 Warning")
+        msg_box.setText(message)
+        msg_box.exec_()
+
+    def _compute_tab3_space_time_levels(self, matrix: np.ndarray) -> Tuple[float, float]:
+        """Build stable display levels for the Tab3 space-time float image."""
+        finite_values = matrix[np.isfinite(matrix)]
+        if finite_values.size == 0:
+            return (0.0, 1.0)
+        low = float(np.percentile(finite_values, 1.0))
+        high = float(np.percentile(finite_values, 99.0))
+        if not np.isfinite(low) or not np.isfinite(high) or low >= high:
+            low = float(np.min(finite_values))
+            high = float(np.max(finite_values))
+        if not np.isfinite(low) or not np.isfinite(high) or low >= high:
+            center = float(finite_values[0])
+            return (center - 0.5, center + 0.5)
+        return (low, high)
+
+    def _create_tab3_custom_colormap(self, name: str):
+        """Create a small set of custom colormaps used by Tab3."""
+        gradients = {
+            "jet": np.array([
+                [0, 0, 127],
+                [0, 0, 255],
+                [0, 127, 255],
+                [0, 255, 255],
+                [127, 255, 127],
+                [255, 255, 0],
+                [255, 127, 0],
+                [255, 0, 0],
+                [127, 0, 0],
+            ]),
+            "hot": np.array([
+                [0, 0, 0],
+                [120, 0, 0],
+                [220, 0, 0],
+                [255, 80, 0],
+                [255, 180, 0],
+                [255, 255, 0],
+                [255, 255, 180],
+                [255, 255, 255],
+            ]),
+            "cool": np.array([
+                [0, 255, 255],
+                [80, 200, 255],
+                [120, 150, 255],
+                [180, 100, 255],
+                [255, 0, 255],
+            ]),
+            "gray": np.array([
+                [0, 0, 0],
+                [255, 255, 255],
+            ]),
+            "seismic": np.array([
+                [0, 0, 90],
+                [0, 0, 255],
+                [180, 180, 255],
+                [255, 255, 255],
+                [255, 150, 150],
+                [255, 0, 0],
+                [90, 0, 0],
+            ]),
+        }
+        colors = gradients.get(name)
+        if colors is None:
+            return None
+        return pg.ColorMap(np.linspace(0.0, 1.0, len(colors)), colors)
+
+    def _get_tab3_colormap(self):
+        """Get the selected Tab3 colormap object."""
+        name = self.tab3_colormap_combo.currentData()
+        try:
+            return pg.colormap.get(name)
+        except Exception:
+            return self._create_tab3_custom_colormap(name)
+
+    def _apply_tab3_space_time_colormap(self):
+        """Apply the selected colormap to the image and histogram."""
+        colormap = self._get_tab3_colormap()
+        if colormap is None:
+            return
+        self.tab3_space_time_image.setColorMap(colormap)
+        if hasattr(self, "tab3_space_time_histogram"):
+            self.tab3_space_time_histogram.gradient.setColorMap(colormap)
+
+    def _set_tab3_space_time_levels(self, vmin: float, vmax: float, lock: bool = True):
+        """Update Tab3 vmin/vmax controls safely."""
+        if vmin >= vmax:
+            center = (vmin + vmax) * 0.5
+            vmin = center - 0.5
+            vmax = center + 0.5
+        self.tab3_vmin_spin.blockSignals(True)
+        self.tab3_vmax_spin.blockSignals(True)
+        self.tab3_vmin_spin.setValue(vmin)
+        self.tab3_vmax_spin.setValue(vmax)
+        self.tab3_vmin_spin.blockSignals(False)
+        self.tab3_vmax_spin.blockSignals(False)
+        self._tab3_space_time_levels_locked = lock
+
+    def _apply_tab3_space_time_levels(self):
+        """Apply the current vmin/vmax settings to the Tab3 image and histogram."""
+        vmin = self.tab3_vmin_spin.value()
+        vmax = self.tab3_vmax_spin.value()
+        if vmin >= vmax:
+            vmax = vmin + 1e-6
+            self._set_tab3_space_time_levels(vmin, vmax)
+            vmin = self.tab3_vmin_spin.value()
+            vmax = self.tab3_vmax_spin.value()
+        self.tab3_space_time_image.setLevels((vmin, vmax))
+        if hasattr(self, "tab3_space_time_histogram"):
+            self.tab3_space_time_histogram.setLevels(vmin, vmax)
+
+    def _build_tab3_toggle_button_style(self, checked: bool, active_color: str, inactive_color: str) -> str:
+        """Return a shared stylesheet for Tab3 checkable buttons."""
+        background = active_color if checked else inactive_color
+        hover = active_color if checked else inactive_color
+        return f"""
+            QPushButton {{
+                font-size: 16px;
+                font-weight: bold;
+                padding: 10px 12px;
+                background-color: {background};
+                color: white;
+                border: none;
+                border-radius: 6px;
+            }}
+            QPushButton:hover {{
+                background-color: {hover};
+            }}
+            QPushButton:pressed {{
+                background-color: {background};
+            }}
+        """
+
+    def _update_tab3_monitor_button_state(self, active: bool):
+        """Refresh Tab3 monitoring button text and style."""
+        self.tab3_start_stop_btn.blockSignals(True)
+        self.tab3_start_stop_btn.setChecked(active)
+        self.tab3_start_stop_btn.blockSignals(False)
+        self.tab3_start_stop_btn.setText("Stop DAS Monitoring" if active else "Start DAS Monitoring")
+        self.tab3_start_stop_btn.setStyleSheet(
+            self._build_tab3_toggle_button_style(active, "#d9534f", "#2e8b57")
+        )
+
+    def _update_tab3_plot_button_state(self, enabled: bool):
+        """Refresh the plot enable button text and style."""
+        self.tab3_plot_toggle_btn.blockSignals(True)
+        self.tab3_plot_toggle_btn.setChecked(enabled)
+        self.tab3_plot_toggle_btn.blockSignals(False)
+        self.tab3_plot_toggle_btn.setText("Plot Updates: ON" if enabled else "Plot Updates: OFF")
+        self.tab3_plot_toggle_btn.setStyleSheet(
+            self._build_tab3_toggle_button_style(enabled, "#1f77b4", "#6c757d")
+        )
+
+    def _update_tab3_storage_button_state(self, enabled: bool):
+        """Refresh the joint storage button text and style."""
+        self.tab3_storage_toggle_btn.blockSignals(True)
+        self.tab3_storage_toggle_btn.setChecked(enabled)
+        self.tab3_storage_toggle_btn.blockSignals(False)
+        self.tab3_storage_toggle_btn.setText("Joint Storage: ON" if enabled else "Joint Storage: OFF")
+        self.tab3_storage_toggle_btn.setStyleSheet(
+            self._build_tab3_toggle_button_style(enabled, "#9467bd", "#6c757d")
+        )
+
+    def _on_tab3_colormap_changed(self, _text: str):
+        """Handle Tab3 space-time colormap changes."""
+        self._apply_tab3_space_time_colormap()
+        self._emit_tab3_settings_changed()
+
+    def _on_tab3_vmin_changed(self, value: float):
+        """Handle manual Tab3 vmin changes."""
+        self._tab3_space_time_levels_locked = True
+        if value >= self.tab3_vmax_spin.value():
+            self._set_tab3_space_time_levels(value, value + 1e-6)
+        self._apply_tab3_space_time_levels()
+        self._emit_tab3_settings_changed()
+
+    def _on_tab3_vmax_changed(self, value: float):
+        """Handle manual Tab3 vmax changes."""
+        self._tab3_space_time_levels_locked = True
+        if value <= self.tab3_vmin_spin.value():
+            self._set_tab3_space_time_levels(value - 1e-6, value)
+        self._apply_tab3_space_time_levels()
+        self._emit_tab3_settings_changed()
+
+    def is_tab3_plot_enabled(self) -> bool:
+        """Return whether Tab3 plot widgets should update."""
+        return self.tab3_plot_toggle_btn.isChecked()
+
+    def _reset_tab3_space_time_image(self):
+        """Restore the Tab3 space-time image to a known empty state."""
+        empty = np.zeros((1, 1), dtype=np.float64)
+        self.tab3_space_time_image.setImage(
+            empty,
+            autoLevels=False,
+            levels=(self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value()),
+        )
+        self.tab3_space_time_image.setRect(0.0, 0.0, 1.0, 1.0)
+        self._apply_tab3_space_time_levels()
+
+    def _render_tab3_curve(self, curve_item, curve_mode: str, times, values, expected_mode: str):
+        """Render one Tab3 line only when the current UI mode matches."""
+        if curve_mode != expected_mode:
+            curve_item.setData([], [])
+            return
+        curve_item.setData(times, values)
 
     def clear_alarm_table(self):
         """Clear the alarm table and counters."""
@@ -1065,7 +1676,69 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'clear_alarms_btn'):
                 self.clear_alarms_btn.clicked.connect(self.tab2_clear_alarms_requested.emit)
 
+            if hasattr(self, 'tab3_start_stop_btn'):
+                self.tab3_start_stop_btn.toggled.connect(self._update_tab3_monitor_button_state)
+                self.tab3_start_stop_btn.clicked.connect(self._toggle_tab3_monitoring)
+            if hasattr(self, 'tab3_plot_toggle_btn'):
+                self.tab3_plot_toggle_btn.toggled.connect(self._update_tab3_plot_button_state)
+                self.tab3_plot_toggle_btn.toggled.connect(self._emit_tab3_settings_changed)
+            if hasattr(self, 'tab3_storage_toggle_btn'):
+                self.tab3_storage_toggle_btn.toggled.connect(self._update_tab3_storage_button_state)
+                self.tab3_storage_toggle_btn.toggled.connect(self._emit_tab3_settings_changed)
+            if hasattr(self, 'tab3_colormap_combo'):
+                self.tab3_colormap_combo.currentTextChanged.connect(self._on_tab3_colormap_changed)
+            if hasattr(self, 'tab3_vmin_spin'):
+                self.tab3_vmin_spin.valueChanged.connect(self._on_tab3_vmin_changed)
+            if hasattr(self, 'tab3_vmax_spin'):
+                self.tab3_vmax_spin.valueChanged.connect(self._on_tab3_vmax_changed)
+
+            tab3_widgets = [
+                getattr(self, 'tab3_ip_edit', None),
+                getattr(self, 'tab3_port_spin', None),
+                getattr(self, 'tab3_curve1_combo', None),
+                getattr(self, 'tab3_curve2_combo', None),
+                getattr(self, 'tab3_das_channel_spin', None),
+                getattr(self, 'tab3_display_seconds_spin', None),
+                getattr(self, 'tab3_filter_enable_check', None),
+                getattr(self, 'tab3_low_freq_spin', None),
+                getattr(self, 'tab3_high_freq_spin', None),
+                getattr(self, 'tab3_channel_start_spin', None),
+                getattr(self, 'tab3_channel_end_spin', None),
+                getattr(self, 'tab3_time_downsample_spin', None),
+                getattr(self, 'tab3_space_downsample_spin', None),
+                getattr(self, 'tab3_storage_path_edit', None),
+                getattr(self, 'tab3_storage_interval_spin', None),
+                getattr(self, 'tab3_cache_seconds_spin', None),
+            ]
+            for widget in tab3_widgets:
+                if widget is None:
+                    continue
+                if hasattr(widget, 'valueChanged'):
+                    widget.valueChanged.connect(self._emit_tab3_settings_changed)
+                elif hasattr(widget, 'currentTextChanged'):
+                    widget.currentTextChanged.connect(self._emit_tab3_settings_changed)
+                elif hasattr(widget, 'toggled'):
+                    widget.toggled.connect(self._emit_tab3_settings_changed)
+                elif hasattr(widget, 'textChanged'):
+                    widget.textChanged.connect(self._emit_tab3_settings_changed)
+
         except Exception as e:
             import logging
             logger = logging.getLogger(__name__)
             logger.error(f"Error setting up connections: {e}")
+
+    def _toggle_tab3_monitoring(self):
+        """Toggle the independent Tab3 DAS monitoring state."""
+        if self.tab3_start_stop_btn.isChecked():
+            self.tab3_start_requested.emit()
+        else:
+            self.tab3_stop_requested.emit()
+
+    def set_tab3_monitoring_active(self, active: bool):
+        """Sync the Tab3 monitoring button with runtime state."""
+        self._update_tab3_monitor_button_state(active)
+
+    def _emit_tab3_settings_changed(self):
+        """Emit a unified Tab3 settings-changed signal."""
+        if hasattr(self, 'tab3_settings_changed'):
+            self.tab3_settings_changed.emit()

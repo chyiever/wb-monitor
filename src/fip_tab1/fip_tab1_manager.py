@@ -20,6 +20,7 @@ Date: 2026-03-12
 
 import time
 import logging
+import math
 import numpy as np
 from queue import Queue, Empty, Full
 from dataclasses import dataclass
@@ -27,6 +28,8 @@ from typing import Optional, Dict, Any
 from PyQt5.QtCore import QThread, pyqtSignal, QObject, QTimer
 from PyQt5.QtWidgets import QApplication
 import pyqtgraph as pg
+
+from config import PACKET_DURATION
 
 
 @dataclass
@@ -55,6 +58,7 @@ class StorageRequest:
     data: np.ndarray
     comm_count: int
     timestamp: float
+    sample_rate: float
     data_type: str = "phase_unwrapped"
 
 
@@ -430,22 +434,28 @@ class PSDPlotThread(QThread):
 
 
 class DataStorageThread(QThread):
-    """数据存储线程"""
+    """Persist aggregated Tab1 data windows to NPZ."""
 
-    def __init__(self, storage_path: str = "D:/PCCP/FIPdata"):
+    STORAGE_DOWNSAMPLE_FACTOR = 5
+    STORAGE_SAMPLE_RATE = 1000000.0 / STORAGE_DOWNSAMPLE_FACTOR
+
+    def __init__(self, storage_path: str = "D:/PCCP/FIPdata", storage_interval_seconds: float = 30.0):
         super().__init__()
-        self.input_queue = Queue(maxsize=50)  # 较大的存储队列
+        self.input_queue = Queue(maxsize=50)
         self.running = False
         self.enabled = False
 
         self.storage_path = storage_path
-        self.storage_interval = 10  # 每10个包存储一次
-        self.packet_count = 0
+        self.storage_interval_seconds = float(storage_interval_seconds)
+        self.storage_interval_packets = 1
+        self.buffered_requests = []
+        self.buffered_sample_count = 0
 
         self.logger = logging.getLogger(f'{__name__}.DataStorageThread')
+        self.set_storage_interval_seconds(storage_interval_seconds)
 
     def add_storage_request(self, request: StorageRequest):
-        """添加存储请求"""
+        """Add a storage request without blocking the producer."""
         if not self.enabled:
             return
 
@@ -456,73 +466,122 @@ class DataStorageThread(QThread):
             self.logger.warning("Storage queue full, dropping data")
 
     def set_enabled(self, enabled: bool):
-        """启用/禁用存储"""
+        """Enable or disable realtime storage."""
         self.enabled = enabled
-        if enabled:
-            self.packet_count = 0
+        self._clear_buffer()
 
     def set_storage_path(self, path: str):
-        """设置存储路径"""
+        """Update the target storage path."""
         self.storage_path = path
 
+    def set_storage_interval_seconds(self, interval_seconds: float):
+        """Set the storage window length in seconds."""
+        safe_seconds = max(float(interval_seconds), PACKET_DURATION)
+        packet_interval = max(1, int(math.ceil(safe_seconds / PACKET_DURATION)))
+        self.storage_interval_seconds = safe_seconds
+        self.storage_interval_packets = packet_interval
+        self._clear_buffer()
+        self.logger.info(
+            "Storage interval set to %.1fs (%d packet(s) at %.3fs/packet)",
+            self.storage_interval_seconds,
+            self.storage_interval_packets,
+            PACKET_DURATION,
+        )
+
+    def _clear_buffer(self):
+        self.buffered_requests = []
+        self.buffered_sample_count = 0
+
+    def _append_request(self, request: StorageRequest):
+        self.buffered_requests.append(request)
+        self.buffered_sample_count += len(request.data)
+
     def run(self):
-        """存储循环"""
+        """Storage loop."""
         self.running = True
         self.logger.info("Data storage thread started")
 
         while self.running:
             try:
                 request = self.input_queue.get(timeout=0.2)
-                if self.enabled:
-                    self.packet_count += 1
-                    # 控制存储频率
-                    if self.packet_count % self.storage_interval == 0:
-                        self._save_data(request)
+                if not self.enabled:
+                    continue
+
+                self._append_request(request)
+                if len(self.buffered_requests) >= self.storage_interval_packets:
+                    self._save_buffered_data()
 
             except Empty:
                 continue
             except Exception as e:
                 self.logger.error(f"Storage error: {e}")
 
-    def _save_data(self, request: StorageRequest):
-        """保存数据到文件"""
+        if self.enabled and self.buffered_requests:
+            self.logger.info(
+                "Flushing partial storage buffer with %d packet(s)",
+                len(self.buffered_requests),
+            )
+            self._save_buffered_data()
+
+    def _save_buffered_data(self):
+        """Save the currently buffered requests as one NPZ file."""
+        if not self.buffered_requests:
+            return
+
         try:
             from pathlib import Path
             from datetime import datetime
 
-            # 确保存储目录存在
+            requests = self.buffered_requests
+            self._clear_buffer()
+
+            phase_data = np.concatenate([req.data for req in requests])
+            first_request = requests[0]
+            last_request = requests[-1]
+            packet_count = len(requests)
+            sample_rate = float(first_request.sample_rate)
+            duration_seconds = 0.0 if sample_rate <= 0 else len(phase_data) / sample_rate
+
             base_path = Path(self.storage_path)
             base_path.mkdir(parents=True, exist_ok=True)
 
-            # 生成文件名
             now = datetime.now()
             date_str = now.strftime("%Y%m%d")
             time_str = now.strftime("%H%M%S_%f")[:-3]
-            filename = f"phase_data_{date_str}_{time_str}_#{request.comm_count:06d}.npz"
+            filename = f"phase_data_{date_str}_{time_str}_#{last_request.comm_count:06d}.npz"
             file_path = base_path / filename
 
-            # 保存NPZ格式
             np.savez_compressed(
                 file_path,
-                phase_data=request.data,
-                comm_count=request.comm_count,
-                timestamp=request.timestamp,
-                sample_rate=1000000.0,  # 原始采样率
+                phase_data=phase_data,
+                comm_count=last_request.comm_count,
+                timestamp=first_request.timestamp,
+                sample_rate=sample_rate,
                 data_info={
-                    'type': request.data_type,
-                    'length': len(request.data),
-                    'save_time': now.isoformat()
+                    'type': first_request.data_type,
+                    'length': int(len(phase_data)),
+                    'downsample_factor': self.STORAGE_DOWNSAMPLE_FACTOR,
+                    'packet_count': packet_count,
+                    'start_comm_count': first_request.comm_count,
+                    'end_comm_count': last_request.comm_count,
+                    'duration_seconds': duration_seconds,
+                    'save_time': now.isoformat(),
                 }
             )
 
-            if self.packet_count % 100 == 0:
-                self.logger.info(f"Saved data to {filename}")
+            self.logger.info(
+                "Saved data to %s (packets=%d, samples=%d, duration=%.1fs)",
+                filename,
+                packet_count,
+                len(phase_data),
+                duration_seconds,
+            )
 
         except Exception as e:
             self.logger.error(f"Error saving data: {e}")
 
     def stop(self):
-        """停止线程"""
+        """Stop the thread."""
         self.running = False
         self.logger.info("Data storage thread stopping")
 
@@ -674,12 +733,13 @@ class OptimizedTab1ThreadManager(QObject):
         # 发送到PSD绘图线程
         self.psd_plotter.add_processed_data(processed_data)
 
-        # 发送到存储线程（仅存储相位展开后的数据）
+        # Storage-only 5x downsampling after phase unwrapping
         storage_request = StorageRequest(
-            data=processed_data.unwrapped_data,
+            data=processed_data.unwrapped_data[::DataStorageThread.STORAGE_DOWNSAMPLE_FACTOR],
             comm_count=processed_data.comm_count,
             timestamp=processed_data.timestamp,
-            data_type="phase_unwrapped"
+            sample_rate=DataStorageThread.STORAGE_SAMPLE_RATE,
+            data_type="phase_unwrapped_downsampled"
         )
         self.storage_thread.add_storage_request(storage_request)
 
@@ -757,8 +817,12 @@ class OptimizedTab1ThreadManager(QObject):
         self.time_plotter.set_window_duration(duration)
 
     def update_storage_path(self, path: str):
-        """更新存储路径"""
+        """?????????"""
         self.storage_thread.set_storage_path(path)
+
+    def update_storage_interval(self, interval_seconds: float):
+        """??????????????"""
+        self.storage_thread.set_storage_interval_seconds(interval_seconds)
 
     def get_plot_status(self):
         """获取绘图状态（调试用）"""

@@ -31,6 +31,8 @@ from processing.signal_filter import SignalFilter
 from processing.downsampling import Downsampler
 from fip_tab1 import OptimizedTab1ThreadManager, PSDCalculator, RawDataPacket
 from fip_tab2 import FIPTab2Manager
+from alignment import AlignedSessionCoordinator
+from das_tab3 import DASTab3Manager
 
 # Import system configuration
 from config import (
@@ -89,6 +91,10 @@ class PCCPMonitorApp:
 
         # Independent Tab2 manager
         self.fip_tab2_manager = None
+        self.alignment_coordinator = None
+        self.tab3_manager = None
+        self.fip_monitoring_active = False
+        self.das_monitoring_active = False
 
         # Setup connections
         self._setup_connections()
@@ -203,8 +209,28 @@ class PCCPMonitorApp:
         # Connect storage control signals
         if hasattr(self.main_window, 'phase_storage_check'):
             self.main_window.phase_storage_check.toggled.connect(
-                lambda enabled: self._update_storage_settings(enabled,
-                    self.main_window.storage_path_edit.text() if hasattr(self.main_window, 'storage_path_edit') else "D:/PCCP/FIPdata"))
+                lambda enabled: self._update_storage_settings(
+                    enabled,
+                    self.main_window.storage_path_edit.text() if hasattr(self.main_window, 'storage_path_edit') else "D:/PCCP/FIPdata",
+                    self.main_window.storage_interval_spin.value() if hasattr(self.main_window, 'storage_interval_spin') else 30,
+                )
+            )
+        if hasattr(self.main_window, 'storage_interval_spin'):
+            self.main_window.storage_interval_spin.valueChanged.connect(
+                lambda interval: self._update_storage_settings(
+                    self.main_window.phase_storage_check.isChecked() if hasattr(self.main_window, 'phase_storage_check') else False,
+                    self.main_window.storage_path_edit.text() if hasattr(self.main_window, 'storage_path_edit') else "D:/PCCP/FIPdata",
+                    interval,
+                )
+            )
+        if hasattr(self.main_window, 'storage_path_edit'):
+            self.main_window.storage_path_edit.textChanged.connect(
+                lambda path: self._update_storage_settings(
+                    self.main_window.phase_storage_check.isChecked() if hasattr(self.main_window, 'phase_storage_check') else False,
+                    path,
+                    self.main_window.storage_interval_spin.value() if hasattr(self.main_window, 'storage_interval_spin') else 30,
+                )
+            )
 
         # Connect downsampling control
         if hasattr(self.main_window, 'downsample_spin'):
@@ -214,6 +240,12 @@ class PCCPMonitorApp:
             self.main_window.tab2_settings_changed.connect(self._sync_tab2_settings)
         if hasattr(self.main_window, 'tab2_clear_alarms_requested'):
             self.main_window.tab2_clear_alarms_requested.connect(self._clear_tab2_alarms)
+        if hasattr(self.main_window, 'tab3_start_requested'):
+            self.main_window.tab3_start_requested.connect(self._start_tab3_monitoring)
+        if hasattr(self.main_window, 'tab3_stop_requested'):
+            self.main_window.tab3_stop_requested.connect(self._stop_tab3_monitoring)
+        if hasattr(self.main_window, 'tab3_settings_changed'):
+            self.main_window.tab3_settings_changed.connect(self._sync_tab3_settings)
 
     def _initialize_processors(self):
         """Initialize data processing components."""
@@ -293,6 +325,11 @@ class PCCPMonitorApp:
             self.tab1_manager.data_processor.data_processed.connect(self.fip_tab2_manager.process_processed_data)
             self._sync_tab2_settings()
 
+            self.alignment_coordinator = AlignedSessionCoordinator(cache_seconds=10.0)
+            self.tab3_manager = DASTab3Manager(self.main_window, coordinator=self.alignment_coordinator)
+            self.tab1_manager.data_processor.data_processed.connect(self.tab3_manager.process_fip_processed_data)
+            self._sync_tab3_settings()
+
             self.logger.info("All processors initialized successfully")
 
         except Exception as e:
@@ -345,6 +382,7 @@ class PCCPMonitorApp:
         """Start the monitoring system."""
         try:
             self.logger.info("Starting monitoring system...")
+            self._ensure_alignment_session_started()
 
             # Reset processor states
             self.phase_unwrapper.reset()
@@ -367,6 +405,8 @@ class PCCPMonitorApp:
                 self.fip_tab2_manager.reset()
                 self._sync_tab2_settings()
 
+            self._sync_tab1_storage_settings()
+
             # Start TCP server
             if not self.tcp_server.start_server():
                 raise RuntimeError("Failed to start TCP server")
@@ -387,6 +427,7 @@ class PCCPMonitorApp:
             # 记录绘图状态（调试信息）
             plot_status = self.tab1_manager.get_plot_status()
             self.logger.info(f"Plot status after start: {plot_status}")
+            self.fip_monitoring_active = True
 
             self.logger.info("Monitoring system started successfully with optimized threads")
 
@@ -412,6 +453,8 @@ class PCCPMonitorApp:
             # 清空绘图控件
             self.main_window.time_plot.clear()
             self.main_window.psd_plot.clear()
+            self.fip_monitoring_active = False
+            self._maybe_stop_alignment_session()
 
             self.logger.info("Monitoring system stopped")
 
@@ -539,17 +582,71 @@ class PCCPMonitorApp:
         except Exception as e:
             self.logger.error(f"Error updating time parameters: {e}")
 
-    def _update_storage_settings(self, enabled: bool, path: str):
-        """更新存储设置"""
+    def _sync_tab1_storage_settings(self):
+        """Sync current Tab1 storage settings from UI to the storage thread."""
+        enabled = self.main_window.phase_storage_check.isChecked() if hasattr(self.main_window, 'phase_storage_check') else False
+        path = self.main_window.storage_path_edit.text() if hasattr(self.main_window, 'storage_path_edit') else "D:/PCCP/FIPdata"
+        interval_seconds = self.main_window.storage_interval_spin.value() if hasattr(self.main_window, 'storage_interval_spin') else 30
+        self._update_storage_settings(enabled, path, interval_seconds)
+
+    def _update_storage_settings(self, enabled: bool, path: str, interval_seconds: float):
+        """?????????"""
         try:
             if self.tab1_manager:
                 self.tab1_manager.toggle_storage(enabled)
+                self.tab1_manager.update_storage_interval(interval_seconds)
                 if path:
                     self.tab1_manager.update_storage_path(path)
-                self.logger.info(f"Storage {'enabled' if enabled else 'disabled'}, path: {path}")
+                self.logger.info(
+                    f"Storage {'enabled' if enabled else 'disabled'}, path: {path}, interval: {interval_seconds}s"
+                )
 
         except Exception as e:
             self.logger.error(f"Error updating storage settings: {e}")
+
+    def _start_tab3_monitoring(self):
+        """Start the independent DAS monitoring pipeline."""
+        try:
+            self.logger.info("Starting Tab3 DAS monitoring...")
+            self._ensure_alignment_session_started()
+            if self.tab3_manager:
+                self.tab3_manager.reset()
+                self._sync_tab3_settings()
+                if not self.tab3_manager.start():
+                    raise RuntimeError("Failed to start DAS TCP server")
+            self.das_monitoring_active = True
+            if hasattr(self.main_window, 'set_tab3_monitoring_active'):
+                self.main_window.set_tab3_monitoring_active(True)
+        except Exception as e:
+            self.logger.error(f"Failed to start Tab3 monitoring: {e}")
+            self.das_monitoring_active = False
+            if hasattr(self.main_window, 'set_tab3_monitoring_active'):
+                self.main_window.set_tab3_monitoring_active(False)
+            if hasattr(self.main_window, 'show_tab3_error'):
+                self.main_window.show_tab3_error(f"Failed to start DAS monitoring: {e}")
+
+    def _stop_tab3_monitoring(self):
+        """Stop the independent DAS monitoring pipeline."""
+        try:
+            self.logger.info("Stopping Tab3 DAS monitoring...")
+            if self.tab3_manager:
+                self.tab3_manager.stop()
+            self.das_monitoring_active = False
+            if hasattr(self.main_window, 'set_tab3_monitoring_active'):
+                self.main_window.set_tab3_monitoring_active(False)
+            self._maybe_stop_alignment_session()
+        except Exception as e:
+            self.logger.error(f"Failed to stop Tab3 monitoring: {e}")
+
+    def _ensure_alignment_session_started(self):
+        """Start a shared alignment session if neither source is active yet."""
+        if self.alignment_coordinator and not (self.fip_monitoring_active or self.das_monitoring_active):
+            self.alignment_coordinator.start_session()
+
+    def _maybe_stop_alignment_session(self):
+        """Stop the shared alignment session once both sources are idle."""
+        if self.alignment_coordinator and not self.fip_monitoring_active and not self.das_monitoring_active:
+            self.alignment_coordinator.stop_session()
 
     def _sync_tab2_settings(self):
         """Push the latest Tab2 UI settings into the independent Tab2 manager."""
@@ -558,6 +655,14 @@ class PCCPMonitorApp:
                 self.fip_tab2_manager.sync_from_ui()
         except Exception as e:
             self.logger.error(f"Error syncing Tab2 settings: {e}")
+
+    def _sync_tab3_settings(self):
+        """Push the latest Tab3 UI settings into the independent Tab3 manager."""
+        try:
+            if self.tab3_manager:
+                self.tab3_manager.sync_from_ui()
+        except Exception as e:
+            self.logger.error(f"Error syncing Tab3 settings: {e}")
 
     def _clear_tab2_alarms(self):
         """Clear the Tab2 alarm table."""
@@ -691,6 +796,9 @@ class PCCPMonitorApp:
         try:
             if self.fip_tab2_manager:
                 self.fip_tab2_manager.stop()
+
+            if self.tab3_manager:
+                self.tab3_manager.stop()
 
             if self.tcp_server:
                 self.tcp_server.stop_server()
