@@ -173,7 +173,7 @@ class PCCPMonitorApp:
             "storage": {
                 "realtime": {
                     "enabled": False,
-                    "interval": 30,
+                    "interval": 10,
                     "downsample_factor": 5,
                     "path": "D:/PCCP/FIPdata"
                 },
@@ -212,7 +212,7 @@ class PCCPMonitorApp:
                 lambda enabled: self._update_storage_settings(
                     enabled,
                     self.main_window.storage_path_edit.text() if hasattr(self.main_window, 'storage_path_edit') else "D:/PCCP/FIPdata",
-                    self.main_window.storage_interval_spin.value() if hasattr(self.main_window, 'storage_interval_spin') else 30,
+                    self.main_window.storage_interval_spin.value() if hasattr(self.main_window, 'storage_interval_spin') else 10,
                 )
             )
         if hasattr(self.main_window, 'storage_interval_spin'):
@@ -228,7 +228,7 @@ class PCCPMonitorApp:
                 lambda path: self._update_storage_settings(
                     self.main_window.phase_storage_check.isChecked() if hasattr(self.main_window, 'phase_storage_check') else False,
                     path,
-                    self.main_window.storage_interval_spin.value() if hasattr(self.main_window, 'storage_interval_spin') else 30,
+                    self.main_window.storage_interval_spin.value() if hasattr(self.main_window, 'storage_interval_spin') else 10,
                 )
             )
 
@@ -586,7 +586,7 @@ class PCCPMonitorApp:
         """Sync current Tab1 storage settings from UI to the storage thread."""
         enabled = self.main_window.phase_storage_check.isChecked() if hasattr(self.main_window, 'phase_storage_check') else False
         path = self.main_window.storage_path_edit.text() if hasattr(self.main_window, 'storage_path_edit') else "D:/PCCP/FIPdata"
-        interval_seconds = self.main_window.storage_interval_spin.value() if hasattr(self.main_window, 'storage_interval_spin') else 30
+        interval_seconds = self.main_window.storage_interval_spin.value() if hasattr(self.main_window, 'storage_interval_spin') else 10
         self._update_storage_settings(enabled, path, interval_seconds)
 
     def _update_storage_settings(self, enabled: bool, path: str, interval_seconds: float):

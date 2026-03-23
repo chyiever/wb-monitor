@@ -25,6 +25,7 @@ import numpy as np
 from queue import Queue, Empty, Full
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
 from PyQt5.QtCore import QThread, pyqtSignal, QObject, QTimer
 from PyQt5.QtWidgets import QApplication
 import pyqtgraph as pg
@@ -439,36 +440,50 @@ class DataStorageThread(QThread):
     STORAGE_DOWNSAMPLE_FACTOR = 5
     STORAGE_SAMPLE_RATE = 1000000.0 / STORAGE_DOWNSAMPLE_FACTOR
 
-    def __init__(self, storage_path: str = "D:/PCCP/FIPdata", storage_interval_seconds: float = 30.0):
+    def __init__(self, storage_path: str = "D:/PCCP/FIPdata", storage_interval_seconds: float = 10.0):
         super().__init__()
-        self.input_queue = Queue(maxsize=50)
+        self.input_queue = Queue(maxsize=500)
         self.running = False
         self.enabled = False
 
         self.storage_path = storage_path
         self.storage_interval_seconds = float(storage_interval_seconds)
-        self.storage_interval_packets = 1
+        self.target_chunk_samples = 0
         self.buffered_requests = []
         self.buffered_sample_count = 0
+        self.current_chunk_start_comm_count = None
+        self.current_chunk_last_comm_count = None
+        self.run_started_at = None
+        self.saved_file_count = 0
+        self.saved_sample_count = 0
 
         self.logger = logging.getLogger(f'{__name__}.DataStorageThread')
         self.set_storage_interval_seconds(storage_interval_seconds)
 
     def add_storage_request(self, request: StorageRequest):
-        """Add a storage request without blocking the producer."""
+        """Add a storage request without dropping data when the queue is busy."""
         if not self.enabled:
             return
 
         try:
-            if not self.input_queue.full():
-                self.input_queue.put(request, block=False)
+            if self.input_queue.full():
+                self.logger.warning(
+                    "Storage queue is full, waiting to preserve packet #%d",
+                    request.comm_count,
+                )
+            self.input_queue.put(request, block=True)
         except Full:
-            self.logger.warning("Storage queue full, dropping data")
+            self.logger.error("Storage queue remained full, failed to enqueue packet #%d", request.comm_count)
 
     def set_enabled(self, enabled: bool):
         """Enable or disable realtime storage."""
+        if self.enabled == enabled:
+            return
+
         self.enabled = enabled
-        self._clear_buffer()
+        if not enabled:
+            self._flush_buffered_data()
+            self._clear_buffer()
 
     def set_storage_path(self, path: str):
         """Update the target storage path."""
@@ -476,23 +491,39 @@ class DataStorageThread(QThread):
 
     def set_storage_interval_seconds(self, interval_seconds: float):
         """Set the storage window length in seconds."""
-        safe_seconds = max(float(interval_seconds), PACKET_DURATION)
-        packet_interval = max(1, int(math.ceil(safe_seconds / PACKET_DURATION)))
+        safe_seconds = max(float(interval_seconds), 0.1)
         self.storage_interval_seconds = safe_seconds
-        self.storage_interval_packets = packet_interval
-        self._clear_buffer()
+        self.target_chunk_samples = max(1, int(round(safe_seconds * self.STORAGE_SAMPLE_RATE)))
         self.logger.info(
-            "Storage interval set to %.1fs (%d packet(s) at %.3fs/packet)",
+            "Storage interval set to %.1fs (%d samples at %.0fHz)",
             self.storage_interval_seconds,
-            self.storage_interval_packets,
-            PACKET_DURATION,
+            self.target_chunk_samples,
+            self.STORAGE_SAMPLE_RATE,
         )
+        self._save_completed_chunks()
+
+    def begin_run_cycle(self):
+        """Reset per-run naming and sample-offset state."""
+        self.run_started_at = datetime.now()
+        self.saved_file_count = 0
+        self.saved_sample_count = 0
+        self._clear_buffer()
+
+    def end_run_cycle(self):
+        """Flush any remaining samples at the end of a monitoring cycle."""
+        self._flush_buffered_data()
+        self.run_started_at = None
 
     def _clear_buffer(self):
         self.buffered_requests = []
         self.buffered_sample_count = 0
+        self.current_chunk_start_comm_count = None
+        self.current_chunk_last_comm_count = None
 
     def _append_request(self, request: StorageRequest):
+        if self.current_chunk_start_comm_count is None:
+            self.current_chunk_start_comm_count = request.comm_count
+        self.current_chunk_last_comm_count = request.comm_count
         self.buffered_requests.append(request)
         self.buffered_sample_count += len(request.data)
 
@@ -508,73 +539,135 @@ class DataStorageThread(QThread):
                     continue
 
                 self._append_request(request)
-                if len(self.buffered_requests) >= self.storage_interval_packets:
-                    self._save_buffered_data()
+                self._save_completed_chunks()
 
             except Empty:
                 continue
             except Exception as e:
                 self.logger.error(f"Storage error: {e}")
 
-        if self.enabled and self.buffered_requests:
-            self.logger.info(
-                "Flushing partial storage buffer with %d packet(s)",
-                len(self.buffered_requests),
-            )
-            self._save_buffered_data()
+        self._flush_buffered_data()
 
-    def _save_buffered_data(self):
-        """Save the currently buffered requests as one NPZ file."""
-        if not self.buffered_requests:
+    def _save_completed_chunks(self):
+        """Persist every full storage chunk currently available in the buffer."""
+        while self.buffered_sample_count >= self.target_chunk_samples:
+            chunk_data, start_comm_count, end_comm_count = self._extract_chunk(self.target_chunk_samples)
+            self._save_chunk(chunk_data, start_comm_count, end_comm_count)
+
+    def _flush_buffered_data(self):
+        """Persist any remaining buffered samples when storage stops."""
+        if not self.buffered_requests or self.buffered_sample_count <= 0:
             return
 
+        self.logger.info(
+            "Flushing partial storage buffer with %d sample(s)",
+            self.buffered_sample_count,
+        )
+        chunk_data, start_comm_count, end_comm_count = self._extract_chunk(self.buffered_sample_count)
+        self._save_chunk(chunk_data, start_comm_count, end_comm_count)
+
+    def _extract_chunk(self, target_samples: int):
+        """Pop exactly target_samples from the buffered request list."""
+        if target_samples <= 0 or self.buffered_sample_count < target_samples:
+            raise ValueError("Insufficient buffered data for requested chunk size")
+
+        chunk_parts = []
+        samples_needed = target_samples
+        start_comm_count = self.current_chunk_start_comm_count
+        end_comm_count = self.current_chunk_last_comm_count
+
+        while samples_needed > 0 and self.buffered_requests:
+            request = self.buffered_requests[0]
+            request_length = len(request.data)
+
+            if request_length <= samples_needed:
+                chunk_parts.append(request.data)
+                end_comm_count = request.comm_count
+                self.buffered_requests.pop(0)
+                self.buffered_sample_count -= request_length
+                samples_needed -= request_length
+            else:
+                chunk_parts.append(request.data[:samples_needed])
+                end_comm_count = request.comm_count
+                remaining_data = request.data[samples_needed:]
+                self.buffered_requests[0] = StorageRequest(
+                    data=remaining_data,
+                    comm_count=request.comm_count,
+                    timestamp=request.timestamp,
+                    sample_rate=request.sample_rate,
+                    data_type=request.data_type,
+                )
+                self.buffered_sample_count -= samples_needed
+                samples_needed = 0
+
+        if samples_needed != 0:
+            raise RuntimeError("Failed to extract the requested number of samples from storage buffer")
+
+        if self.buffered_requests:
+            self.current_chunk_start_comm_count = self.buffered_requests[0].comm_count
+            self.current_chunk_last_comm_count = self.buffered_requests[-1].comm_count
+        else:
+            self.current_chunk_start_comm_count = None
+            self.current_chunk_last_comm_count = None
+
+        return np.concatenate(chunk_parts), start_comm_count, end_comm_count
+
+    def _build_file_timestamp(self, sample_rate: float) -> datetime:
+        """Compute the file timestamp from run start plus saved data duration."""
+        base_time = self.run_started_at or datetime.now()
+        if sample_rate <= 0:
+            return base_time
+        return base_time + timedelta(seconds=self.saved_sample_count / sample_rate)
+
+    def _save_chunk(self, phase_data: np.ndarray, start_comm_count: int, end_comm_count: int):
+        """Save one exact data chunk to disk."""
         try:
             from pathlib import Path
-            from datetime import datetime
 
-            requests = self.buffered_requests
-            self._clear_buffer()
+            if phase_data is None or len(phase_data) == 0:
+                return
 
-            phase_data = np.concatenate([req.data for req in requests])
-            first_request = requests[0]
-            last_request = requests[-1]
-            packet_count = len(requests)
-            sample_rate = float(first_request.sample_rate)
+            sample_rate = float(self.STORAGE_SAMPLE_RATE)
             duration_seconds = 0.0 if sample_rate <= 0 else len(phase_data) / sample_rate
 
             base_path = Path(self.storage_path)
             base_path.mkdir(parents=True, exist_ok=True)
 
-            now = datetime.now()
-            date_str = now.strftime("%Y%m%d")
-            time_str = now.strftime("%H%M%S_%f")[:-3]
-            filename = f"phase_data_{date_str}_{time_str}_#{last_request.comm_count:06d}.npz"
+            file_timestamp = self._build_file_timestamp(sample_rate)
+            self.saved_file_count += 1
+            timestamp_str = file_timestamp.strftime("%Y%m%dT%H%M%S.%f")[:-3]
+            filename = f"{self.saved_file_count:07d}-FIP-200K-{timestamp_str}.npz"
             file_path = base_path / filename
 
             np.savez_compressed(
                 file_path,
                 phase_data=phase_data,
-                comm_count=last_request.comm_count,
-                timestamp=first_request.timestamp,
+                comm_count=end_comm_count,
+                timestamp=self.saved_sample_count / sample_rate if sample_rate > 0 else 0.0,
                 sample_rate=sample_rate,
                 data_info={
-                    'type': first_request.data_type,
+                    'type': 'phase_unwrapped_downsampled',
                     'length': int(len(phase_data)),
                     'downsample_factor': self.STORAGE_DOWNSAMPLE_FACTOR,
-                    'packet_count': packet_count,
-                    'start_comm_count': first_request.comm_count,
-                    'end_comm_count': last_request.comm_count,
+                    'packet_count_estimate': int(math.ceil(len(phase_data) / max(sample_rate * PACKET_DURATION, 1))),
+                    'start_comm_count': start_comm_count,
+                    'end_comm_count': end_comm_count,
                     'duration_seconds': duration_seconds,
-                    'save_time': now.isoformat(),
+                    'file_sequence': self.saved_file_count,
+                    'stream_start_time': file_timestamp.isoformat(timespec='milliseconds'),
+                    'save_time': datetime.now().isoformat(),
                 }
             )
 
+            self.saved_sample_count += len(phase_data)
+
             self.logger.info(
-                "Saved data to %s (packets=%d, samples=%d, duration=%.1fs)",
+                "Saved data to %s (samples=%d, duration=%.1fs, start_comm=%s, end_comm=%s)",
                 filename,
-                packet_count,
                 len(phase_data),
                 duration_seconds,
+                start_comm_count,
+                end_comm_count,
             )
 
         except Exception as e:
@@ -677,6 +770,7 @@ class OptimizedTab1ThreadManager(QObject):
         """启动所有线程"""
         # 清空绘图数据
         self._clear_plots()
+        self.storage_thread.begin_run_cycle()
 
         self.data_processor.start()
         self.time_plotter.start()
@@ -700,6 +794,7 @@ class OptimizedTab1ThreadManager(QObject):
 
         # 清空绘图数据
         self._clear_plots()
+        self.storage_thread.end_run_cycle()
 
         self.logger.info("All Tab1 threads stopped")
 

@@ -304,7 +304,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("存储间隔(s):"), 1, 0)
         self.storage_interval_spin = QSpinBox()
         self.storage_interval_spin.setRange(10, 300)
-        self.storage_interval_spin.setValue(30)
+        self.storage_interval_spin.setValue(10)
         layout.addWidget(self.storage_interval_spin, 1, 1)
 
         # 存储路径
