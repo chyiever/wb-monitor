@@ -64,98 +64,115 @@ class StorageRequest:
 
 
 class DataProcessingThread(QThread):
-    """数据处理线程 - 专注CPU密集型操作"""
+    """Data processing worker for plotting-oriented signal processing."""
 
     data_processed = pyqtSignal(object)  # ProcessedData
+    INPUT_QUEUE_MAXSIZE = 100
 
     def __init__(self, phase_unwrapper, signal_filter, downsampler):
         super().__init__()
-        self.input_queue = Queue(maxsize=20)  # 增大队列避免丢包
+        self.input_queue = Queue(maxsize=self.INPUT_QUEUE_MAXSIZE)
         self.running = False
 
-        # 处理组件
         self.phase_unwrapper = phase_unwrapper
         self.signal_filter = signal_filter
         self.downsampler = downsampler
 
         self.logger = logging.getLogger(f'{__name__}.DataProcessingThread')
+        self.stats = {
+            'queue_maxsize': self.INPUT_QUEUE_MAXSIZE,
+            'queue_peak': 0,
+            'packets_enqueued': 0,
+            'packets_processed': 0,
+            'queue_drop_count': 0,
+            'processing_failure_count': 0,
+            'phase_unwrap_failure_count': 0,
+        }
 
     def add_raw_packet(self, packet: RawDataPacket) -> bool:
-        """添加原始数据包，非阻塞"""
+        """Queue raw packets for plotting-oriented processing."""
         try:
             if self.input_queue.full():
-                # 丢弃最旧的数据包
                 try:
                     discarded = self.input_queue.get_nowait()
-                    self.logger.debug(f"Discarded old packet #{discarded.comm_count}")
+                    self.stats['queue_drop_count'] += 1
+                    self.logger.warning(
+                        'Processing queue full, discarded old packet #%d to admit packet #%d',
+                        discarded.comm_count,
+                        packet.comm_count,
+                    )
                 except Empty:
                     pass
 
             self.input_queue.put(packet, block=False)
+            self.stats['packets_enqueued'] += 1
+            self.stats['queue_peak'] = max(self.stats['queue_peak'], self.input_queue.qsize())
 
-            # 调试日志：记录数据包接收
             if packet.comm_count % 50 == 0:
-                self.logger.info(f"DataProcessingThread received packet #{packet.comm_count}")
+                self.logger.info('DataProcessingThread received packet #%d', packet.comm_count)
 
             return True
         except Full:
-            self.logger.warning(f"Failed to queue packet #{packet.comm_count} - queue full")
+            self.stats['queue_drop_count'] += 1
+            self.logger.warning('Failed to queue packet #%d - queue full', packet.comm_count)
             return False
 
     def run(self):
-        """处理循环"""
+        """Main processing loop."""
         self.running = True
-        self.logger.info("Data processing thread started")
+        self.logger.info('Data processing thread started')
 
         while self.running:
             try:
                 packet = self.input_queue.get(timeout=0.1)
                 processed = self._process_packet(packet)
-                if processed:
+                if processed is not None:
+                    self.stats['packets_processed'] += 1
                     self.data_processed.emit(processed)
-
             except Empty:
                 continue
             except Exception as e:
-                self.logger.error(f"Processing error: {e}")
+                self.stats['processing_failure_count'] += 1
+                self.logger.error(f'Processing error: {e}')
 
     def _process_packet(self, packet: RawDataPacket) -> Optional[ProcessedData]:
-        """处理单个数据包"""
+        """Process a single packet for plotting."""
         try:
-            # 调试日志
             if packet.comm_count % 50 == 0:
-                self.logger.info(f"Processing packet #{packet.comm_count}, data shape: {packet.phase_data.shape}")
+                self.logger.info(
+                    'Processing packet #%d, data shape: %s',
+                    packet.comm_count,
+                    packet.phase_data.shape,
+                )
 
-            # 数据预处理
             phase_data = packet.phase_data
             if np.max(np.abs(phase_data)) > 5:
                 phase_data = phase_data / np.pi
 
-            # 相位展开
             unwrapped, _ = self.phase_unwrapper.unwrap_phase(phase_data)
             if len(unwrapped) == 0:
-                self.logger.warning(f"Phase unwrapping failed for packet #{packet.comm_count}")
+                self.stats['phase_unwrap_failure_count'] += 1
+                self.logger.warning('Phase unwrapping failed for packet #%d', packet.comm_count)
                 return None
 
-            # 滤波
             if self.signal_filter is not None:
                 filtered, _ = self.signal_filter.apply_filter(unwrapped)
             else:
                 filtered = unwrapped.copy()
 
-            # 降采样
             downsampled, _ = self.downsampler.downsample(filtered)
-
-            # PSD专用数据：使用相位展开后的未滤波数据（满足“PSD不走滤波器”要求）
             downsample_factor = max(1, self.downsampler.get_current_factor())
             psd_data = unwrapped[::downsample_factor]
-
-            # 计算有效采样率
             effective_rate = 1000000.0 / self.downsampler.get_current_factor()
 
-            # 调试日志
             if packet.comm_count % 50 == 0:
-                self.logger.info(f"Packet #{packet.comm_count}: {len(unwrapped)}→{len(filtered)}→{len(downsampled)} samples")
+                self.logger.info(
+                    'Packet #%d: %d->%d->%d samples',
+                    packet.comm_count,
+                    len(unwrapped),
+                    len(filtered),
+                    len(downsampled),
+                )
 
             return ProcessedData(
                 timestamp=packet.timestamp,
@@ -164,17 +181,20 @@ class DataProcessingThread(QThread):
                 downsampled_data=downsampled,
                 psd_data=psd_data,
                 effective_rate=effective_rate,
-                comm_count=packet.comm_count
+                comm_count=packet.comm_count,
             )
-
         except Exception as e:
-            self.logger.error(f"Error processing packet #{packet.comm_count}: {e}")
+            self.stats['processing_failure_count'] += 1
+            self.logger.error(f'Error processing packet #{packet.comm_count}: {e}')
             return None
 
+    def get_stats(self) -> Dict[str, Any]:
+        return dict(self.stats)
+
     def stop(self):
-        """停止线程"""
+        """Stop the thread."""
         self.running = False
-        self.logger.info("Data processing thread stopping")
+        self.logger.info('Data processing thread stopping with stats: %s', self.get_stats())
 
 
 class TimedomainPlotThread(QThread):
@@ -435,17 +455,19 @@ class PSDPlotThread(QThread):
 
 
 class DataStorageThread(QThread):
-    """Persist aggregated Tab1 data windows to NPZ."""
+    """Persist exact storage windows using an independent raw-packet path."""
 
     STORAGE_DOWNSAMPLE_FACTOR = 5
     STORAGE_SAMPLE_RATE = 1000000.0 / STORAGE_DOWNSAMPLE_FACTOR
+    RAW_QUEUE_MAXSIZE = 2000
 
-    def __init__(self, storage_path: str = "D:/PCCP/FIPdata", storage_interval_seconds: float = 10.0):
+    def __init__(self, phase_unwrapper, storage_path: str = "D:/PCCP/FIPdata", storage_interval_seconds: float = 10.0):
         super().__init__()
-        self.input_queue = Queue(maxsize=500)
+        self.input_queue = Queue(maxsize=self.RAW_QUEUE_MAXSIZE)
         self.running = False
         self.enabled = False
 
+        self.phase_unwrapper = phase_unwrapper
         self.storage_path = storage_path
         self.storage_interval_seconds = float(storage_interval_seconds)
         self.target_chunk_samples = 0
@@ -456,24 +478,42 @@ class DataStorageThread(QThread):
         self.run_started_at = None
         self.saved_file_count = 0
         self.saved_sample_count = 0
+        self.last_buffered_comm_count = None
 
         self.logger = logging.getLogger(f'{__name__}.DataStorageThread')
+        self.stats = {
+            'raw_queue_maxsize': self.RAW_QUEUE_MAXSIZE,
+            'raw_queue_peak': 0,
+            'raw_packets_enqueued': 0,
+            'raw_packets_processed': 0,
+            'raw_packets_missing': 0,
+            'raw_packets_duplicate_or_out_of_order': 0,
+            'enqueue_wait_count': 0,
+            'phase_unwrap_failure_count': 0,
+            'storage_failure_count': 0,
+            'saved_file_count': 0,
+            'saved_sample_count': 0,
+        }
         self.set_storage_interval_seconds(storage_interval_seconds)
 
-    def add_storage_request(self, request: StorageRequest):
-        """Add a storage request without dropping data when the queue is busy."""
+    def add_raw_packet(self, packet: RawDataPacket):
+        """Queue raw packets for storage without dropping data."""
         if not self.enabled:
             return
 
         try:
             if self.input_queue.full():
+                self.stats['enqueue_wait_count'] += 1
                 self.logger.warning(
-                    "Storage queue is full, waiting to preserve packet #%d",
-                    request.comm_count,
+                    'Storage raw queue full, waiting to preserve packet #%d',
+                    packet.comm_count,
                 )
-            self.input_queue.put(request, block=True)
+            self.input_queue.put(packet, block=True)
+            self.stats['raw_packets_enqueued'] += 1
+            self.stats['raw_queue_peak'] = max(self.stats['raw_queue_peak'], self.input_queue.qsize())
         except Full:
-            self.logger.error("Storage queue remained full, failed to enqueue packet #%d", request.comm_count)
+            self.stats['storage_failure_count'] += 1
+            self.logger.error('Storage queue remained full, failed to enqueue packet #%d', packet.comm_count)
 
     def set_enabled(self, enabled: bool):
         """Enable or disable realtime storage."""
@@ -486,16 +526,14 @@ class DataStorageThread(QThread):
             self._clear_buffer()
 
     def set_storage_path(self, path: str):
-        """Update the target storage path."""
         self.storage_path = path
 
     def set_storage_interval_seconds(self, interval_seconds: float):
-        """Set the storage window length in seconds."""
         safe_seconds = max(float(interval_seconds), 0.1)
         self.storage_interval_seconds = safe_seconds
         self.target_chunk_samples = max(1, int(round(safe_seconds * self.STORAGE_SAMPLE_RATE)))
         self.logger.info(
-            "Storage interval set to %.1fs (%d samples at %.0fHz)",
+            'Storage interval set to %.1fs (%d samples at %.0fHz)',
             self.storage_interval_seconds,
             self.target_chunk_samples,
             self.STORAGE_SAMPLE_RATE,
@@ -503,14 +541,13 @@ class DataStorageThread(QThread):
         self._save_completed_chunks()
 
     def begin_run_cycle(self):
-        """Reset per-run naming and sample-offset state."""
         self.run_started_at = datetime.now()
         self.saved_file_count = 0
         self.saved_sample_count = 0
+        self.last_buffered_comm_count = None
         self._clear_buffer()
 
     def end_run_cycle(self):
-        """Flush any remaining samples at the end of a monitoring cycle."""
         self._flush_buffered_data()
         self.run_started_at = None
 
@@ -519,57 +556,101 @@ class DataStorageThread(QThread):
         self.buffered_sample_count = 0
         self.current_chunk_start_comm_count = None
         self.current_chunk_last_comm_count = None
+        self.last_buffered_comm_count = None
+
+    def _build_storage_request(self, packet: RawDataPacket) -> Optional[StorageRequest]:
+        phase_data = packet.phase_data
+        if np.max(np.abs(phase_data)) > 5:
+            phase_data = phase_data / np.pi
+
+        unwrapped, _ = self.phase_unwrapper.unwrap_phase(phase_data)
+        if len(unwrapped) == 0:
+            self.stats['phase_unwrap_failure_count'] += 1
+            self.logger.warning(
+                'Storage phase unwrapping failed for packet #%d, storing wrapped phase fallback',
+                packet.comm_count,
+            )
+            unwrapped = np.asarray(phase_data, dtype=np.float64) * np.pi
+
+        storage_data = np.asarray(unwrapped[::self.STORAGE_DOWNSAMPLE_FACTOR], dtype=np.float64)
+        return StorageRequest(
+            data=storage_data,
+            comm_count=packet.comm_count,
+            timestamp=packet.timestamp,
+            sample_rate=self.STORAGE_SAMPLE_RATE,
+            data_type='phase_unwrapped_downsampled',
+        )
 
     def _append_request(self, request: StorageRequest):
         if self.current_chunk_start_comm_count is None:
             self.current_chunk_start_comm_count = request.comm_count
+
+        if self.last_buffered_comm_count is not None:
+            if request.comm_count > self.last_buffered_comm_count + 1:
+                missing_packets = request.comm_count - self.last_buffered_comm_count - 1
+                self.stats['raw_packets_missing'] += missing_packets
+                self.logger.warning(
+                    'Storage path detected missing packets between #%d and #%d (%d packet(s))',
+                    self.last_buffered_comm_count,
+                    request.comm_count,
+                    missing_packets,
+                )
+            elif request.comm_count <= self.last_buffered_comm_count:
+                self.stats['raw_packets_duplicate_or_out_of_order'] += 1
+                self.logger.warning(
+                    'Storage path received duplicate/out-of-order packet #%d after #%d',
+                    request.comm_count,
+                    self.last_buffered_comm_count,
+                )
+
         self.current_chunk_last_comm_count = request.comm_count
+        self.last_buffered_comm_count = request.comm_count
         self.buffered_requests.append(request)
         self.buffered_sample_count += len(request.data)
 
     def run(self):
         """Storage loop."""
         self.running = True
-        self.logger.info("Data storage thread started")
+        self.logger.info('Data storage thread started')
 
         while self.running:
             try:
-                request = self.input_queue.get(timeout=0.2)
+                packet = self.input_queue.get(timeout=0.2)
                 if not self.enabled:
                     continue
 
+                request = self._build_storage_request(packet)
+                if request is None:
+                    self.stats['storage_failure_count'] += 1
+                    continue
+
+                self.stats['raw_packets_processed'] += 1
                 self._append_request(request)
                 self._save_completed_chunks()
-
             except Empty:
                 continue
             except Exception as e:
-                self.logger.error(f"Storage error: {e}")
+                self.stats['storage_failure_count'] += 1
+                self.logger.error(f'Storage error: {e}')
 
         self._flush_buffered_data()
 
     def _save_completed_chunks(self):
-        """Persist every full storage chunk currently available in the buffer."""
         while self.buffered_sample_count >= self.target_chunk_samples:
             chunk_data, start_comm_count, end_comm_count = self._extract_chunk(self.target_chunk_samples)
             self._save_chunk(chunk_data, start_comm_count, end_comm_count)
 
     def _flush_buffered_data(self):
-        """Persist any remaining buffered samples when storage stops."""
         if not self.buffered_requests or self.buffered_sample_count <= 0:
             return
 
-        self.logger.info(
-            "Flushing partial storage buffer with %d sample(s)",
-            self.buffered_sample_count,
-        )
+        self.logger.info('Flushing partial storage buffer with %d sample(s)', self.buffered_sample_count)
         chunk_data, start_comm_count, end_comm_count = self._extract_chunk(self.buffered_sample_count)
         self._save_chunk(chunk_data, start_comm_count, end_comm_count)
 
     def _extract_chunk(self, target_samples: int):
-        """Pop exactly target_samples from the buffered request list."""
         if target_samples <= 0 or self.buffered_sample_count < target_samples:
-            raise ValueError("Insufficient buffered data for requested chunk size")
+            raise ValueError('Insufficient buffered data for requested chunk size')
 
         chunk_parts = []
         samples_needed = target_samples
@@ -601,7 +682,7 @@ class DataStorageThread(QThread):
                 samples_needed = 0
 
         if samples_needed != 0:
-            raise RuntimeError("Failed to extract the requested number of samples from storage buffer")
+            raise RuntimeError('Failed to extract the requested number of samples from storage buffer')
 
         if self.buffered_requests:
             self.current_chunk_start_comm_count = self.buffered_requests[0].comm_count
@@ -613,14 +694,12 @@ class DataStorageThread(QThread):
         return np.concatenate(chunk_parts), start_comm_count, end_comm_count
 
     def _build_file_timestamp(self, sample_rate: float) -> datetime:
-        """Compute the file timestamp from run start plus saved data duration."""
         base_time = self.run_started_at or datetime.now()
         if sample_rate <= 0:
             return base_time
         return base_time + timedelta(seconds=self.saved_sample_count / sample_rate)
 
     def _save_chunk(self, phase_data: np.ndarray, start_comm_count: int, end_comm_count: int):
-        """Save one exact data chunk to disk."""
         try:
             from pathlib import Path
 
@@ -635,8 +714,8 @@ class DataStorageThread(QThread):
 
             file_timestamp = self._build_file_timestamp(sample_rate)
             self.saved_file_count += 1
-            timestamp_str = file_timestamp.strftime("%Y%m%dT%H%M%S.%f")[:-3]
-            filename = f"{self.saved_file_count:07d}-FIP-200K-{timestamp_str}.npz"
+            timestamp_str = file_timestamp.strftime('%Y%m%dT%H%M%S.%f')[:-3]
+            filename = f'{self.saved_file_count:07d}-FIP-200K-{timestamp_str}.npz'
             file_path = base_path / filename
 
             np.savez_compressed(
@@ -660,23 +739,27 @@ class DataStorageThread(QThread):
             )
 
             self.saved_sample_count += len(phase_data)
+            self.stats['saved_file_count'] = self.saved_file_count
+            self.stats['saved_sample_count'] = self.saved_sample_count
 
             self.logger.info(
-                "Saved data to %s (samples=%d, duration=%.1fs, start_comm=%s, end_comm=%s)",
+                'Saved data to %s (samples=%d, duration=%.1fs, start_comm=%s, end_comm=%s)',
                 filename,
                 len(phase_data),
                 duration_seconds,
                 start_comm_count,
                 end_comm_count,
             )
-
         except Exception as e:
-            self.logger.error(f"Error saving data: {e}")
+            self.stats['storage_failure_count'] += 1
+            self.logger.error(f'Error saving data: {e}')
+
+    def get_stats(self) -> Dict[str, Any]:
+        return dict(self.stats)
 
     def stop(self):
-        """Stop the thread."""
         self.running = False
-        self.logger.info("Data storage thread stopping")
+        self.logger.info('Data storage thread stopping with stats: %s', self.get_stats())
 
 
 class OptimizedTab1ThreadManager(QObject):
@@ -691,7 +774,7 @@ class OptimizedTab1ThreadManager(QObject):
         self.data_processor = DataProcessingThread(phase_unwrapper, signal_filter, downsampler)
         self.time_plotter = TimedomainPlotThread()
         self.psd_plotter = PSDPlotThread(psd_calculator)
-        self.storage_thread = DataStorageThread()
+        self.storage_thread = DataStorageThread(phase_unwrapper=type(phase_unwrapper)())
 
         # 绘图控件引用
         self.time_plot_widget = None
@@ -807,36 +890,22 @@ class OptimizedTab1ThreadManager(QObject):
                 QTimer.singleShot(0, lambda: self.psd_curve.setData([], []))
 
     def process_raw_packet(self, packet):
-        """处理原始数据包 - 主线程调用"""
+        """Receive raw packets from TCP and fan them out to worker threads."""
         success = self.data_processor.add_raw_packet(packet)
+        self.storage_thread.add_raw_packet(packet)
 
-        # 每50个包记录一次，确认数据到达线程管理器
         if packet.comm_count % 50 == 0:
             self.logger.info(f"Tab1ThreadManager received packet #{packet.comm_count}, queued: {success}")
 
         return success
 
     def _distribute_processed_data(self, processed_data: ProcessedData):
-        """分发处理后的数据到各线程"""
-        # 调试日志
+        """Distribute processed data to plotting threads."""
         if processed_data.comm_count % 50 == 0:
             self.logger.info(f"Distributing processed packet #{processed_data.comm_count}")
 
-        # 发送到时域绘图线程
         self.time_plotter.add_processed_data(processed_data)
-
-        # 发送到PSD绘图线程
         self.psd_plotter.add_processed_data(processed_data)
-
-        # Storage-only 5x downsampling after phase unwrapping
-        storage_request = StorageRequest(
-            data=processed_data.unwrapped_data[::DataStorageThread.STORAGE_DOWNSAMPLE_FACTOR],
-            comm_count=processed_data.comm_count,
-            timestamp=processed_data.timestamp,
-            sample_rate=DataStorageThread.STORAGE_SAMPLE_RATE,
-            data_type="phase_unwrapped_downsampled"
-        )
-        self.storage_thread.add_storage_request(storage_request)
 
     def _update_time_plot(self, times, values):
         """更新时域绘图 - 线程安全的UI更新"""
@@ -918,6 +987,13 @@ class OptimizedTab1ThreadManager(QObject):
     def update_storage_interval(self, interval_seconds: float):
         """??????????????"""
         self.storage_thread.set_storage_interval_seconds(interval_seconds)
+
+    def get_thread_stats(self):
+        """Return processing and storage thread statistics for diagnostics."""
+        return {
+            'processing': self.data_processor.get_stats(),
+            'storage': self.storage_thread.get_stats(),
+        }
 
     def get_plot_status(self):
         """获取绘图状态（调试用）"""
