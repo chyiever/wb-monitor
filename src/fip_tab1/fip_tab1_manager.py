@@ -22,6 +22,7 @@ import time
 import logging
 import math
 import numpy as np
+from collections import deque
 from queue import Queue, Empty, Full
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
@@ -204,14 +205,24 @@ class TimedomainPlotThread(QThread):
 
     def __init__(self):
         super().__init__()
-        self.input_queue = Queue(maxsize=10)
+        # 队列容量 200：5 Hz 包速率下约 40 s 缓冲。
+        # 原始值 10 过小，主线程短暂忙碌（用户交互/菜单）即导致丢帧，
+        # 采集期间发生的声音信号可能在实时波形中不可见。
+        # 200 包 × 20000 样本 × 8 字节 ≈ 32 MB，内存开销可接受。
+        self.input_queue = Queue(maxsize=200)
         self.running = False
         self.enabled = True
 
         # 时域显示缓冲区
-        self.data_buffer = []
-        self.time_buffer = []
-        self.window_duration = 1.0  # 显示窗口1秒
+        # 使用 deque 替代 list：
+        # - append 为 O(1)，避免大时间窗口时 list 遍历裁剪的 O(N) 开销
+        # - 窗口裁剪由 _update_maxlen() 动态调整 maxlen 实现，无需手动遍历
+        # 初始容量按默认窗口 1 s、100 kHz 显示采样率预留 1.5 倍冗余
+        self._display_sample_rate = 100000.0   # 初始估算，随数据包动态更新
+        self.window_duration = 1.0             # 显示窗口1秒
+        _initial_maxlen = int(self.window_duration * self._display_sample_rate * 1.5)
+        self.data_buffer = deque(maxlen=_initial_maxlen)
+        self.time_buffer = deque(maxlen=_initial_maxlen)
         self.update_interval = 5   # 每5个包更新一次
         self.packet_count = 0
         self.last_comm_count = None  # 用于丢弃重复/倒序数据包
@@ -248,8 +259,20 @@ class TimedomainPlotThread(QThread):
             self.next_timestamp = 0.0
 
     def set_window_duration(self, duration: float):
-        """设置显示窗口时长"""
+        """设置显示窗口时长，同时动态调整缓冲区容量。
+
+        Args:
+            duration: 显示窗口时长（秒）。
+
+        deque 的 maxlen 不支持原地修改，通过重建 deque 实现更新。
+        重建时保留现有数据，避免因窗口调整而清空已缓冲的波形。
+        """
         self.window_duration = duration
+        new_maxlen = int(duration * self._display_sample_rate * 1.5)
+        new_maxlen = max(new_maxlen, 1000)  # 最小保留 1000 个样本
+        # 重建 deque 以更新 maxlen，保留现有缓冲数据
+        self.data_buffer = deque(self.data_buffer, maxlen=new_maxlen)
+        self.time_buffer = deque(self.time_buffer, maxlen=new_maxlen)
 
     def _reset_stream_state(self):
         """重置时域流状态（用于通信计数器重置/重连场景）。"""
@@ -315,16 +338,25 @@ class TimedomainPlotThread(QThread):
 
             # 计算显示采样率和时间戳
             # 不能写死100kHz：effective_rate 会随前面板降采样倍数变化。
-            # 若时间步长错误，会导致窗口内轨迹重叠，看起来像“多条曲线叠加”。
+            # 若时间步长错误，会导致窗口内轨迹重叠，看起来像”多条曲线叠加”。
             display_sample_rate = max(data.effective_rate / 2.0, 1.0)
             dt = 1.0 / display_sample_rate
+
+            # 同步更新显示采样率，用于 set_window_duration 计算 deque maxlen
+            if self._display_sample_rate != display_sample_rate:
+                self._display_sample_rate = display_sample_rate
+                # 采样率变化时同步调整缓冲区容量
+                new_maxlen = int(self.window_duration * display_sample_rate * 1.5)
+                new_maxlen = max(new_maxlen, 1000)
+                self.data_buffer = deque(self.data_buffer, maxlen=new_maxlen)
+                self.time_buffer = deque(self.time_buffer, maxlen=new_maxlen)
 
             # 使用内部单调时间轴，避免外部timestamp抖动/重复导致X轴回退或重叠。
             start_time = self.next_timestamp
             timestamps = start_time + np.arange(len(display_data)) * dt
             self.next_timestamp = start_time + len(display_data) * dt
 
-            # 更新缓冲区
+            # 更新缓冲区（deque 自动按 maxlen 丢弃最旧数据，无需手动裁剪）
             self.data_buffer.extend(display_data)
             self.time_buffer.extend(timestamps)
 
@@ -346,26 +378,25 @@ class TimedomainPlotThread(QThread):
             self.logger.error(f"Error processing time data for packet #{data.comm_count}: {e}")
 
     def _update_plot(self):
-        """更新时域绘图"""
+        """更新时域绘图，将缓冲区数据发射给 UI 线程。
+
+        由于 data_buffer 和 time_buffer 已改用 deque(maxlen=N)，
+        超出窗口的旧数据由 deque 自动丢弃，此处无需 O(N) 遍历裁剪，
+        直接转换为 numpy 数组后发射信号即可。
+        """
         try:
             if len(self.time_buffer) == 0:
                 return
 
-            # 保持显示窗口
-            cutoff_time = self.time_buffer[-1] - self.window_duration
-            keep_indices = [i for i, t in enumerate(self.time_buffer) if t >= cutoff_time]
+            # deque 直接转 numpy 数组，O(N) 但只做一次，且 N 已受 maxlen 控制
+            times_arr = np.array(self.time_buffer)
+            values_arr = np.array(self.data_buffer)
 
-            if keep_indices:
-                start_idx = keep_indices[0]
-                self.time_buffer = self.time_buffer[start_idx:]
-                self.data_buffer = self.data_buffer[start_idx:]
+            # 转换为相对时间（从 0 开始），便于绘图 X 轴显示
+            times_rel = times_arr - times_arr[0]
 
-                # 转换为相对时间
-                times = np.array(self.time_buffer) - self.time_buffer[0]
-                values = np.array(self.data_buffer)
-
-                # 发射绘图信号
-                self.plot_ready.emit(times, values)
+            # 发射绘图信号
+            self.plot_ready.emit(times_rel, values_arr)
 
         except Exception as e:
             self.logger.error(f"Error updating time plot: {e}")
@@ -383,7 +414,10 @@ class PSDPlotThread(QThread):
 
     def __init__(self, psd_calculator):
         super().__init__()
-        self.input_queue = Queue(maxsize=5)
+        # 队列容量 20：PSD 每 5 包计算一次（约 1 次/秒），20 包提供约 4 s 缓冲。
+        # 原始值 5 在长窗口 PSD 计算（单次 50-100 ms）时容易堆满，
+        # 导致 PSD 画面停止更新。
+        self.input_queue = Queue(maxsize=20)
         self.running = False
         self.enabled = True
 
