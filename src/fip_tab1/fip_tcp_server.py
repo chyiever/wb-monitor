@@ -187,8 +187,13 @@ class OptimizedTCPServer(QObject):
 
                 # Basic validation only
                 if data_length == 0 or data_length > 10000000:
-                    self.logger.warning(f"Invalid data length: {data_length}")
-                    continue
+                    # 非法包长会导致字节流永久失步：后续 recv 会把包体误当包头解析。
+                    # 正确处理：关闭连接，由外层 _server_loop 重新等待新连接，恢复同步。
+                    self.logger.error(
+                        f"Invalid data_length={data_length} from {self.client_address}, "
+                        "closing connection to resync byte stream."
+                    )
+                    break
 
                 # Receive data body
                 data_buff = self._recv_exact(data_length)
@@ -226,7 +231,22 @@ class OptimizedTCPServer(QObject):
         self._handle_disconnection()
 
     def _recv_exact(self, size: int) -> Optional[bytes]:
-        """Receive exact number of bytes"""
+        """精确接收指定字节数的数据，处理 TCP 拆包/粘包问题。
+
+        Args:
+            size: 需要接收的字节数。
+
+        Returns:
+            接收到的字节串（长度恰好为 size），或在以下情况返回 None：
+            - 连接断开（recv 返回空字节）
+            - _running 被置为 False（stop_server() 调用后快速退出）
+            - socket 错误
+
+        停止响应说明：
+            socket 超时间隔为 1 s。每次超时时主动检查 _running 标志，
+            若已置 False 立即返回 None，确保 stop_server() 后线程在 1 s
+            内退出，不会残留悬挂的 socket 句柄。
+        """
         if not self.client_socket:
             return None
 
@@ -235,13 +255,17 @@ class OptimizedTCPServer(QObject):
 
         while bytes_needed > 0 and self._running:
             try:
-                chunk_size = min(bytes_needed, 65536)  # 64KB chunks
+                chunk_size = min(bytes_needed, 65536)  # 64KB 分块接收
                 chunk = self.client_socket.recv(chunk_size)
                 if not chunk:
+                    # 对端关闭连接
                     return None
                 data.extend(chunk)
                 bytes_needed -= len(chunk)
             except socket.timeout:
+                # 超时后检查停止标志，确保 stop_server() 后能快速退出
+                if not self._running:
+                    return None
                 continue
             except socket.error:
                 return None
@@ -278,10 +302,11 @@ class OptimizedTCPServer(QObject):
     def _process_data(self, data_buff: bytes, data_length: int, comm_count: int, raw_comm_count: int) -> Optional[DataPacket]:
         """Process received data"""
         try:
-            # 调试日志：记录接收到的数据
-            self.logger.info(
-                f"Processing data: length={data_length}, comm_count={comm_count}, raw_comm_count={raw_comm_count}"
-            )
+            # 每 50 包记录一次，避免 TCP 接收循环中高频 INFO 日志拖慢性能
+            if comm_count % 50 == 0:
+                self.logger.info(
+                    f"Processing data: length={data_length}, comm_count={comm_count}, raw_comm_count={raw_comm_count}"
+                )
 
             # Check data length (must be multiple of 8 for <32,32> fixed point)
             if data_length % 8 != 0:
@@ -295,8 +320,9 @@ class OptimizedTCPServer(QObject):
             # Convert to float (<32,32> format: divide by 2^32)
             data_array = np.array(raw_values, dtype=np.float64) / (2**32)
 
-            # 调试日志：记录解析结果
-            self.logger.info(f"Data parsed successfully: {point_count} points, range=[{np.min(data_array):.3f}, {np.max(data_array):.3f}]")
+            # 每 50 包记录一次解析结果
+            if comm_count % 50 == 0:
+                self.logger.info(f"Data parsed: {point_count} points, range=[{np.min(data_array):.3f}, {np.max(data_array):.3f}]")
 
             # timestamp 仅作为绘图缓冲区的起始提示（seconds），
             # 绘图缓冲区会以实际样本数连续延伸，此值只在首包或断连重锚时有意义。

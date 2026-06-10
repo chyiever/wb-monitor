@@ -103,14 +103,20 @@ class PCCPMonitorApp:
         self._initialize_processors()
 
     def _setup_logging(self):
-        """Setup application logging."""
+        """Setup application logging.
+
+        生产环境使用 INFO 级别：
+        - DEBUG 级别下每个数据包触发数十条日志，5 Hz × 多条 = 每秒数十次
+          FileHandler I/O，严重拖慢主线程 Qt 事件循环（每包额外 1-3 ms）。
+        - INFO 级别仅输出关键事件，不影响实时性能。
+        """
         # Create logs directory if it doesn't exist
         log_dir = Path(__file__).parent.parent / 'logs'
         log_dir.mkdir(exist_ok=True)
 
-        # Configure logging with DEBUG level for detailed output
+        # 生产环境使用 INFO 级别，避免 DEBUG 日志的 I/O 开销拖慢主线程
         logging.basicConfig(
-            level=logging.DEBUG,  # 改为DEBUG级别
+            level=logging.INFO,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
                 logging.FileHandler(log_dir / 'pccp_monitor.log'),
@@ -339,16 +345,16 @@ class PCCPMonitorApp:
     def _process_data_packet(self, packet):
         """
         Process received data packet - OPTIMIZED VERSION
-        主线程仅负责数据分发，所有CPU密集型操作移至后台线程
+        主线程仅负责数据分发，所有CPU密集型操作移至后台线程。
+
+        日志节流策略：每 50 包打印一次 INFO，避免 5 Hz 高频日志
+        造成 FileHandler I/O 拖慢 Qt 事件循环。
 
         Args:
             packet: DataPacket from optimized TCP server
         """
-        # 立即记录数据包接收（确认信号连接正常）
-        self.logger.info(f"MAIN THREAD: Received packet #{packet.comm_count}, data size: {len(packet.phase_data)}")
-
         try:
-            # 记录数据包接收（用于调试）
+            # 每 50 包记录一次接收日志，避免高频 I/O 拖慢主线程
             if packet.comm_count % 50 == 0:
                 self.logger.info(
                     f"Received packet #{packet.comm_count}: "
