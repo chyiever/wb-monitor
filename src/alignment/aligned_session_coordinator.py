@@ -23,6 +23,10 @@ class AlignedSessionCoordinator(QObject):
 
     alignment_status_changed = pyqtSignal(dict)
 
+    # 两路 comm_count 差异超过此阈值时，对齐状态降级为 "lagging"（T3-03）
+    # 每包对应约 0.2 s，5 包 = 1 s 的容忍窗口
+    MAX_COMM_COUNT_DRIFT = 5
+
     def __init__(self, cache_seconds: float = 10.0) -> None:
         super().__init__()
         self.logger = logging.getLogger(f"{__name__}.AlignedSessionCoordinator")
@@ -103,6 +107,29 @@ class AlignedSessionCoordinator(QObject):
             frames = [self._build_frame_locked(comm_count) for comm_count in selected_counts]
         return frames
 
+    def get_frames_since(self, last_comm_count: int) -> List[AlignedPacketFrame]:
+        """返回 comm_count 严格大于 last_comm_count 的所有对齐帧（增量获取，T3-02）。
+
+        与 get_recent_frames 的区别：
+            get_recent_frames 每次返回最近 N 秒的全量快照，相邻调用之间
+            约 90% 数据重叠，造成严重写放大。
+            本方法仅返回上次存储结束点之后的新增帧，相邻文件之间无数据重叠。
+
+        Args:
+            last_comm_count: 上次存储的最后一帧的 comm_count。
+                -1 表示首次调用，返回所有已缓存帧。
+
+        Returns:
+            按 comm_count 升序排列的新增对齐帧列表，可能为空。
+        """
+        with self._lock:
+            if not self._ordered_counts:
+                return []
+            # 取 comm_count > last_comm_count 的帧
+            new_counts = [c for c in self._ordered_counts if c > last_comm_count]
+            frames = [self._build_frame_locked(c) for c in new_counts]
+        return frames
+
     def snapshot_status(self) -> AlignmentStatusSnapshot:
         """Return a copy of the latest status for storage or UI use."""
         with self._lock:
@@ -173,9 +200,30 @@ class AlignedSessionCoordinator(QObject):
         )
 
     def _derive_alignment_status(self) -> str:
+        """推导当前对齐状态（T3-03 增加真实时序验证）。
+
+        状态说明：
+            stopped      — 会话未启动
+            waiting      — 两路均未上线
+            single-source — 仅一路在线
+            lagging      — 两路均在线，但 comm_count 差异超过 MAX_COMM_COUNT_DRIFT
+                           说明两路数据存在明显时序滞后，不适合联合分析
+            aligned      — 两路均在线且 comm_count 差异在容忍窗口内
+
+        Returns:
+            对齐状态字符串。
+        """
         if not self._session_active:
             return "stopped"
         if self._fip_online and self._das_online:
+            # 验证两路最新包的 comm_count 偏差（T3-03）
+            if (
+                self._last_fip_comm_count is not None
+                and self._last_das_comm_count is not None
+            ):
+                drift = abs(self._last_fip_comm_count - self._last_das_comm_count)
+                if drift > self.MAX_COMM_COUNT_DRIFT:
+                    return "lagging"
             return "aligned"
         if self._fip_online or self._das_online:
             return "single-source"
@@ -183,6 +231,11 @@ class AlignedSessionCoordinator(QObject):
 
     def _emit_status(self, explicit_status: Optional[str] = None) -> None:
         snapshot = self.snapshot_status()
+        # 计算两路 comm_count 偏差，供 UI 展示（T3-03）
+        if snapshot.fip_last_comm_count >= 0 and snapshot.das_last_comm_count >= 0:
+            comm_count_drift = abs(snapshot.fip_last_comm_count - snapshot.das_last_comm_count)
+        else:
+            comm_count_drift = -1
         payload = {
             "fip_last_comm_count": snapshot.fip_last_comm_count,
             "das_last_comm_count": snapshot.das_last_comm_count,
@@ -191,6 +244,8 @@ class AlignedSessionCoordinator(QObject):
             "alignment_status": explicit_status or snapshot.alignment_status,
             "fip_online": snapshot.fip_online,
             "das_online": snapshot.das_online,
+            # 两路 comm_count 差值（-1 表示任一路尚无数据）
+            "comm_count_drift": comm_count_drift,
             "missing_ranges": [
                 f"{item.source}:{item.start_comm_count}-{item.end_comm_count}"
                 for item in snapshot.missing_ranges[-5:]
