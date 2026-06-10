@@ -46,6 +46,8 @@ class FIPFeatureWorker(QThread):
         self._signal_buffer = np.array([], dtype=np.float64)
         self._buffer_start_sample_index = 0
         self._next_window_start_index = 0
+        # 上一包的 comm_count，用于检测缺包缺口（T2-03）
+        self._last_comm_count: int | None = None
         self._sos = None
         self._zi = None
         self._rebuild_filter_state(reset_buffers=False)
@@ -81,13 +83,15 @@ class FIPFeatureWorker(QThread):
         self._rebuild_filter_state(reset_buffers=False)
 
     def reset_state(self) -> None:
-        """Clear windowing state after start/stop or sample-rate changes."""
+        """清除窗口状态，在启停或采样率变化后调用。"""
         self._stream_time_origin = 0.0
         self._stream_sample_index = 0
         self._window_index = 0
         self._signal_buffer = np.array([], dtype=np.float64)
         self._buffer_start_sample_index = 0
         self._next_window_start_index = 0
+        # 重置缺口检测状态
+        self._last_comm_count = None
         self._rebuild_filter_state(reset_buffers=False)
 
     def run(self) -> None:
@@ -108,10 +112,44 @@ class FIPFeatureWorker(QThread):
         self.running = False
 
     def _process_packet(self, packet: FIPTab2InputPacket) -> None:
+        """处理单个数据包：检测缺口、带通滤波、划分特征窗口。
+
+        Args:
+            packet: 来自 Tab1 数据处理线程的降采样数据包。
+
+        缺口处理策略（T2-03）：
+            当检测到 comm_count 不连续时（当前包号 != 上一包号+1），
+            说明中间有数据包丢失。此时：
+            1. 重置信号缓冲区，避免将缺口两侧数据拼入同一滑动窗口；
+            2. 将流时间原点推进到缺口结束后的正确位置，
+               防止后续特征帧的时间戳出现系统偏移。
+        """
         packet_rate = float(packet.sample_rate)
         if abs(packet_rate - self.sample_rate) > 1e-6:
+            # 采样率变化时需要重建滤波器状态
             self.sample_rate = packet_rate
             self.reset_state()
+
+        # --- 缺口检测（T2-03）---
+        if self._last_comm_count is not None and packet.comm_count != self._last_comm_count + 1:
+            gap = packet.comm_count - self._last_comm_count - 1
+            self.logger.warning(
+                "comm_count gap detected in Tab2: last=%d, current=%d, missing=%d packets. "
+                "Resetting signal buffer to prevent cross-gap false windows.",
+                self._last_comm_count,
+                packet.comm_count,
+                gap,
+            )
+            # 将时间原点推进到当前包应有的理论起始时间（按包间隔 0.2 s 估算）
+            # 这样下一包的特征时间戳仍然与实际采集时间大致对齐
+            self._stream_time_origin += (self._stream_sample_index / self.sample_rate)
+            self._stream_sample_index = 0
+            self._signal_buffer = np.array([], dtype=np.float64)
+            self._buffer_start_sample_index = 0
+            self._next_window_start_index = 0
+            self._zi = None  # 重置滤波器状态，避免缺口两侧滤波器瞬态相互污染
+
+        self._last_comm_count = packet.comm_count
 
         filtered = self._apply_bandpass(packet.data.astype(np.float64, copy=False))
 

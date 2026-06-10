@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 
 from PyQt5.QtCore import QObject
 
@@ -47,8 +48,32 @@ class FIPTab2Manager(QObject):
                 worker.start()
 
     def stop(self) -> None:
-        """Stop all Tab2 workers."""
+        """两阶段停止所有 Tab2 工作线程（T2-02）。
+
+        阶段一：排空触发存储队列
+            将活跃告警事件推入存储请求队列后，进入排空模式，
+            等待存储线程处理完所有待写盘请求（最多 5 s）。
+
+        阶段二：停止所有线程
+            向各线程发送停止信号，最多等待 3 s。
+        """
+        # --- 阶段一：触发排空 ---
         self.detection_worker.flush_active_event()
+        self.storage_worker.begin_drain()
+
+        # 等待存储线程排空（最多 5 s）
+        drain_deadline = time.time() + 5.0
+        while self.storage_worker.isRunning() and time.time() < drain_deadline:
+            if not self.storage_worker.has_pending_work():
+                break
+            time.sleep(0.05)
+
+        if self.storage_worker.has_pending_work():
+            self.logger.warning(
+                "Tab2 storage drain timeout: some trigger events may not have been saved."
+            )
+
+        # --- 阶段二：停止所有线程 ---
         for worker in (self.feature_worker, self.detection_worker, self.plot_worker, self.storage_worker):
             worker.stop()
         for worker in (self.feature_worker, self.detection_worker, self.plot_worker, self.storage_worker):

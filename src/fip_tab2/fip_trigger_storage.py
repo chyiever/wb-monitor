@@ -26,6 +26,8 @@ class FIPTriggerStorageWorker(QThread):
         self.feature_queue: "Queue[FIPFeatureFrame]" = Queue(maxsize=256)
         self.request_queue: "Queue[FIPTriggerSaveRequest]" = Queue(maxsize=32)
         self.running = False
+        # 排空模式标志：begin_drain() 后不再接受新包，run 循环排空后退出（T2-02）
+        self._drain_mode = False
 
         self.storage_path = Path(storage_path)
         self.storage_path.mkdir(parents=True, exist_ok=True)
@@ -56,14 +58,21 @@ class FIPTriggerStorageWorker(QThread):
             self.storage_path.mkdir(parents=True, exist_ok=True)
 
     def reset_state(self) -> None:
-        """Clear cached signals, features and pending requests."""
+        """清除缓存的信号包、特征帧和待处理请求，重置排空状态。"""
         self._signal_packets.clear()
         self._feature_frames.clear()
         self._pending_requests.clear()
         self._latest_time = 0.0
+        self._drain_mode = False  # 下次启动前重置排空标志
 
     def run(self) -> None:
-        """Consume packets, feature frames and trigger requests."""
+        """消费信号包、特征帧和触发存储请求。
+
+        排空模式（_drain_mode=True）：
+            停止接受新包后继续排空三个队列中已有的内容，
+            以及 _pending_requests 中等待后触发时间窗口的请求。
+            所有请求处理完毕后自行退出，保证停止时触发事件不被截断。
+        """
         self.running = True
         self.logger.info("FIP trigger storage worker started")
         while self.running:
@@ -72,12 +81,50 @@ class FIPTriggerStorageWorker(QThread):
             handled |= self._drain_queue(self.feature_queue, self._handle_feature_frame)
             handled |= self._drain_queue(self.request_queue, self._handle_request)
             self._flush_pending_requests()
+            # 排空模式：三个队列都空且没有待处理请求时退出
+            if self._drain_mode and not self.has_pending_work():
+                self.logger.info("FIP trigger storage drain complete, exiting")
+                break
             if not handled:
                 self.msleep(50)
 
     def stop(self) -> None:
-        """Stop the worker loop."""
+        """停止存储工作线程。
+
+        若已进入排空模式（begin_drain 已调用），run 循环会在处理完
+        所有待存储请求后自行退出；否则立即退出，可能丢弃未完成请求。
+        建议先调用 begin_drain()，等待排空后再调用 stop()。
+        """
         self.running = False
+
+    def begin_drain(self) -> None:
+        """进入排空模式，停止接受新包（T2-02 两阶段停止）。
+
+        调用后 run 循环继续消费三个队列中已有的内容并尝试
+        完成 _pending_requests，完成后自行退出。
+        """
+        self._drain_mode = True
+        self.logger.info(
+            "FIP trigger storage entering drain mode: "
+            "signal_q=%d, feature_q=%d, request_q=%d, pending=%d",
+            self.signal_queue.qsize(),
+            self.feature_queue.qsize(),
+            self.request_queue.qsize(),
+            len(self._pending_requests),
+        )
+
+    def has_pending_work(self) -> bool:
+        """判断是否还有未处理的工作（供调用方轮询排空进度）。
+
+        Returns:
+            True 表示仍有队列包或待落盘请求，False 表示已全部处理完毕。
+        """
+        return (
+            not self.signal_queue.empty()
+            or not self.feature_queue.empty()
+            or not self.request_queue.empty()
+            or len(self._pending_requests) > 0
+        )
 
     def _handle_signal_packet(self, packet: FIPTab2InputPacket) -> None:
         self._signal_packets.append(packet)
