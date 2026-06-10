@@ -1592,14 +1592,46 @@ class MainWindow(QMainWindow):
             self.filter_settings_changed.emit(filter_settings)
 
     def _init_status_bar(self):
-        """初始化状态栏"""
+        """初始化状态栏，含线程健康统计面板（X-01）。"""
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
+
+        # 线程健康统计标签（X-01）：展示存储队列积压、丢包数、缺口数等关键指标
+        # 由 main.py 的 QTimer 每 2 s 调用 update_thread_stats() 刷新
+        self.thread_stats_label = QLabel("线程统计: 等待启动")
+        self.thread_stats_label.setStyleSheet("color: #444; font-size: 11px; padding: 0 8px;")
+        self.status_bar.addPermanentWidget(self.thread_stats_label)
 
         # 添加软件版本信息到右侧，包含研究所名称
         version_label = QLabel("融合型光纤PCCP断丝监测软件 v1.0 - 中国科学院半导体研究所")
         version_label.setStyleSheet("color: #666; font-size: 12px;")
         self.status_bar.addPermanentWidget(version_label)
+
+    def update_thread_stats(self, stats: dict) -> None:
+        """更新状态栏中的线程健康统计信息（X-01）。
+
+        Args:
+            stats: OptimizedTab1ThreadManager.get_thread_stats() 的返回值，
+                   包含 processing（DataProcessingThread.stats）和
+                   storage（DataStorageThread.stats）两个子字典。
+        """
+        proc = stats.get("processing", {})
+        stor = stats.get("storage", {})
+        proc_drop = proc.get("queue_drop_count", 0)
+        proc_gap = proc.get("gap_count", 0)
+        stor_queue = stor.get("raw_queue_current_size", stor.get("raw_queue_peak", 0))
+        stor_fail = stor.get("storage_failure_count", 0)
+        stor_saved = stor.get("saved_file_count", 0)
+        text = (
+            f"绘图丢帧:{proc_drop}  缺口:{proc_gap}  "
+            f"存储队列:{stor_queue}  存储失败:{stor_fail}  已存文件:{stor_saved}"
+        )
+        # 存储失败时用红色高亮提醒
+        color = "#c00" if stor_fail > 0 or proc_drop > 50 else "#444"
+        self.thread_stats_label.setStyleSheet(
+            f"color: {color}; font-size: 11px; padding: 0 8px;"
+        )
+        self.thread_stats_label.setText(f"线程统计: {text}")
 
     def _setup_connections(self):
         """设置信号连接"""

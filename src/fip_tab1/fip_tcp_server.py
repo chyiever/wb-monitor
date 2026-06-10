@@ -77,14 +77,45 @@ class OptimizedTCPServer(QObject):
         self.logger = logging.getLogger(__name__)
 
     def start_server(self) -> bool:
-        """Start TCP server"""
+        """启动 TCP 服务器，监听指定地址和端口。
+
+        Returns:
+            True 表示启动成功，False 表示启动失败。
+
+        端口可用性检查（X-02）：
+            快速重启时旧 socket 可能还处于 TIME_WAIT 状态，
+            虽然 SO_REUSEADDR 通常能解决此问题，但若系统不支持，
+            会在 bind 前做最多 3 次（共约 3 s）的重试，
+            超时后给出明确错误提示，避免静默失败。
+        """
         try:
             if self._running:
                 return True
 
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # SO_REUSEADDR：允许快速重用处于 TIME_WAIT 的端口（X-02）
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind((self.ip, self.port))
+
+            # 尝试绑定端口，最多重试 3 次（X-02）
+            bind_attempts = 3
+            for attempt in range(1, bind_attempts + 1):
+                try:
+                    self.server_socket.bind((self.ip, self.port))
+                    break
+                except OSError as bind_err:
+                    if attempt < bind_attempts:
+                        self.logger.warning(
+                            "Port %d bind failed (attempt %d/%d): %s. Retrying in 1 s...",
+                            self.port, attempt, bind_attempts, bind_err,
+                        )
+                        time.sleep(1.0)
+                    else:
+                        raise OSError(
+                            f"Port {self.port} is still occupied after {bind_attempts} attempts. "
+                            "Please wait a few seconds and try again. "
+                            f"Last error: {bind_err}"
+                        ) from bind_err
+
             self.server_socket.listen(1)
 
             self._running = True

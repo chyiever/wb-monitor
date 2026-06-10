@@ -79,6 +79,9 @@ class DataProcessingThread(QThread):
         self.signal_filter = signal_filter
         self.downsampler = downsampler
 
+        # 上一包的 comm_count，用于检测缺包缺口（T1-15）
+        self._last_comm_count: Optional[int] = None
+
         self.logger = logging.getLogger(f'{__name__}.DataProcessingThread')
         self.stats = {
             'queue_maxsize': self.INPUT_QUEUE_MAXSIZE,
@@ -88,6 +91,7 @@ class DataProcessingThread(QThread):
             'queue_drop_count': 0,
             'processing_failure_count': 0,
             'phase_unwrap_failure_count': 0,
+            'gap_count': 0,  # 检测到 comm_count 缺口的次数（T1-15）
         }
 
     def add_raw_packet(self, packet: RawDataPacket) -> bool:
@@ -137,7 +141,18 @@ class DataProcessingThread(QThread):
                 self.logger.error(f'Processing error: {e}')
 
     def _process_packet(self, packet: RawDataPacket) -> Optional[ProcessedData]:
-        """Process a single packet for plotting."""
+        """处理单个原始数据包：缺口检测、相位展开、滤波、降采样。
+
+        Args:
+            packet: TCP 服务器传入的原始相位数据包。
+
+        Returns:
+            ProcessedData（处理成功）或 None（处理失败）。
+
+        缺口处理（T1-15）：
+            检测到 comm_count 不连续时重置相位展开器状态，
+            防止缺口两侧数据被错误连续化（$2\\pi$ 偏移累积误差）。
+        """
         try:
             if packet.comm_count % 50 == 0:
                 self.logger.info(
@@ -145,6 +160,23 @@ class DataProcessingThread(QThread):
                     packet.comm_count,
                     packet.phase_data.shape,
                 )
+
+            # --- 缺口检测（T1-15）---
+            if (
+                self._last_comm_count is not None
+                and packet.comm_count != self._last_comm_count + 1
+            ):
+                gap = packet.comm_count - self._last_comm_count - 1
+                self.logger.warning(
+                    'comm_count gap in DataProcessingThread: last=%d, current=%d, missing=%d. '
+                    'Resetting phase unwrapper to prevent cross-gap phase error.',
+                    self._last_comm_count,
+                    packet.comm_count,
+                    gap,
+                )
+                self.phase_unwrapper.reset()
+                self.stats['gap_count'] += 1
+            self._last_comm_count = packet.comm_count
 
             phase_data = packet.phase_data
             if np.max(np.abs(phase_data)) > 5:
@@ -1146,11 +1178,19 @@ class OptimizedTab1ThreadManager(QObject):
         self.time_plotter.set_window_duration(duration)
 
     def update_storage_path(self, path: str):
-        """?????????"""
+        """更新原始数据存储目录路径。
+
+        Args:
+            path: 新的存储目录绝对路径（如 "D:/PCCP/FIPdata"）。
+        """
         self.storage_thread.set_storage_path(path)
 
     def update_storage_interval(self, interval_seconds: float):
-        """??????????????"""
+        """更新存储分块时长（每个 npz 文件对应的秒数）。
+
+        Args:
+            interval_seconds: 新的分块时长（秒），最小 1 s。
+        """
         self.storage_thread.set_storage_interval_seconds(interval_seconds)
 
     def get_thread_stats(self):

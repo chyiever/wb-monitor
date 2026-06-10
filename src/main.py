@@ -22,6 +22,7 @@ import numpy as np
 from pathlib import Path
 from typing import Dict, Any
 from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtCore import QTimer
 
 # Import application modules
 from ui.main_window import MainWindow
@@ -95,6 +96,11 @@ class PCCPMonitorApp:
         self.tab3_manager = None
         self.fip_monitoring_active = False
         self.das_monitoring_active = False
+
+        # 线程统计定时刷新计时器（X-01）：每 2 s 更新状态栏中的线程健康面板
+        self._stats_timer = QTimer()
+        self._stats_timer.setInterval(2000)
+        self._stats_timer.timeout.connect(self._refresh_thread_stats)
 
         # Setup connections
         self._setup_connections()
@@ -434,6 +440,8 @@ class PCCPMonitorApp:
             plot_status = self.tab1_manager.get_plot_status()
             self.logger.info(f"Plot status after start: {plot_status}")
             self.fip_monitoring_active = True
+            # 启动线程统计定时刷新（X-01）
+            self._stats_timer.start()
 
             self.logger.info("Monitoring system started successfully with optimized threads")
 
@@ -459,6 +467,8 @@ class PCCPMonitorApp:
             # 清空绘图控件
             self.main_window.time_plot.clear()
             self.main_window.psd_plot.clear()
+            # 停止线程统计定时刷新（X-01）
+            self._stats_timer.stop()
             self.fip_monitoring_active = False
             self._maybe_stop_alignment_session()
 
@@ -517,6 +527,19 @@ class PCCPMonitorApp:
 
         except Exception as e:
             self.logger.error(f"Error updating processor configurations: {e}")
+
+    def _refresh_thread_stats(self) -> None:
+        """读取 Tab1 线程统计并刷新状态栏健康面板（X-01，每 2 s 调用一次）。
+
+        仅在监测活跃时执行；若 tab1_manager 未启动则跳过。
+        """
+        if not self.fip_monitoring_active or self.tab1_manager is None:
+            return
+        try:
+            stats = self.tab1_manager.get_thread_stats()
+            self.main_window.update_thread_stats(stats)
+        except Exception as e:
+            self.logger.warning("Failed to refresh thread stats: %s", e)
 
     def _handle_tcp_error(self, error_message: str):
         """Handle TCP communication errors."""
