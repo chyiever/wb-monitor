@@ -498,8 +498,13 @@ class DataStorageThread(QThread):
     def __init__(self, phase_unwrapper, storage_path: str = "D:/PCCP/FIPdata", storage_interval_seconds: float = 10.0):
         super().__init__()
         self.input_queue = Queue(maxsize=self.RAW_QUEUE_MAXSIZE)
+        # 控制命令队列：UI 线程通过此队列向存储线程发送 enable/disable 指令，
+        # 避免 UI 线程直接修改存储线程使用的缓冲区（T1-10 竞争问题）。
+        self._ctrl_queue: Queue = Queue()
         self.running = False
         self.enabled = False
+        # 排空模式标志：begin_drain() 后不再接受新包，run 循环排空后退出（T1-09）
+        self._drain_mode = False
 
         self.phase_unwrapper = phase_unwrapper
         self.storage_path = storage_path
@@ -522,42 +527,61 @@ class DataStorageThread(QThread):
             'raw_packets_processed': 0,
             'raw_packets_missing': 0,
             'raw_packets_duplicate_or_out_of_order': 0,
-            'enqueue_wait_count': 0,
             'phase_unwrap_failure_count': 0,
-            'storage_failure_count': 0,
+            'storage_failure_count': 0,   # 队列满丢包计数（磁盘过载时触发）
             'saved_file_count': 0,
             'saved_sample_count': 0,
         }
         self.set_storage_interval_seconds(storage_interval_seconds)
 
     def add_raw_packet(self, packet: RawDataPacket):
-        """Queue raw packets for storage without dropping data."""
+        """将原始数据包加入存储队列（主线程调用，必须非阻塞）。
+
+        Args:
+            packet: 来自 TCP 服务器的原始数据包。
+
+        设计约束：
+            本方法在 Qt 主线程的信号槽中调用（调用链：TCP data_received
+            信号 → _process_data_packet → process_raw_packet → 此方法）。
+            主线程绝对不能阻塞，否则 Qt 事件循环停转，UI 冻结。
+
+            使用 put_nowait（非阻塞）：队列满时宁可丢包并记录告警，
+            也不能阻塞主线程。队列满仅在磁盘严重过载时发生，此时继续
+            阻塞主线程会导致更严重的全面卡死和更大范围的数据丢失。
+        """
         if not self.enabled:
+            return
+        # 排空模式下不再接受新包，等待队列中已有包处理完毕后退出
+        if self._drain_mode:
             return
 
         try:
-            if self.input_queue.full():
-                self.stats['enqueue_wait_count'] += 1
-                self.logger.warning(
-                    'Storage raw queue full, waiting to preserve packet #%d',
-                    packet.comm_count,
-                )
-            self.input_queue.put(packet, block=True)
+            self.input_queue.put_nowait(packet)
             self.stats['raw_packets_enqueued'] += 1
-            self.stats['raw_queue_peak'] = max(self.stats['raw_queue_peak'], self.input_queue.qsize())
+            self.stats['raw_queue_peak'] = max(
+                self.stats['raw_queue_peak'], self.input_queue.qsize()
+            )
         except Full:
+            # 队列满：记录丢包，绝不阻塞主线程
             self.stats['storage_failure_count'] += 1
-            self.logger.error('Storage queue remained full, failed to enqueue packet #%d', packet.comm_count)
+            self.logger.error(
+                'Storage queue full (size=%d), dropping packet #%d. '
+                'Disk may be too slow. Check storage_failure_count in stats.',
+                self.RAW_QUEUE_MAXSIZE,
+                packet.comm_count,
+            )
 
     def set_enabled(self, enabled: bool):
-        """Enable or disable realtime storage."""
-        if self.enabled == enabled:
-            return
+        """通过控制队列向存储线程发送启停指令（线程安全，T1-10）。
 
-        self.enabled = enabled
-        if not enabled:
-            self._flush_buffered_data()
-            self._clear_buffer()
+        原实现直接从 UI 线程修改 enabled 标志并清空缓冲区，与存储线程
+        同时访问 buffered_requests 存在竞争条件。改为通过 _ctrl_queue
+        发送命令，由存储线程在包边界处理，保证串行访问缓冲区。
+
+        Args:
+            enabled: True 表示启用存储，False 表示停用并刷新当前缓冲区。
+        """
+        self._ctrl_queue.put_nowait({'cmd': 'set_enabled', 'value': enabled})
 
     def set_storage_path(self, path: str):
         self.storage_path = path
@@ -642,15 +666,45 @@ class DataStorageThread(QThread):
         self.buffered_requests.append(request)
         self.buffered_sample_count += len(request.data)
 
+    def begin_drain(self):
+        """停止接受新包，进入排空模式（T1-09 两阶段停止第一阶段）。
+
+        调用后 add_raw_packet 不再接受新包，run 循环继续处理队列中
+        已有的包直到队列空，再执行最终 flush 后退出。
+        """
+        self._drain_mode = True
+        self.logger.info(
+            'Storage thread entering drain mode, queue depth=%d',
+            self.input_queue.qsize(),
+        )
+
     def run(self):
-        """Storage loop."""
+        """存储循环，同时处理数据包和控制命令。
+
+        控制命令处理（T1-10）：
+            每次从 input_queue 取包后，先检查 _ctrl_queue 中的控制命令。
+            命令由 set_enabled() 发送，由本线程串行处理，避免多线程竞争。
+
+        两阶段排空（T1-09）：
+            _drain_mode=True 时不再等待新包，队列清空后立即退出。
+            这保证 stop() 前队列中的包都能落盘。
+        """
         self.running = True
         self.logger.info('Data storage thread started')
 
         while self.running:
+            # 处理控制命令队列（在包边界处理，保证串行访问缓冲区）
+            self._process_ctrl_commands()
+
             try:
+                # 排空模式下队列已空时退出循环
+                if self._drain_mode and self.input_queue.empty():
+                    self.logger.info('Storage drain complete, exiting run loop')
+                    break
+
                 packet = self.input_queue.get(timeout=0.2)
                 if not self.enabled:
+                    # 存储被禁用时丢弃包，但不阻塞
                     continue
 
                 request = self._build_storage_request(packet)
@@ -662,12 +716,51 @@ class DataStorageThread(QThread):
                 self._append_request(request)
                 self._save_completed_chunks()
             except Empty:
+                # 排空模式下超时即表示队列已空
+                if self._drain_mode:
+                    self.logger.info('Storage drain complete (timeout), exiting run loop')
+                    break
                 continue
             except Exception as e:
                 self.stats['storage_failure_count'] += 1
                 self.logger.error(f'Storage error: {e}')
 
         self._flush_buffered_data()
+
+    def _process_ctrl_commands(self):
+        """处理控制命令队列中的所有待处理命令（在存储线程中调用，串行安全）。
+
+        命令格式：{'cmd': str, 'value': Any}
+        支持的命令：
+            set_enabled: 启停存储，禁用时刷新并清空缓冲区
+        """
+        while True:
+            try:
+                cmd = self._ctrl_queue.get_nowait()
+                if cmd['cmd'] == 'set_enabled':
+                    new_enabled = cmd['value']
+                    if self.enabled == new_enabled:
+                        continue
+                    self.enabled = new_enabled
+                    if not new_enabled:
+                        # 禁用存储时在存储线程中安全地刷新和清空缓冲区
+                        self._flush_buffered_data()
+                        self._clear_buffer()
+                        self.logger.info('Storage disabled, buffer flushed and cleared')
+                    else:
+                        self.logger.info('Storage enabled')
+            except Empty:
+                break
+
+    def stop(self):
+        """停止存储线程（T1-09 两阶段停止第二阶段）。
+
+        设置 running=False 通知 run 循环退出。若已处于排空模式，
+        run 循环会在队列清空后自行退出；否则直接退出（可能丢尾包）。
+        建议先调用 begin_drain() 等待排空后再调用 stop()。
+        """
+        self.running = False
+        self.logger.info('Data storage thread stopping with stats: %s', self.get_stats())
 
     def _save_completed_chunks(self):
         while self.buffered_sample_count >= self.target_chunk_samples:
@@ -897,17 +990,55 @@ class OptimizedTab1ThreadManager(QObject):
         self.logger.info("All Tab1 threads started")
 
     def stop(self):
-        """停止所有线程"""
+        """两阶段停止所有 Tab1 线程（T1-09）。
+
+        阶段一：排空存储队列
+            调用 storage_thread.begin_drain() 后，存储线程继续处理队列中已有的包，
+            主线程等待排空完成（最多 10 s），保证停止前队列中的包全部落盘。
+
+        阶段二：停止所有线程
+            向各线程发送停止信号，最多等待 3 s。
+        """
+        # --- 阶段一：排空存储队列 ---
+        self.storage_thread.begin_drain()
+        # 等待存储线程排空（最多 10 s）
+        drain_timeout_ms = 10000
+        drain_wait_start = time.time()
+        while self.storage_thread.isRunning():
+            elapsed_ms = (time.time() - drain_wait_start) * 1000
+            if elapsed_ms >= drain_timeout_ms:
+                self.logger.warning(
+                    'Storage drain timeout after %.1f s, remaining queue=%d. '
+                    'Some tail packets may not be saved.',
+                    elapsed_ms / 1000,
+                    self.storage_thread.input_queue.qsize(),
+                )
+                break
+            # 排空完成条件：队列为空且线程仍在运行（run 循环会自行退出 drain 模式）
+            if self.storage_thread.input_queue.empty():
+                # 给最后一个 flush 一点时间完成
+                time.sleep(0.1)
+                break
+            time.sleep(0.05)
+
+        self.logger.info(
+            'Storage drain finished. Saved files=%d, saved samples=%d',
+            self.storage_thread.saved_file_count,
+            self.storage_thread.saved_sample_count,
+        )
+
+        # --- 阶段二：停止所有线程 ---
         threads = [self.data_processor, self.time_plotter, self.psd_plotter, self.storage_thread]
 
-        # 发送停止信号
         for thread in threads:
             thread.stop()
 
-        # 等待线程结束
         for thread in threads:
             if thread.isRunning():
-                thread.wait(3000)  # 最多等待3秒
+                thread.wait(3000)
+
+        # 重置排空标志，以便下次启动时可再次使用
+        self.storage_thread._drain_mode = False
 
         # 清空绘图数据
         self._clear_plots()
