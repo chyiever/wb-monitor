@@ -634,11 +634,12 @@ class MainWindow(QMainWindow):
         main_layout.setSpacing(6)
 
         left_panel = QWidget()
-        left_panel.setMinimumWidth(520)
-        left_panel.setMaximumWidth(560)
+        left_panel.setMinimumWidth(560)
+        left_panel.setMaximumWidth(600)
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(2, 2, 2, 2)
-        left_layout.setSpacing(3)
+        left_layout.setContentsMargins(9, 9, 9, 9)
+        left_layout.setSpacing(6)
+        self.tab3_left_panel = left_panel
 
         self._tab3_space_time_levels_locked = True
         self._tab3_colormap_options = [
@@ -655,9 +656,9 @@ class MainWindow(QMainWindow):
 
         comm_group = QGroupBox("DAS Communication")
         comm_layout = QGridLayout(comm_group)
-        comm_layout.setContentsMargins(6, 4, 6, 4)
-        comm_layout.setHorizontalSpacing(4)
-        comm_layout.setVerticalSpacing(2)
+        comm_layout.setContentsMargins(9, 9, 9, 9)
+        comm_layout.setHorizontalSpacing(6)
+        comm_layout.setVerticalSpacing(6)
         comm_layout.addWidget(QLabel("IP"), 0, 0)
         self.tab3_ip_edit = QLineEdit("0.0.0.0")
         comm_layout.addWidget(self.tab3_ip_edit, 0, 1, 1, 2)
@@ -683,9 +684,9 @@ class MainWindow(QMainWindow):
 
         header_group = QGroupBox("Live Header")
         header_layout = QGridLayout(header_group)
-        header_layout.setContentsMargins(6, 4, 6, 4)
-        header_layout.setHorizontalSpacing(4)
-        header_layout.setVerticalSpacing(2)
+        header_layout.setContentsMargins(9, 9, 9, 9)
+        header_layout.setHorizontalSpacing(6)
+        header_layout.setVerticalSpacing(6)
         header_layout.addWidget(QLabel("Ch"), 0, 0)
         self.tab3_channel_count_label = QLabel("-")
         header_layout.addWidget(self.tab3_channel_count_label, 0, 1)
@@ -702,9 +703,9 @@ class MainWindow(QMainWindow):
 
         align_group = QGroupBox("Alignment Status")
         align_layout = QGridLayout(align_group)
-        align_layout.setContentsMargins(6, 4, 6, 4)
-        align_layout.setHorizontalSpacing(4)
-        align_layout.setVerticalSpacing(2)
+        align_layout.setContentsMargins(9, 9, 9, 9)
+        align_layout.setHorizontalSpacing(6)
+        align_layout.setVerticalSpacing(6)
         align_layout.addWidget(QLabel("FIP"), 0, 0)
         self.tab3_align_fip_comm_label = QLabel("-")
         align_layout.addWidget(self.tab3_align_fip_comm_label, 0, 1)
@@ -728,9 +729,9 @@ class MainWindow(QMainWindow):
 
         curve_group = QGroupBox("Curve Controls")
         curve_layout = QGridLayout(curve_group)
-        curve_layout.setContentsMargins(6, 4, 6, 4)
-        curve_layout.setHorizontalSpacing(4)
-        curve_layout.setVerticalSpacing(2)
+        curve_layout.setContentsMargins(9, 9, 9, 9)
+        curve_layout.setHorizontalSpacing(6)
+        curve_layout.setVerticalSpacing(6)
         curve_layout.setColumnStretch(1, 1)
         curve_layout.setColumnStretch(3, 1)
         curve_layout.setColumnStretch(5, 1)
@@ -770,9 +771,9 @@ class MainWindow(QMainWindow):
 
         space_group = QGroupBox("Space-Time Controls")
         space_layout = QGridLayout(space_group)
-        space_layout.setContentsMargins(6, 4, 6, 4)
-        space_layout.setHorizontalSpacing(4)
-        space_layout.setVerticalSpacing(2)
+        space_layout.setContentsMargins(9, 9, 9, 9)
+        space_layout.setHorizontalSpacing(6)
+        space_layout.setVerticalSpacing(6)
         space_layout.addWidget(QLabel("Ch Start"), 0, 0)
         self.tab3_channel_start_spin = QSpinBox()
         self.tab3_channel_start_spin.setRange(0, 4000)
@@ -797,19 +798,19 @@ class MainWindow(QMainWindow):
 
         storage_group = QGroupBox("raw storage")
         storage_layout = QGridLayout(storage_group)
-        storage_layout.setContentsMargins(6, 4, 6, 4)
-        storage_layout.setHorizontalSpacing(4)
-        storage_layout.setVerticalSpacing(2)
+        storage_layout.setContentsMargins(9, 9, 9, 9)
+        storage_layout.setHorizontalSpacing(6)
+        storage_layout.setVerticalSpacing(6)
         storage_layout.setColumnStretch(1, 1)
         storage_layout.setColumnStretch(3, 1)
         storage_layout.setColumnStretch(5, 1)
         self.tab3_joint_storage_toggle_btn = QPushButton()
         self.tab3_joint_storage_toggle_btn.setCheckable(True)
-        self.tab3_joint_storage_toggle_btn.setMinimumHeight(32)
+        self.tab3_joint_storage_toggle_btn.setMinimumHeight(38)
         storage_layout.addWidget(self.tab3_joint_storage_toggle_btn, 0, 0, 1, 3)
         self.tab3_edas_storage_toggle_btn = QPushButton()
         self.tab3_edas_storage_toggle_btn.setCheckable(True)
-        self.tab3_edas_storage_toggle_btn.setMinimumHeight(32)
+        self.tab3_edas_storage_toggle_btn.setMinimumHeight(38)
         storage_layout.addWidget(self.tab3_edas_storage_toggle_btn, 0, 3, 1, 3)
         self.tab3_storage_toggle_btn = self.tab3_joint_storage_toggle_btn
 
@@ -854,9 +855,9 @@ class MainWindow(QMainWindow):
 
         control_group = QGroupBox("Tab3 Control")
         control_layout = QGridLayout(control_group)
-        control_layout.setContentsMargins(6, 4, 6, 4)
-        control_layout.setHorizontalSpacing(4)
-        control_layout.setVerticalSpacing(2)
+        control_layout.setContentsMargins(9, 9, 9, 9)
+        control_layout.setHorizontalSpacing(6)
+        control_layout.setVerticalSpacing(6)
         self.tab3_start_stop_btn = QPushButton("Start DAS Monitoring")
         self.tab3_start_stop_btn.setCheckable(True)
         control_layout.addWidget(self.tab3_start_stop_btn, 0, 0)
@@ -1548,7 +1549,7 @@ class MainWindow(QMainWindow):
         )
         self.tab3_joint_storage_toggle_btn.setStyleSheet(
             self._build_tab3_toggle_button_style(
-                enabled, "#9467bd", "#6c757d", font_size=12, padding="6px 4px"
+                enabled, "#9467bd", "#6c757d", font_size=16, padding="8px"
             )
         )
 
@@ -1562,7 +1563,7 @@ class MainWindow(QMainWindow):
         )
         self.tab3_edas_storage_toggle_btn.setStyleSheet(
             self._build_tab3_toggle_button_style(
-                enabled, "#2ca02c", "#6c757d", font_size=12, padding="6px 4px"
+                enabled, "#2ca02c", "#6c757d", font_size=16, padding="8px"
             )
         )
 

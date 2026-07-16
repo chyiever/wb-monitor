@@ -63,3 +63,19 @@
 - `python -X utf8 -m py_compile src\ui\main_window.py` 通过。
 - MainWindow offscreen 检查通过：Tab3 未发现 `QScrollArea`，默认 `seismic` 与 eDAS 路径设置可读取。
 - 已执行 UTF-8 中文自检，`src/ui/main_window.py` 未发现问号乱码。
+
+## 2026-07-17 02:40:00 +08:00
+
+- 更新范围：`src/ui/main_window.py`
+
+### 更新摘要
+
+1. 按 Tab1 参数区风格调整 Tab3 左侧参数区行间距与组内边距：外层 `QVBoxLayout` 间距为 `6`，各参数组 `QGridLayout` 横向/纵向间距均为 `6`。
+2. Tab3 左侧面板宽度调整为 `560-600 px`，继续保持无滚动条布局。
+3. `FIP+eDAS SAVE` 与 `eDAS SAVE` 按钮字号恢复为 `16px`、padding 为 `8px`，与 Tab1 控制按钮视觉密度更一致。
+
+### 验证
+
+- `python -X utf8 -m py_compile src\ui\main_window.py` 通过。
+- MainWindow offscreen 检查通过：Tab3 未发现 `QScrollArea`，左侧面板宽度为 `560-600 px`，布局 spacing 为 `6`。
+- 已执行 UTF-8 中文自检，`src/ui/main_window.py` 未发现问号乱码。
