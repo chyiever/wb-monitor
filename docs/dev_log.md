@@ -46,3 +46,20 @@
 - `python -X utf8 tools\validate_tab3_pipeline.py` 通过，输出 `VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve_points=2400`。
 - MainWindow Tab3 offscreen UI 检查通过：默认 `seismic`、`Vmin=-0.3`、`Vmax=0.3`，新增 eDAS storage 设置项可读取。
 - 已执行 UTF-8 中文自检，新增/修改的中文文档未发现问号乱码。
+
+## 2026-07-17 02:25:00 +08:00
+
+- 更新范围：`src/ui/main_window.py`、`docs/2026-07-17 数据存储.md`
+
+### 更新摘要
+
+1. 进一步压缩 Tab3 左侧参数布局，移除左侧 `QScrollArea`，避免参数区出现滚动条。
+2. 将 `FIP+eDAS Path`、`eDAS Path` 与路径输入框合并到同一行显示。
+3. 将通信状态、Live Header、Alignment、Space-Time 与 raw storage 中的短标签参数合并到更少行，减少纵向占用。
+4. 将 Tab3 Control 的 Start/Plot 两个按钮改为同一行显示。
+
+### 验证
+
+- `python -X utf8 -m py_compile src\ui\main_window.py` 通过。
+- MainWindow offscreen 检查通过：Tab3 未发现 `QScrollArea`，默认 `seismic` 与 eDAS 路径设置可读取。
+- 已执行 UTF-8 中文自检，`src/ui/main_window.py` 未发现问号乱码。
