@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout, QGridLayout, QGroupBox, QLabel, QPushButton,
     QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox,
     QTextEdit, QTableWidget, QTableWidgetItem, QSplitter,
-    QFrame, QStatusBar, QMenuBar, QAction, QMessageBox
+    QFrame, QStatusBar, QMenuBar, QAction, QMessageBox, QSizePolicy
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QIcon
@@ -638,7 +638,7 @@ class MainWindow(QMainWindow):
         left_panel.setMaximumWidth(600)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(9, 9, 9, 9)
-        left_layout.setSpacing(6)
+        left_layout.setSpacing(10)
         self.tab3_left_panel = left_panel
 
         self._tab3_space_time_levels_locked = True
@@ -680,7 +680,8 @@ class MainWindow(QMainWindow):
         comm_layout.addWidget(QLabel("Comm"), 1, 4)
         self.tab3_last_comm_label = QLabel("-")
         comm_layout.addWidget(self.tab3_last_comm_label, 1, 5, 1, 3)
-        left_layout.addWidget(comm_group)
+        comm_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        left_layout.addWidget(comm_group, stretch=1)
 
         header_group = QGroupBox("Live Header")
         header_layout = QGridLayout(header_group)
@@ -699,7 +700,8 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(QLabel("Dur"), 0, 6)
         self.tab3_packet_duration_label = QLabel("-")
         header_layout.addWidget(self.tab3_packet_duration_label, 0, 7)
-        left_layout.addWidget(header_group)
+        header_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        left_layout.addWidget(header_group, stretch=1)
 
         align_group = QGroupBox("Alignment Status")
         align_layout = QGridLayout(align_group)
@@ -725,7 +727,8 @@ class MainWindow(QMainWindow):
         self.tab3_missing_ranges_label = QLabel("-")
         self.tab3_missing_ranges_label.setWordWrap(False)
         align_layout.addWidget(self.tab3_missing_ranges_label, 2, 1, 1, 7)
-        left_layout.addWidget(align_group)
+        align_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        left_layout.addWidget(align_group, stretch=2)
 
         curve_group = QGroupBox("Curve Controls")
         curve_layout = QGridLayout(curve_group)
@@ -767,7 +770,8 @@ class MainWindow(QMainWindow):
         self.tab3_high_freq_spin.setRange(2, 500000)
         self.tab3_high_freq_spin.setValue(2000)
         curve_layout.addWidget(self.tab3_high_freq_spin, 2, 4, 1, 2)
-        left_layout.addWidget(curve_group)
+        curve_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        left_layout.addWidget(curve_group, stretch=2)
 
         space_group = QGroupBox("Space-Time Controls")
         space_layout = QGridLayout(space_group)
@@ -794,7 +798,8 @@ class MainWindow(QMainWindow):
         self.tab3_space_downsample_spin.setRange(1, 100)
         self.tab3_space_downsample_spin.setValue(1)
         space_layout.addWidget(self.tab3_space_downsample_spin, 0, 7)
-        left_layout.addWidget(space_group)
+        space_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        left_layout.addWidget(space_group, stretch=1)
 
         storage_group = QGroupBox("raw storage")
         storage_layout = QGridLayout(storage_group)
@@ -851,7 +856,8 @@ class MainWindow(QMainWindow):
         self.tab3_edas_last_storage_label = QLabel("-")
         self.tab3_edas_last_storage_label.setWordWrap(False)
         storage_layout.addWidget(self.tab3_edas_last_storage_label, 4, 5)
-        left_layout.addWidget(storage_group)
+        storage_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        left_layout.addWidget(storage_group, stretch=3)
 
         control_group = QGroupBox("Tab3 Control")
         control_layout = QGridLayout(control_group)
@@ -865,8 +871,8 @@ class MainWindow(QMainWindow):
         self.tab3_plot_toggle_btn.setCheckable(True)
         self.tab3_plot_toggle_btn.setChecked(True)
         control_layout.addWidget(self.tab3_plot_toggle_btn, 0, 1)
-        left_layout.addWidget(control_group)
-        left_layout.addStretch()
+        control_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        left_layout.addWidget(control_group, stretch=1)
 
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)

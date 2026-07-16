@@ -79,3 +79,19 @@
 - `python -X utf8 -m py_compile src\ui\main_window.py` 通过。
 - MainWindow offscreen 检查通过：Tab3 未发现 `QScrollArea`，左侧面板宽度为 `560-600 px`，布局 spacing 为 `6`。
 - 已执行 UTF-8 中文自检，`src/ui/main_window.py` 未发现问号乱码。
+
+## 2026-07-17 02:55:00 +08:00
+
+- 更新范围：`src/ui/main_window.py`
+
+### 更新摘要
+
+1. 增加 Tab3 左侧参数框之间的竖向间距，外层 `QVBoxLayout` spacing 从 `6` 调整为 `10`，让各参数框之间的边界更清晰。
+2. 移除 Tab3 左侧底部空白 stretch，改为让 7 个参数组按 stretch 比例占用左侧高度，尽量填满左侧区域。
+3. 为 Tab3 左侧各参数组设置 `QSizePolicy.Preferred, QSizePolicy.Expanding`，通信、Header、Alignment、Curve、Space-Time、raw storage、Control 均参与纵向空间分配。
+
+### 验证
+
+- `python -X utf8 -m py_compile src\ui\main_window.py` 通过。
+- MainWindow offscreen 检查通过：Tab3 未发现 `QScrollArea`，左侧布局 spacing 为 `10`，左侧布局项数量为 `7`。
+- 已执行 UTF-8 中文自检，`src/ui/main_window.py` 未发现问号乱码。
