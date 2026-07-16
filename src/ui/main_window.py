@@ -668,9 +668,12 @@ class MainWindow(QMainWindow):
         comm_layout.addWidget(QLabel("Packets"), 2, 0)
         self.tab3_packet_count_label = QLabel("0")
         comm_layout.addWidget(self.tab3_packet_count_label, 2, 1)
-        comm_layout.addWidget(QLabel("Last Comm"), 2, 2)
+        comm_layout.addWidget(QLabel("Missing"), 2, 2)
+        self.tab3_missing_packet_label = QLabel("0")
+        comm_layout.addWidget(self.tab3_missing_packet_label, 2, 3)
+        comm_layout.addWidget(QLabel("Last Comm"), 3, 0)
         self.tab3_last_comm_label = QLabel("-")
-        comm_layout.addWidget(self.tab3_last_comm_label, 2, 3)
+        comm_layout.addWidget(self.tab3_last_comm_label, 3, 1)
         left_layout.addWidget(comm_group)
 
         header_group = QGroupBox("Live Header")
@@ -826,6 +829,8 @@ class MainWindow(QMainWindow):
         self.tab3_curve1_plot.setLabel("left", "Amplitude")
         self.tab3_curve1_das_curve = self.tab3_curve1_plot.plot(pen=pg.mkPen("#1f77b4", width=2))
         self.tab3_curve1_fip_curve = self.tab3_curve1_plot.plot(pen=pg.mkPen("#d62728", width=2))
+        self._configure_tab3_curve_item(self.tab3_curve1_das_curve)
+        self._configure_tab3_curve_item(self.tab3_curve1_fip_curve)
         splitter.addWidget(self.tab3_curve1_plot)
 
         self.tab3_curve2_plot = pg.PlotWidget(title="Curve 2")
@@ -834,6 +839,8 @@ class MainWindow(QMainWindow):
         self.tab3_curve2_plot.setLabel("left", "Amplitude")
         self.tab3_curve2_das_curve = self.tab3_curve2_plot.plot(pen=pg.mkPen("#1f77b4", width=2))
         self.tab3_curve2_fip_curve = self.tab3_curve2_plot.plot(pen=pg.mkPen("#d62728", width=2))
+        self._configure_tab3_curve_item(self.tab3_curve2_das_curve)
+        self._configure_tab3_curve_item(self.tab3_curve2_fip_curve)
         splitter.addWidget(self.tab3_curve2_plot)
 
         tab3_space_time_panel = QWidget()
@@ -1216,6 +1223,7 @@ class MainWindow(QMainWindow):
     def update_tab3_packet_statistics(self, stats: Dict[str, Any]):
         """Update Tab3 packet counters."""
         self.tab3_packet_count_label.setText(str(stats.get("packets_received", 0)))
+        self.tab3_missing_packet_label.setText(str(stats.get("missing_packets", 0)))
 
     def update_tab3_alignment_status(self, payload: Dict[str, Any]):
         """Update Tab3 alignment summary labels."""
@@ -1277,6 +1285,7 @@ class MainWindow(QMainWindow):
         self.tab3_space_time_image.setImage(matrix, autoLevels=False, levels=levels)
         self.tab3_space_time_image.setRect(x_offset, y_offset, x_width, y_height)
         self._apply_tab3_space_time_levels()
+        self._update_tab3_space_time_histogram_range(matrix, levels)
 
     def reset_tab3_views(self):
         """Clear Tab3 plots and status labels."""
@@ -1287,6 +1296,7 @@ class MainWindow(QMainWindow):
         self._reset_tab3_space_time_image()
         self.tab3_last_storage_label.setText("-")
         self.tab3_packet_count_label.setText("0")
+        self.tab3_missing_packet_label.setText("0")
         self.tab3_last_comm_label.setText("-")
         self.tab3_missing_ranges_label.setText("-")
 
@@ -1408,6 +1418,24 @@ class MainWindow(QMainWindow):
         if hasattr(self, "tab3_space_time_histogram"):
             self.tab3_space_time_histogram.setLevels(vmin, vmax)
 
+    def _update_tab3_space_time_histogram_range(self, matrix: np.ndarray, levels: Tuple[float, float]):
+        """Keep the colorbar distribution visible while fixed vmin/vmax control contrast."""
+        if not hasattr(self, "tab3_space_time_histogram") or matrix.size == 0:
+            return
+        finite_values = matrix[np.isfinite(matrix)]
+        if finite_values.size == 0:
+            histogram_min, histogram_max = levels
+        else:
+            histogram_min = min(float(np.min(finite_values)), float(levels[0]))
+            histogram_max = max(float(np.max(finite_values)), float(levels[1]))
+        if histogram_min >= histogram_max:
+            padding = max(abs(histogram_min) * 0.05, 1e-9)
+            histogram_min -= padding
+            histogram_max += padding
+        histogram_item = getattr(self.tab3_space_time_histogram, "item", None)
+        if histogram_item is not None and hasattr(histogram_item, "setHistogramRange"):
+            histogram_item.setHistogramRange(histogram_min, histogram_max, padding=0.05)
+
     def _build_tab3_toggle_button_style(self, checked: bool, active_color: str, inactive_color: str) -> str:
         """Return a shared stylesheet for Tab3 checkable buttons."""
         background = active_color if checked else inactive_color
@@ -1495,6 +1523,15 @@ class MainWindow(QMainWindow):
         )
         self.tab3_space_time_image.setRect(0.0, 0.0, 1.0, 1.0)
         self._apply_tab3_space_time_levels()
+
+    def _configure_tab3_curve_item(self, curve_item):
+        """Use pyqtgraph fast paths for long DAS/FIP comparison curves."""
+        if hasattr(curve_item, "setClipToView"):
+            curve_item.setClipToView(True)
+        if hasattr(curve_item, "setDownsampling"):
+            curve_item.setDownsampling(auto=True, method="peak")
+        if hasattr(curve_item, "setSkipFiniteCheck"):
+            curve_item.setSkipFiniteCheck(True)
 
     def _render_tab3_curve(self, curve_item, curve_mode: str, times, values, expected_mode: str):
         """Render one Tab3 line only when the current UI mode matches."""

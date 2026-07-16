@@ -25,6 +25,7 @@ class DASTCPServer(QObject):
     statistics_updated = pyqtSignal(dict)
 
     HEADER_STRUCT = struct.Struct(">IIIId")
+    MAX_PAYLOAD_BYTES = 512 * 1024 * 1024
 
     def __init__(self, ip: str = "0.0.0.0", port: int = 3678):
         super().__init__()
@@ -37,6 +38,8 @@ class DASTCPServer(QObject):
         self._running = False
         self._connected = False
         self._last_data_time = 0.0
+        self._last_comm_count: Optional[int] = None
+        self.missing_packets = 0
         self.packets_received = 0
         self.logger = logging.getLogger(f"{__name__}.DASTCPServer")
 
@@ -47,6 +50,7 @@ class DASTCPServer(QObject):
                 return True
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
             self.server_socket.bind((self.ip, self.port))
             self.server_socket.listen(1)
             self._running = True
@@ -95,9 +99,12 @@ class DASTCPServer(QObject):
                 self.client_socket = client_socket
                 self.client_address = client_address
                 self.client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 16 * 1024 * 1024)
                 self.client_socket.settimeout(1.0)
                 self._connected = True
                 self.packets_received = 0
+                self.missing_packets = 0
+                self._last_comm_count = None
                 self._last_data_time = 0.0
                 self.connection_status.emit(True, f"DAS connected to {client_address}")
                 self._receive_loop()
@@ -113,13 +120,38 @@ class DASTCPServer(QObject):
                 if not header_bytes:
                     continue
                 comm_count, sample_rate_hz, channel_count, data_bytes, packet_duration_seconds = self.HEADER_STRUCT.unpack(header_bytes)
-                if data_bytes <= 0 or data_bytes % 8 != 0:
+                if sample_rate_hz <= 0 or channel_count <= 0:
+                    self.error_occurred.emit(
+                        f"Invalid DAS header: sample_rate={sample_rate_hz}, channels={channel_count}"
+                    )
+                    continue
+                if data_bytes <= 0 or data_bytes > self.MAX_PAYLOAD_BYTES or data_bytes % 8 != 0:
                     self.error_occurred.emit(f"Invalid DAS data_bytes: {data_bytes}")
                     continue
                 payload = self._recv_exact(data_bytes)
                 if not payload:
                     continue
                 data = np.frombuffer(payload, dtype=">f8").astype(np.float64, copy=False)
+                total_points = int(data_bytes // 8)
+                if total_points % channel_count != 0:
+                    self.error_occurred.emit(
+                        f"DAS payload/channel mismatch: points={total_points}, channels={channel_count}"
+                    )
+                    continue
+                samples_per_channel = total_points // channel_count
+                actual_duration = samples_per_channel / float(sample_rate_hz)
+                if packet_duration_seconds <= 0.0:
+                    packet_duration_seconds = actual_duration
+                duration_error = abs(packet_duration_seconds - actual_duration)
+                tolerance = max(1.0 / float(sample_rate_hz), 1e-9)
+                if duration_error > tolerance:
+                    self.logger.warning(
+                        "DAS packet duration mismatch: header=%.12f, payload=%.12f, comm=%d",
+                        packet_duration_seconds,
+                        actual_duration,
+                        comm_count,
+                    )
+                    packet_duration_seconds = actual_duration
                 header = DASPacketHeader(
                     comm_count=comm_count,
                     sample_rate_hz=sample_rate_hz,
@@ -127,13 +159,23 @@ class DASTCPServer(QObject):
                     data_bytes=data_bytes,
                     packet_duration_seconds=packet_duration_seconds,
                 )
-                expected_points = int(round(sample_rate_hz * packet_duration_seconds * channel_count))
-                if expected_points != len(data):
-                    self.error_occurred.emit(
-                        f"DAS payload length mismatch: expected={expected_points}, actual={len(data)}"
-                    )
-                    continue
                 packet = DASRawPacket(header=header, data_1d=data)
+                if self._last_comm_count is not None and comm_count > self._last_comm_count + 1:
+                    missing = comm_count - self._last_comm_count - 1
+                    self.missing_packets += missing
+                    self.logger.warning(
+                        "DAS comm_count gap: last=%d, current=%d, missing=%d",
+                        self._last_comm_count,
+                        comm_count,
+                        missing,
+                    )
+                elif self._last_comm_count is not None and comm_count <= self._last_comm_count:
+                    self.logger.warning(
+                        "DAS comm_count reset/out-of-order: last=%d, current=%d",
+                        self._last_comm_count,
+                        comm_count,
+                    )
+                self._last_comm_count = comm_count
                 self.packets_received += 1
                 self._last_data_time = time.time()
                 self.header_updated.emit(
@@ -145,7 +187,13 @@ class DASTCPServer(QObject):
                         "comm_count": comm_count,
                     }
                 )
-                self.statistics_updated.emit({"packets_received": self.packets_received, "connected": True})
+                self.statistics_updated.emit(
+                    {
+                        "packets_received": self.packets_received,
+                        "missing_packets": self.missing_packets,
+                        "connected": True,
+                    }
+                )
                 self.packet_received.emit(packet)
             except socket.timeout:
                 continue
@@ -156,7 +204,13 @@ class DASTCPServer(QObject):
                 break
         self._connected = False
         self.connection_status.emit(False, "DAS disconnected")
-        self.statistics_updated.emit({"packets_received": self.packets_received, "connected": False})
+        self.statistics_updated.emit(
+            {
+                "packets_received": self.packets_received,
+                "missing_packets": self.missing_packets,
+                "connected": False,
+            }
+        )
 
     def _recv_exact(self, size: int) -> Optional[bytes]:
         if not self.client_socket:
@@ -165,7 +219,7 @@ class DASTCPServer(QObject):
         remaining = size
         while remaining > 0 and self._running:
             try:
-                chunk = self.client_socket.recv(min(65536, remaining))
+                chunk = self.client_socket.recv(min(1024 * 1024, remaining))
                 if not chunk:
                     return None
                 chunks.extend(chunk)

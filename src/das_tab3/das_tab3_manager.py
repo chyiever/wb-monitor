@@ -134,12 +134,21 @@ class DASTab3Manager(QObject):
                 matrix=parsed.matrix,
             )
         )
-        self.plot_worker.enqueue_packet(parsed)
+        if not self.plot_worker.enqueue_packet(parsed):
+            self.logger.warning("DAS plot queue rejected packet comm_count=%d", parsed.header.comm_count)
 
     def _parse_packet(self, raw_packet: DASRawPacket) -> DASParsedPacket:
         header = raw_packet.header
-        samples_per_channel = int(round(header.sample_rate_hz * header.packet_duration_seconds))
-        matrix = raw_packet.data_1d.reshape(header.channel_count, samples_per_channel)
+        if header.channel_count <= 0:
+            raise ValueError(f"Invalid DAS channel_count: {header.channel_count}")
+        if raw_packet.data_1d.size % header.channel_count != 0:
+            raise ValueError(
+                f"DAS payload size {raw_packet.data_1d.size} is not divisible by channel_count={header.channel_count}"
+            )
+        samples_per_channel = raw_packet.data_1d.size // header.channel_count
+        matrix = np.ascontiguousarray(
+            raw_packet.data_1d.reshape(header.channel_count, samples_per_channel)
+        )
         packet_start_time = header.comm_count * header.packet_duration_seconds
         packet_end_time = packet_start_time + header.packet_duration_seconds
         return DASParsedPacket(
@@ -211,4 +220,3 @@ class DASTab3Manager(QObject):
         self._disconnect_alert_active = True
         self.coordinator.update_online_state("das", False)
         self.main_window.show_tab3_error("DAS has not received data for 10 seconds.")
-

@@ -33,6 +33,7 @@ class DASPlotWorker(QThread):
             "low_hz": 1.0,
             "high_hz": 2000.0,
             "apply_filter": False,
+            "curve_max_points": 100000,
         }
         self._history: list[DASParsedPacket] = []
 
@@ -94,21 +95,23 @@ class DASPlotWorker(QThread):
         das_curve = np.concatenate(curve_values) if curve_values else np.array([], dtype=np.float64)
         das_times = np.concatenate(curve_times) if curve_times else np.array([], dtype=np.float64)
         das_curve = self._maybe_filter(das_curve, packet.header.sample_rate_hz)
-        if time_downsample > 1:
-            das_curve = das_curve[::time_downsample]
-            das_times = das_times[::time_downsample]
+        curve_step = self._curve_display_step(len(das_curve), packet.header.sample_rate_hz, time_downsample)
+        if curve_step > 1:
+            das_curve = das_curve[::curve_step]
+            das_times = das_times[::curve_step]
 
-        latest_matrix = packet.matrix
-        start = min(max(channel_start, 0), latest_matrix.shape[0] - 1)
-        end = min(max(channel_end, start), latest_matrix.shape[0] - 1)
-        sliced = latest_matrix[start:end + 1:space_downsample, ::time_downsample]
-        x_axis = packet.packet_start_time + np.arange(sliced.shape[1], dtype=np.float64) * time_downsample / packet.header.sample_rate_hz
-        y_axis = np.arange(start, end + 1, space_downsample, dtype=np.int32)
+        space_time_matrix, x_axis, y_axis = self._build_space_time_payload(
+            packet=packet,
+            channel_start=channel_start,
+            channel_end=channel_end,
+            time_downsample=time_downsample,
+            space_downsample=space_downsample,
+        )
 
         payload = {
             "das_curve_time": das_times,
             "das_curve_values": das_curve,
-            "space_time_matrix": sliced,
+            "space_time_matrix": space_time_matrix,
             "space_time_x": x_axis,
             "space_time_y": y_axis,
             "header": {
@@ -120,6 +123,51 @@ class DASPlotWorker(QThread):
             },
         }
         self.plot_payload_ready.emit(payload)
+
+    def _curve_display_step(self, point_count: int, sample_rate_hz: float, time_downsample: int) -> int:
+        """Limit curve density without changing the packet stream or storage data."""
+        if point_count <= 0:
+            return 1
+        configured_step = max(1, int(time_downsample))
+        max_points = max(1000, int(self.settings.get("curve_max_points", 100000)))
+        density_step = max(1, int(np.ceil(point_count / max_points)))
+        return max(configured_step, density_step)
+
+    def _build_space_time_payload(
+        self,
+        packet: DASParsedPacket,
+        channel_start: int,
+        channel_end: int,
+        time_downsample: int,
+        space_downsample: int,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Build a rolling channel x time image matching the PCIe Tab2 orientation."""
+        latest_matrix = packet.matrix
+        start = min(max(channel_start, 0), latest_matrix.shape[0] - 1)
+        end = min(max(channel_end, start), latest_matrix.shape[0] - 1)
+        blocks = []
+        for item in self._history:
+            if item.matrix.shape[0] <= start:
+                continue
+            safe_end = min(end, item.matrix.shape[0] - 1)
+            block = item.matrix[start:safe_end + 1:space_downsample, ::time_downsample]
+            if block.size == 0:
+                continue
+            if blocks and block.shape[0] != blocks[0].shape[0]:
+                continue
+            blocks.append(np.ascontiguousarray(block))
+
+        if blocks:
+            matrix = np.ascontiguousarray(np.concatenate(blocks, axis=1))
+        else:
+            matrix = np.empty((0, 0), dtype=np.float64)
+
+        dt = time_downsample / max(float(packet.header.sample_rate_hz), 1.0)
+        x_axis = np.arange(matrix.shape[1], dtype=np.float64) * dt
+        y_axis = np.arange(start, end + 1, space_downsample, dtype=np.int32)
+        if matrix.shape[0] != len(y_axis):
+            y_axis = y_axis[: matrix.shape[0]]
+        return matrix, x_axis, y_axis
 
     def _maybe_filter(self, data: np.ndarray, sample_rate_hz: float) -> np.ndarray:
         if len(data) == 0 or not bool(self.settings.get("apply_filter", False)):
