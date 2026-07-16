@@ -402,11 +402,15 @@ class EDASRawStorageWorker(QThread):
         self._blocks_in_file = 0
         self._bytes_in_file = 0
         self.stats["files_created"] += 1
+        data_bytes_per_block = int(request.packet.header.data_bytes)
+        packet_duration_seconds = float(request.packet.header.packet_duration_seconds)
         self._current_metadata = {
             "format_version": "wb-monitor-edas-raw-v1",
             "storage_type": "edas_raw_storage",
             "data_file": self._current_file_path.name,
             "metadata_file": self._current_metadata_path.name,
+            "output_dir": str(output_path),
+            "file_index": int(self._file_index),
             "created_at": now.isoformat(timespec="milliseconds"),
             "closed_at": None,
             "dtype": "float64",
@@ -414,8 +418,25 @@ class EDASRawStorageWorker(QThread):
             "array_order": "C",
             "matrix_shape_per_block": [channel_count, samples_per_channel],
             "sample_rate_hz": sample_rate_hz,
-            "packet_duration_seconds": float(request.packet.header.packet_duration_seconds),
+            "packet_duration_seconds": packet_duration_seconds,
             "blocks_per_file": int(request.blocks_per_file),
+            "queue_packets": int(request.queue_packets),
+            "data_bytes_per_block": data_bytes_per_block,
+            "storage_parameters": {
+                "output_dir": str(output_path),
+                "blocks_per_file": int(request.blocks_per_file),
+                "queue_packets": int(request.queue_packets),
+                "file_split_policy": "split after blocks_per_file complete DAS packets",
+                "queue_overflow_policy": "drop oldest packet before enqueueing the latest packet",
+            },
+            "das_parameters": {
+                "sample_rate_hz": sample_rate_hz,
+                "channel_count": channel_count,
+                "samples_per_channel": samples_per_channel,
+                "packet_duration_seconds": packet_duration_seconds,
+                "data_bytes_per_block": data_bytes_per_block,
+                "matrix_shape_per_block": [channel_count, samples_per_channel],
+            },
             "blocks_written": 0,
             "bytes_written": 0,
             "comm_counts": [],

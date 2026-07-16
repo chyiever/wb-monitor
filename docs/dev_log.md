@@ -95,3 +95,21 @@
 - `python -X utf8 -m py_compile src\ui\main_window.py` 通过。
 - MainWindow offscreen 检查通过：Tab3 未发现 `QScrollArea`，左侧布局 spacing 为 `10`，左侧布局项数量为 `7`。
 - 已执行 UTF-8 中文自检，`src/ui/main_window.py` 未发现问号乱码。
+
+## 2026-07-17 03:10:00 +08:00
+
+- 更新范围：`src/ui/main_window.py`、`src/das_tab3/das_storage_worker.py`、`docs/2026-07-17 数据存储.md`
+
+### 更新摘要
+
+1. 统一 Tab3 四个动作按钮尺寸：`FIP+eDAS SAVE`、`eDAS SAVE`、`Start/Stop DAS Monitoring`、`Plot Updates` 均设置为横向扩展、固定高度，最小高度为 `44`。
+2. 统一四个动作按钮的 Tab3 toggle 样式，使用相同字号和 padding；storage 与 control 按钮行均设置对称 column stretch。
+3. 补充 eDAS-only 独立存储 `.json` 元数据，新增 `output_dir`、`file_index`、`queue_packets`、`data_bytes_per_block`、`storage_parameters` 和 `das_parameters`。
+4. `storage_parameters` 记录输出目录、分文件块数、队列容量、分文件策略和队列满时丢弃旧包策略；`das_parameters` 记录采样率、通道数、每通道样本数、包时长、单包字节数和矩阵形状。
+
+### 验证
+
+- `python -X utf8 -m py_compile src\ui\main_window.py src\das_tab3\das_storage_worker.py` 通过。
+- MainWindow offscreen 检查通过：Tab3 四个动作按钮最小高度均为 `44`，无 `QScrollArea`。
+- eDAS-only 存储线程合成测试通过：新元数据 `storage_parameters` 与 `das_parameters` 写入正确。
+- 已执行 UTF-8 中文自检，本次修改文件未发现问号乱码。

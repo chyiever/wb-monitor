@@ -806,16 +806,17 @@ class MainWindow(QMainWindow):
         storage_layout.setContentsMargins(9, 9, 9, 9)
         storage_layout.setHorizontalSpacing(6)
         storage_layout.setVerticalSpacing(6)
-        storage_layout.setColumnStretch(1, 1)
-        storage_layout.setColumnStretch(3, 1)
-        storage_layout.setColumnStretch(5, 1)
+        for column in range(6):
+            storage_layout.setColumnStretch(column, 1)
         self.tab3_joint_storage_toggle_btn = QPushButton()
         self.tab3_joint_storage_toggle_btn.setCheckable(True)
-        self.tab3_joint_storage_toggle_btn.setMinimumHeight(38)
+        self.tab3_joint_storage_toggle_btn.setMinimumHeight(44)
+        self.tab3_joint_storage_toggle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         storage_layout.addWidget(self.tab3_joint_storage_toggle_btn, 0, 0, 1, 3)
         self.tab3_edas_storage_toggle_btn = QPushButton()
         self.tab3_edas_storage_toggle_btn.setCheckable(True)
-        self.tab3_edas_storage_toggle_btn.setMinimumHeight(38)
+        self.tab3_edas_storage_toggle_btn.setMinimumHeight(44)
+        self.tab3_edas_storage_toggle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         storage_layout.addWidget(self.tab3_edas_storage_toggle_btn, 0, 3, 1, 3)
         self.tab3_storage_toggle_btn = self.tab3_joint_storage_toggle_btn
 
@@ -864,12 +865,18 @@ class MainWindow(QMainWindow):
         control_layout.setContentsMargins(9, 9, 9, 9)
         control_layout.setHorizontalSpacing(6)
         control_layout.setVerticalSpacing(6)
+        control_layout.setColumnStretch(0, 1)
+        control_layout.setColumnStretch(1, 1)
         self.tab3_start_stop_btn = QPushButton("Start DAS Monitoring")
         self.tab3_start_stop_btn.setCheckable(True)
+        self.tab3_start_stop_btn.setMinimumHeight(44)
+        self.tab3_start_stop_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         control_layout.addWidget(self.tab3_start_stop_btn, 0, 0)
         self.tab3_plot_toggle_btn = QPushButton()
         self.tab3_plot_toggle_btn.setCheckable(True)
         self.tab3_plot_toggle_btn.setChecked(True)
+        self.tab3_plot_toggle_btn.setMinimumHeight(44)
+        self.tab3_plot_toggle_btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         control_layout.addWidget(self.tab3_plot_toggle_btn, 0, 1)
         control_group.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
         left_layout.addWidget(control_group, stretch=1)
@@ -1554,9 +1561,7 @@ class MainWindow(QMainWindow):
             "FIP+eDAS SAVE: ON" if enabled else "FIP+eDAS SAVE: OFF"
         )
         self.tab3_joint_storage_toggle_btn.setStyleSheet(
-            self._build_tab3_toggle_button_style(
-                enabled, "#9467bd", "#6c757d", font_size=16, padding="8px"
-            )
+            self._build_tab3_toggle_button_style(enabled, "#9467bd", "#6c757d")
         )
 
     def _update_tab3_edas_storage_button_state(self, enabled: bool):
@@ -1568,9 +1573,7 @@ class MainWindow(QMainWindow):
             "eDAS SAVE: ON" if enabled else "eDAS SAVE: OFF"
         )
         self.tab3_edas_storage_toggle_btn.setStyleSheet(
-            self._build_tab3_toggle_button_style(
-                enabled, "#2ca02c", "#6c757d", font_size=16, padding="8px"
-            )
+            self._build_tab3_toggle_button_style(enabled, "#2ca02c", "#6c757d")
         )
 
     def route_tab3_joint_storage_fallback(self, target: str, message: str):
