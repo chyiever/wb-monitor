@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QHBoxLayout, QGridLayout, QGroupBox, QLabel, QPushButton,
     QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox, QCheckBox,
     QTextEdit, QTableWidget, QTableWidgetItem, QSplitter,
-    QFrame, QStatusBar, QMenuBar, QAction, QMessageBox
+    QFrame, QStatusBar, QMenuBar, QAction, QMessageBox, QScrollArea
 )
 from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QIcon
@@ -633,11 +633,12 @@ class MainWindow(QMainWindow):
         main_layout = QHBoxLayout(tab3)
 
         left_panel = QWidget()
-        left_panel.setMaximumWidth(420)
+        left_panel.setMinimumWidth(450)
+        left_panel.setMaximumWidth(500)
         left_layout = QVBoxLayout(left_panel)
         left_layout.setSpacing(6)
 
-        self._tab3_space_time_levels_locked = False
+        self._tab3_space_time_levels_locked = True
         self._tab3_colormap_options = [
             ("Jet", "jet"),
             ("Viridis", "viridis"),
@@ -719,89 +720,123 @@ class MainWindow(QMainWindow):
 
         curve_group = QGroupBox("Curve Controls")
         curve_layout = QGridLayout(curve_group)
+        curve_layout.setHorizontalSpacing(6)
+        curve_layout.setVerticalSpacing(4)
+        curve_layout.setColumnStretch(1, 1)
+        curve_layout.setColumnStretch(3, 1)
         curve_layout.addWidget(QLabel("Curve 1"), 0, 0)
         self.tab3_curve1_combo = QComboBox()
         self.tab3_curve1_combo.addItems(["Off", "DAS Channel", "FIP"])
         self.tab3_curve1_combo.setCurrentText("DAS Channel")
         curve_layout.addWidget(self.tab3_curve1_combo, 0, 1)
-        curve_layout.addWidget(QLabel("Curve 2"), 1, 0)
+        curve_layout.addWidget(QLabel("Curve 2"), 0, 2)
         self.tab3_curve2_combo = QComboBox()
         self.tab3_curve2_combo.addItems(["Off", "DAS Channel", "FIP"])
         self.tab3_curve2_combo.setCurrentText("FIP")
-        curve_layout.addWidget(self.tab3_curve2_combo, 1, 1)
-        curve_layout.addWidget(QLabel("DAS Channel"), 2, 0)
+        curve_layout.addWidget(self.tab3_curve2_combo, 0, 3)
+        curve_layout.addWidget(QLabel("DAS Channel"), 1, 0)
         self.tab3_das_channel_spin = QSpinBox()
         self.tab3_das_channel_spin.setRange(0, 4000)
-        curve_layout.addWidget(self.tab3_das_channel_spin, 2, 1)
-        curve_layout.addWidget(QLabel("Display Seconds"), 3, 0)
+        curve_layout.addWidget(self.tab3_das_channel_spin, 1, 1)
+        curve_layout.addWidget(QLabel("Display(s)"), 1, 2)
         self.tab3_display_seconds_spin = QDoubleSpinBox()
         self.tab3_display_seconds_spin.setRange(0.2, 10.0)
         self.tab3_display_seconds_spin.setValue(1.0)
         self.tab3_display_seconds_spin.setDecimals(1)
-        curve_layout.addWidget(self.tab3_display_seconds_spin, 3, 1)
+        curve_layout.addWidget(self.tab3_display_seconds_spin, 1, 3)
         self.tab3_filter_enable_check = QCheckBox("Apply DAS band-pass")
-        curve_layout.addWidget(self.tab3_filter_enable_check, 4, 0, 1, 2)
-        curve_layout.addWidget(QLabel("Low Hz"), 5, 0)
+        curve_layout.addWidget(self.tab3_filter_enable_check, 2, 0, 1, 4)
+        curve_layout.addWidget(QLabel("Low Hz"), 3, 0)
         self.tab3_low_freq_spin = QSpinBox()
         self.tab3_low_freq_spin.setRange(1, 500000)
         self.tab3_low_freq_spin.setValue(100)
-        curve_layout.addWidget(self.tab3_low_freq_spin, 5, 1)
-        curve_layout.addWidget(QLabel("High Hz"), 6, 0)
+        curve_layout.addWidget(self.tab3_low_freq_spin, 3, 1)
+        curve_layout.addWidget(QLabel("High Hz"), 3, 2)
         self.tab3_high_freq_spin = QSpinBox()
         self.tab3_high_freq_spin.setRange(2, 500000)
         self.tab3_high_freq_spin.setValue(2000)
-        curve_layout.addWidget(self.tab3_high_freq_spin, 6, 1)
+        curve_layout.addWidget(self.tab3_high_freq_spin, 3, 3)
         left_layout.addWidget(curve_group)
 
         space_group = QGroupBox("Space-Time Controls")
         space_layout = QGridLayout(space_group)
         space_layout.setHorizontalSpacing(6)
-        space_layout.addWidget(QLabel("Channel Start"), 0, 0)
+        space_layout.addWidget(QLabel("Ch Start"), 0, 0)
         self.tab3_channel_start_spin = QSpinBox()
         self.tab3_channel_start_spin.setRange(0, 4000)
         self.tab3_channel_start_spin.setValue(0)
         space_layout.addWidget(self.tab3_channel_start_spin, 0, 1)
-        space_layout.addWidget(QLabel("Channel End"), 0, 2)
+        space_layout.addWidget(QLabel("Ch End"), 0, 2)
         self.tab3_channel_end_spin = QSpinBox()
         self.tab3_channel_end_spin.setRange(0, 4000)
         self.tab3_channel_end_spin.setValue(199)
         space_layout.addWidget(self.tab3_channel_end_spin, 0, 3)
-        space_layout.addWidget(QLabel("Time Downsample"), 1, 0)
+        space_layout.addWidget(QLabel("Time DS"), 1, 0)
         self.tab3_time_downsample_spin = QSpinBox()
         self.tab3_time_downsample_spin.setRange(1, 100)
         self.tab3_time_downsample_spin.setValue(1)
         space_layout.addWidget(self.tab3_time_downsample_spin, 1, 1)
-        space_layout.addWidget(QLabel("Space Downsample"), 1, 2)
+        space_layout.addWidget(QLabel("Space DS"), 1, 2)
         self.tab3_space_downsample_spin = QSpinBox()
         self.tab3_space_downsample_spin.setRange(1, 100)
         self.tab3_space_downsample_spin.setValue(1)
         space_layout.addWidget(self.tab3_space_downsample_spin, 1, 3)
         left_layout.addWidget(space_group)
 
-        storage_group = QGroupBox("Joint Raw Storage")
+        storage_group = QGroupBox("raw storage")
         storage_layout = QGridLayout(storage_group)
-        self.tab3_storage_toggle_btn = QPushButton()
-        self.tab3_storage_toggle_btn.setCheckable(True)
-        storage_layout.addWidget(self.tab3_storage_toggle_btn, 0, 0, 1, 2)
-        storage_layout.addWidget(QLabel("Path"), 1, 0, 1, 2)
+        storage_layout.setHorizontalSpacing(6)
+        storage_layout.setVerticalSpacing(4)
+        storage_layout.setColumnStretch(1, 1)
+        storage_layout.setColumnStretch(3, 1)
+        self.tab3_joint_storage_toggle_btn = QPushButton()
+        self.tab3_joint_storage_toggle_btn.setCheckable(True)
+        self.tab3_joint_storage_toggle_btn.setMinimumHeight(38)
+        storage_layout.addWidget(self.tab3_joint_storage_toggle_btn, 0, 0, 1, 2)
+        self.tab3_edas_storage_toggle_btn = QPushButton()
+        self.tab3_edas_storage_toggle_btn.setCheckable(True)
+        self.tab3_edas_storage_toggle_btn.setMinimumHeight(38)
+        storage_layout.addWidget(self.tab3_edas_storage_toggle_btn, 0, 2, 1, 2)
+        self.tab3_storage_toggle_btn = self.tab3_joint_storage_toggle_btn
+
+        storage_layout.addWidget(QLabel("FIP+eDAS Path"), 1, 0, 1, 4)
         self.tab3_storage_path_edit = QLineEdit("D:/PCCP/FIPeDASDATA")
-        storage_layout.addWidget(self.tab3_storage_path_edit, 2, 0, 1, 2)
-        storage_layout.addWidget(QLabel("Interval(s)"), 3, 0)
+        storage_layout.addWidget(self.tab3_storage_path_edit, 2, 0, 1, 4)
+        storage_layout.addWidget(QLabel("Joint Length(s)"), 3, 0)
         self.tab3_storage_interval_spin = QDoubleSpinBox()
         self.tab3_storage_interval_spin.setRange(1.0, 60.0)
         self.tab3_storage_interval_spin.setValue(10.0)
         self.tab3_storage_interval_spin.setDecimals(1)
         storage_layout.addWidget(self.tab3_storage_interval_spin, 3, 1)
-        storage_layout.addWidget(QLabel("Cache(s)"), 4, 0)
+        storage_layout.addWidget(QLabel("Joint Cache(s)"), 3, 2)
         self.tab3_cache_seconds_spin = QDoubleSpinBox()
-        self.tab3_cache_seconds_spin.setRange(5.0, 60.0)
+        self.tab3_cache_seconds_spin.setRange(5.0, 120.0)
         self.tab3_cache_seconds_spin.setValue(10.0)
         self.tab3_cache_seconds_spin.setDecimals(1)
-        storage_layout.addWidget(self.tab3_cache_seconds_spin, 4, 1)
-        storage_layout.addWidget(QLabel("Last File"), 5, 0, 1, 2)
+        storage_layout.addWidget(self.tab3_cache_seconds_spin, 3, 3)
+
+        storage_layout.addWidget(QLabel("eDAS Path"), 4, 0, 1, 4)
+        self.tab3_edas_storage_path_edit = QLineEdit("D:/PCCP/eDASDATA")
+        storage_layout.addWidget(self.tab3_edas_storage_path_edit, 5, 0, 1, 4)
+        storage_layout.addWidget(QLabel("Blocks/File"), 6, 0)
+        self.tab3_edas_blocks_per_file_spin = QSpinBox()
+        self.tab3_edas_blocks_per_file_spin.setRange(1, 100000)
+        self.tab3_edas_blocks_per_file_spin.setValue(50)
+        storage_layout.addWidget(self.tab3_edas_blocks_per_file_spin, 6, 1)
+        storage_layout.addWidget(QLabel("Cache(packets)"), 6, 2)
+        self.tab3_edas_queue_packets_spin = QSpinBox()
+        self.tab3_edas_queue_packets_spin.setRange(1, 4096)
+        self.tab3_edas_queue_packets_spin.setValue(200)
+        storage_layout.addWidget(self.tab3_edas_queue_packets_spin, 6, 3)
+
+        storage_layout.addWidget(QLabel("Joint Last"), 7, 0)
         self.tab3_last_storage_label = QLabel("-")
         self.tab3_last_storage_label.setWordWrap(True)
-        storage_layout.addWidget(self.tab3_last_storage_label, 6, 0, 1, 2)
+        storage_layout.addWidget(self.tab3_last_storage_label, 7, 1, 1, 3)
+        storage_layout.addWidget(QLabel("eDAS Last"), 8, 0)
+        self.tab3_edas_last_storage_label = QLabel("-")
+        self.tab3_edas_last_storage_label.setWordWrap(True)
+        storage_layout.addWidget(self.tab3_edas_last_storage_label, 8, 1, 1, 3)
         left_layout.addWidget(storage_group)
 
         control_group = QGroupBox("Tab3 Control")
@@ -856,14 +891,14 @@ class MainWindow(QMainWindow):
         self.tab3_colormap_combo = QComboBox()
         for text, value in self._tab3_colormap_options:
             self.tab3_colormap_combo.addItem(text, value)
-        self.tab3_colormap_combo.setCurrentText("Jet")
+        self.tab3_colormap_combo.setCurrentText("Seismic")
         tab3_space_time_controls_layout.addWidget(self.tab3_colormap_combo)
         tab3_space_time_controls_layout.addWidget(QLabel("Vmin"))
         self.tab3_vmin_spin = QDoubleSpinBox()
         self.tab3_vmin_spin.setRange(-1e9, 1e9)
         self.tab3_vmin_spin.setDecimals(6)
         self.tab3_vmin_spin.setSingleStep(0.01)
-        self.tab3_vmin_spin.setValue(-0.1)
+        self.tab3_vmin_spin.setValue(-0.3)
         self.tab3_vmin_spin.setMinimumWidth(95)
         tab3_space_time_controls_layout.addWidget(self.tab3_vmin_spin)
         tab3_space_time_controls_layout.addWidget(QLabel("Vmax"))
@@ -871,7 +906,7 @@ class MainWindow(QMainWindow):
         self.tab3_vmax_spin.setRange(-1e9, 1e9)
         self.tab3_vmax_spin.setDecimals(6)
         self.tab3_vmax_spin.setSingleStep(0.01)
-        self.tab3_vmax_spin.setValue(0.1)
+        self.tab3_vmax_spin.setValue(0.3)
         self.tab3_vmax_spin.setMinimumWidth(95)
         tab3_space_time_controls_layout.addWidget(self.tab3_vmax_spin)
         tab3_space_time_controls_layout.addStretch()
@@ -899,12 +934,19 @@ class MainWindow(QMainWindow):
         splitter.addWidget(tab3_space_time_panel)
         splitter.setSizes([250, 250, 400])
 
-        main_layout.addWidget(left_panel, stretch=1)
+        left_scroll_area = QScrollArea()
+        left_scroll_area.setWidgetResizable(True)
+        left_scroll_area.setFrameShape(QFrame.NoFrame)
+        left_scroll_area.setMinimumWidth(470)
+        left_scroll_area.setMaximumWidth(520)
+        left_scroll_area.setWidget(left_panel)
+        main_layout.addWidget(left_scroll_area, stretch=1)
         main_layout.addWidget(right_panel, stretch=3)
 
         self._update_tab3_monitor_button_state(False)
         self._update_tab3_plot_button_state(True)
         self._update_tab3_storage_button_state(False)
+        self._update_tab3_edas_storage_button_state(False)
         self._apply_tab3_space_time_colormap()
         self._apply_tab3_space_time_levels()
 
@@ -1195,10 +1237,15 @@ class MainWindow(QMainWindow):
                 "vmax": self.tab3_vmax_spin.value(),
             },
             "storage": {
-                "enabled": self.tab3_storage_toggle_btn.isChecked(),
+                "enabled": self.tab3_joint_storage_toggle_btn.isChecked(),
+                "joint_enabled": self.tab3_joint_storage_toggle_btn.isChecked(),
                 "path": self.tab3_storage_path_edit.text(),
                 "interval_seconds": self.tab3_storage_interval_spin.value(),
                 "cache_seconds": self.tab3_cache_seconds_spin.value(),
+                "edas_enabled": self.tab3_edas_storage_toggle_btn.isChecked(),
+                "edas_path": self.tab3_edas_storage_path_edit.text(),
+                "edas_blocks_per_file": self.tab3_edas_blocks_per_file_spin.value(),
+                "edas_queue_packets": self.tab3_edas_queue_packets_spin.value(),
             },
         }
 
@@ -1236,8 +1283,12 @@ class MainWindow(QMainWindow):
         self.tab3_missing_ranges_label.setText(", ".join(gaps) if gaps else "-")
 
     def update_tab3_storage_status(self, path: str):
-        """Show the latest Tab3 storage file path."""
+        """Show the latest Tab3 joint storage status."""
         self.tab3_last_storage_label.setText(path)
+
+    def update_tab3_edas_storage_status(self, path: str):
+        """Show the latest Tab3 eDAS-only storage status."""
+        self.tab3_edas_last_storage_label.setText(path)
 
     def update_tab3_fip_curve(self, comm_count: int, values, sample_rate_hz: float):
         """Update cached FIP comparison curves shown in Tab3."""
@@ -1264,7 +1315,10 @@ class MainWindow(QMainWindow):
             self._reset_tab3_space_time_image()
             return
         matrix = np.asarray(matrix, dtype=np.float64)
-        levels = self._compute_tab3_space_time_levels(matrix)
+        levels = (self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value())
+        if levels[0] >= levels[1]:
+            self._set_tab3_space_time_levels(levels[0], levels[0] + 1e-6)
+            levels = (self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value())
         x_scale = 1.0
         x_offset = 0.0
         if x_axis is not None and len(x_axis) > 1:
@@ -1277,11 +1331,6 @@ class MainWindow(QMainWindow):
             y_offset = float(y_axis[0])
         x_width = max(x_scale, 1e-12) * matrix.shape[1]
         y_height = max(y_scale, 1e-12) * matrix.shape[0]
-        if not self._tab3_space_time_levels_locked:
-            self._set_tab3_space_time_levels(levels[0], levels[1], lock=False)
-            levels = (self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value())
-        else:
-            levels = (self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value())
         self.tab3_space_time_image.setImage(matrix, autoLevels=False, levels=levels)
         self.tab3_space_time_image.setRect(x_offset, y_offset, x_width, y_height)
         self._apply_tab3_space_time_levels()
@@ -1295,6 +1344,7 @@ class MainWindow(QMainWindow):
         self.tab3_curve2_fip_curve.setData([], [])
         self._reset_tab3_space_time_image()
         self.tab3_last_storage_label.setText("-")
+        self.tab3_edas_last_storage_label.setText("-")
         self.tab3_packet_count_label.setText("0")
         self.tab3_missing_packet_label.setText("0")
         self.tab3_last_comm_label.setText("-")
@@ -1419,32 +1469,33 @@ class MainWindow(QMainWindow):
             self.tab3_space_time_histogram.setLevels(vmin, vmax)
 
     def _update_tab3_space_time_histogram_range(self, matrix: np.ndarray, levels: Tuple[float, float]):
-        """Keep the colorbar distribution visible while fixed vmin/vmax control contrast."""
+        """Keep the colorbar range fixed to the manual vmin/vmax controls."""
         if not hasattr(self, "tab3_space_time_histogram") or matrix.size == 0:
             return
-        finite_values = matrix[np.isfinite(matrix)]
-        if finite_values.size == 0:
-            histogram_min, histogram_max = levels
-        else:
-            histogram_min = min(float(np.min(finite_values)), float(levels[0]))
-            histogram_max = max(float(np.max(finite_values)), float(levels[1]))
+        histogram_min = float(levels[0])
+        histogram_max = float(levels[1])
         if histogram_min >= histogram_max:
-            padding = max(abs(histogram_min) * 0.05, 1e-9)
-            histogram_min -= padding
-            histogram_max += padding
+            histogram_max = histogram_min + 1e-6
         histogram_item = getattr(self.tab3_space_time_histogram, "item", None)
         if histogram_item is not None and hasattr(histogram_item, "setHistogramRange"):
-            histogram_item.setHistogramRange(histogram_min, histogram_max, padding=0.05)
+            histogram_item.setHistogramRange(histogram_min, histogram_max, padding=0.0)
 
-    def _build_tab3_toggle_button_style(self, checked: bool, active_color: str, inactive_color: str) -> str:
+    def _build_tab3_toggle_button_style(
+        self,
+        checked: bool,
+        active_color: str,
+        inactive_color: str,
+        font_size: int = 16,
+        padding: str = "10px 12px",
+    ) -> str:
         """Return a shared stylesheet for Tab3 checkable buttons."""
         background = active_color if checked else inactive_color
         hover = active_color if checked else inactive_color
         return f"""
             QPushButton {{
-                font-size: 16px;
+                font-size: {font_size}px;
                 font-weight: bold;
-                padding: 10px 12px;
+                padding: {padding};
                 background-color: {background};
                 color: white;
                 border: none;
@@ -1479,14 +1530,46 @@ class MainWindow(QMainWindow):
         )
 
     def _update_tab3_storage_button_state(self, enabled: bool):
-        """Refresh the joint storage button text and style."""
-        self.tab3_storage_toggle_btn.blockSignals(True)
-        self.tab3_storage_toggle_btn.setChecked(enabled)
-        self.tab3_storage_toggle_btn.blockSignals(False)
-        self.tab3_storage_toggle_btn.setText("Joint Storage: ON" if enabled else "Joint Storage: OFF")
-        self.tab3_storage_toggle_btn.setStyleSheet(
-            self._build_tab3_toggle_button_style(enabled, "#9467bd", "#6c757d")
+        """Refresh the FIP+eDAS storage button text and style."""
+        self.tab3_joint_storage_toggle_btn.blockSignals(True)
+        self.tab3_joint_storage_toggle_btn.setChecked(enabled)
+        self.tab3_joint_storage_toggle_btn.blockSignals(False)
+        self.tab3_joint_storage_toggle_btn.setText(
+            "FIP+eDAS SAVE: ON" if enabled else "FIP+eDAS SAVE: OFF"
         )
+        self.tab3_joint_storage_toggle_btn.setStyleSheet(
+            self._build_tab3_toggle_button_style(
+                enabled, "#9467bd", "#6c757d", font_size=13, padding="8px 6px"
+            )
+        )
+
+    def _update_tab3_edas_storage_button_state(self, enabled: bool):
+        """Refresh the eDAS-only storage button text and style."""
+        self.tab3_edas_storage_toggle_btn.blockSignals(True)
+        self.tab3_edas_storage_toggle_btn.setChecked(enabled)
+        self.tab3_edas_storage_toggle_btn.blockSignals(False)
+        self.tab3_edas_storage_toggle_btn.setText(
+            "eDAS SAVE: ON" if enabled else "eDAS SAVE: OFF"
+        )
+        self.tab3_edas_storage_toggle_btn.setStyleSheet(
+            self._build_tab3_toggle_button_style(
+                enabled, "#2ca02c", "#6c757d", font_size=13, padding="8px 6px"
+            )
+        )
+
+    def route_tab3_joint_storage_fallback(self, target: str, message: str):
+        """Route an unavailable joint storage request to the matching single-source storage."""
+        if hasattr(self, 'tab3_joint_storage_toggle_btn'):
+            self.tab3_joint_storage_toggle_btn.setChecked(False)
+        if target == "edas" and hasattr(self, 'tab3_edas_storage_toggle_btn'):
+            self.tab3_edas_storage_toggle_btn.setChecked(True)
+            if hasattr(self, 'tab_widget'):
+                self.tab_widget.setCurrentIndex(2)
+        elif target == "fip" and hasattr(self, 'phase_storage_check'):
+            self.phase_storage_check.setChecked(True)
+            if hasattr(self, 'tab_widget'):
+                self.tab_widget.setCurrentIndex(0)
+        self.status_bar.showMessage(message, 5000)
 
     def _on_tab3_colormap_changed(self, _text: str):
         """Handle Tab3 space-time colormap changes."""
@@ -1751,9 +1834,12 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'tab3_plot_toggle_btn'):
                 self.tab3_plot_toggle_btn.toggled.connect(self._update_tab3_plot_button_state)
                 self.tab3_plot_toggle_btn.toggled.connect(self._emit_tab3_settings_changed)
-            if hasattr(self, 'tab3_storage_toggle_btn'):
-                self.tab3_storage_toggle_btn.toggled.connect(self._update_tab3_storage_button_state)
-                self.tab3_storage_toggle_btn.toggled.connect(self._emit_tab3_settings_changed)
+            if hasattr(self, 'tab3_joint_storage_toggle_btn'):
+                self.tab3_joint_storage_toggle_btn.toggled.connect(self._update_tab3_storage_button_state)
+                self.tab3_joint_storage_toggle_btn.toggled.connect(self._emit_tab3_settings_changed)
+            if hasattr(self, 'tab3_edas_storage_toggle_btn'):
+                self.tab3_edas_storage_toggle_btn.toggled.connect(self._update_tab3_edas_storage_button_state)
+                self.tab3_edas_storage_toggle_btn.toggled.connect(self._emit_tab3_settings_changed)
             if hasattr(self, 'tab3_colormap_combo'):
                 self.tab3_colormap_combo.currentTextChanged.connect(self._on_tab3_colormap_changed)
             if hasattr(self, 'tab3_vmin_spin'):
@@ -1778,6 +1864,9 @@ class MainWindow(QMainWindow):
                 getattr(self, 'tab3_storage_path_edit', None),
                 getattr(self, 'tab3_storage_interval_spin', None),
                 getattr(self, 'tab3_cache_seconds_spin', None),
+                getattr(self, 'tab3_edas_storage_path_edit', None),
+                getattr(self, 'tab3_edas_blocks_per_file_spin', None),
+                getattr(self, 'tab3_edas_queue_packets_spin', None),
             ]
             for widget in tab3_widgets:
                 if widget is None:

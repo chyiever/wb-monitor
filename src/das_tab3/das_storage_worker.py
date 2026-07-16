@@ -14,14 +14,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Full, Queue
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from PyQt5.QtCore import QThread
+from PyQt5.QtCore import QThread, pyqtSignal
 
 
 class DASStorageRequest:
@@ -40,6 +41,8 @@ class DASStorageRequest:
 
 
 class DASStorageWorker(QThread):
+    storage_saved = pyqtSignal(str)
+
     """独立线程，消费存储请求并执行 np.savez_compressed 写盘。
 
     主线程通过 enqueue_request(request) 将 DASStorageRequest 放入队列，
@@ -106,7 +109,7 @@ class DASStorageWorker(QThread):
         """存储循环：从队列取请求并写盘。"""
         self.running = True
         self.logger.info("DAS storage worker started")
-        while self.running:
+        while self.running or not self._queue.empty():
             try:
                 request = self._queue.get(timeout=0.2)
                 self._save(request)
@@ -117,7 +120,7 @@ class DASStorageWorker(QThread):
                 self.logger.error("DAS storage worker error: %s", exc)
 
     def stop(self) -> None:
-        """停止存储线程。设置 running=False，run 循环在下次超时后退出。"""
+        """停止存储线程；run 循环会先排空已入队请求再退出。"""
         self.running = False
         self.logger.info("DAS storage worker stopping, stats=%s", self.stats)
 
@@ -177,15 +180,281 @@ class DASStorageWorker(QThread):
                     ],
                     dtype=object,
                 ),
+                "fip_sample_rate_hz": np.array(
+                    [
+                        f.fip_packet.sample_rate_hz
+                        if f.fip_packet is not None
+                        else np.nan
+                        for f in frames
+                    ],
+                    dtype=np.float64,
+                ),
+                "das_sample_rate_hz": np.array(
+                    [
+                        f.das_packet.sample_rate_hz
+                        if f.das_packet is not None
+                        else np.nan
+                        for f in frames
+                    ],
+                    dtype=np.float64,
+                ),
+                "das_channel_count": np.array(
+                    [
+                        f.das_packet.channel_count
+                        if f.das_packet is not None
+                        else 0
+                        for f in frames
+                    ],
+                    dtype=np.int32,
+                ),
                 # incremental=True 表示本文件是增量 chunk，不是全量快照（T3-02）
                 "incremental": np.bool_(True),
+                "format_version": np.array("wb-monitor-joint-v2"),
+                "created_at": np.array(now.isoformat(timespec="milliseconds")),
             }
 
             np.savez_compressed(file_path, **payload)
             self.stats["requests_saved"] += 1
+            self.storage_saved.emit(str(file_path))
             self.logger.info(
                 "DAS storage saved %d frames to %s", len(frames), file_path.name
             )
         except Exception as exc:
             self.stats["save_failures"] += 1
             self.logger.error("DAS storage _save failed: %s", exc)
+
+
+class EDASRawStorageRequest:
+    """One eDAS-only raw block queued for binary storage."""
+
+    def __init__(
+        self,
+        packet: Any,
+        output_dir: str,
+        blocks_per_file: int,
+        queue_packets: int,
+    ) -> None:
+        self.packet = packet
+        self.output_dir = output_dir
+        self.blocks_per_file = max(1, int(blocks_per_file))
+        self.queue_packets = max(1, int(queue_packets))
+
+
+class EDASRawStorageWorker(QThread):
+    """Background writer for Tab3 eDAS-only raw storage.
+
+    The writer follows the same engineering model as the PCIe-7821 eDAS saver:
+    the GUI/receiver thread only enqueues complete blocks, while this thread owns
+    file I/O, file rotation, and metadata persistence.
+    """
+
+    storage_status = pyqtSignal(str)
+
+    INPUT_QUEUE_MAXSIZE = 4096
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.logger = logging.getLogger(f"{__name__}.EDASRawStorageWorker")
+        self._queue: Queue = Queue(maxsize=self.INPUT_QUEUE_MAXSIZE)
+        self.running = False
+        self._file_handle = None
+        self._current_file_path: Optional[Path] = None
+        self._current_metadata_path: Optional[Path] = None
+        self._current_metadata: Optional[Dict[str, Any]] = None
+        self._current_key: Optional[Tuple[str, int, int, int, int]] = None
+        self._blocks_in_file = 0
+        self._bytes_in_file = 0
+        self._file_index = 0
+        self.stats: Dict[str, int] = {
+            "blocks_enqueued": 0,
+            "blocks_saved": 0,
+            "blocks_dropped": 0,
+            "save_failures": 0,
+            "files_created": 0,
+            "bytes_written": 0,
+        }
+
+    def enqueue_packet(
+        self,
+        packet: Any,
+        output_dir: str,
+        blocks_per_file: int,
+        queue_packets: int,
+    ) -> bool:
+        """Queue one parsed eDAS packet for binary storage without blocking."""
+        request = EDASRawStorageRequest(packet, output_dir, blocks_per_file, queue_packets)
+        capacity = max(1, min(request.queue_packets, self.INPUT_QUEUE_MAXSIZE))
+        try:
+            while self._queue.qsize() >= capacity:
+                try:
+                    self._queue.get_nowait()
+                    self.stats["blocks_dropped"] += 1
+                    self.logger.warning(
+                        "eDAS raw storage queue full, dropped oldest packet. "
+                        "Disk may be too slow."
+                    )
+                except Empty:
+                    break
+            self._queue.put_nowait(request)
+            self.stats["blocks_enqueued"] += 1
+            return True
+        except Full:
+            self.stats["blocks_dropped"] += 1
+            self.logger.error("eDAS raw storage queue full, failed to enqueue packet.")
+            return False
+
+    def run(self) -> None:
+        self.running = True
+        self.logger.info("eDAS raw storage worker started")
+        while self.running or not self._queue.empty():
+            try:
+                request = self._queue.get(timeout=0.2)
+                self._write_request(request)
+            except Empty:
+                continue
+            except Exception as exc:
+                self.stats["save_failures"] += 1
+                self.logger.error("eDAS raw storage worker error: %s", exc)
+        self._close_current_file(closed_at=datetime.now().isoformat(timespec="milliseconds"))
+        self.running = False
+        self.logger.info("eDAS raw storage worker stopped, stats=%s", self.stats)
+
+    def stop(self) -> None:
+        """Stop accepting new loop iterations; run() drains already queued packets."""
+        self.running = False
+        self.logger.info("eDAS raw storage worker stopping, stats=%s", self.stats)
+
+    def reset_session(self) -> None:
+        """Clear pending packets and close any active file before a new session."""
+        while not self._queue.empty():
+            try:
+                self._queue.get_nowait()
+            except Empty:
+                break
+        self._close_current_file(closed_at=datetime.now().isoformat(timespec="milliseconds"))
+        self._current_key = None
+        self._blocks_in_file = 0
+        self._bytes_in_file = 0
+        self._file_index = 0
+
+    def _write_request(self, request: EDASRawStorageRequest) -> None:
+        packet = request.packet
+        matrix = np.asarray(packet.matrix, dtype="<f8", order="C")
+        if matrix.ndim != 2 or matrix.size == 0:
+            return
+
+        key = self._make_key(request, matrix)
+        if (
+            self._file_handle is None
+            or self._current_key != key
+            or self._blocks_in_file >= request.blocks_per_file
+        ):
+            self._open_new_file(request, matrix, key)
+
+        payload = matrix.tobytes(order="C")
+        self._file_handle.write(payload)
+        self._blocks_in_file += 1
+        self._bytes_in_file += len(payload)
+        self.stats["blocks_saved"] += 1
+        self.stats["bytes_written"] += len(payload)
+        self._append_metadata(packet, len(payload))
+        self._write_metadata(closed_at=None)
+        self.storage_status.emit(
+            f"{self._current_file_path.name} blocks={self._blocks_in_file} comm={packet.header.comm_count}"
+        )
+
+    def _make_key(self, request: EDASRawStorageRequest, matrix: np.ndarray) -> Tuple[str, int, int, int, int]:
+        output_dir = str(Path(request.output_dir))
+        channel_count = int(matrix.shape[0])
+        samples_per_channel = int(matrix.shape[1])
+        sample_rate_hz = int(request.packet.header.sample_rate_hz)
+        return (
+            output_dir,
+            sample_rate_hz,
+            channel_count,
+            samples_per_channel,
+            int(request.blocks_per_file),
+        )
+
+    def _open_new_file(
+        self,
+        request: EDASRawStorageRequest,
+        matrix: np.ndarray,
+        key: Tuple[str, int, int, int, int],
+    ) -> None:
+        self._close_current_file(closed_at=datetime.now().isoformat(timespec="milliseconds"))
+        output_path = Path(request.output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+        self._file_index += 1
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%dT%H%M%S.%f")[:-3]
+        channel_count = int(matrix.shape[0])
+        samples_per_channel = int(matrix.shape[1])
+        sample_rate_hz = int(request.packet.header.sample_rate_hz)
+        filename = (
+            f"{self._file_index:07d}-eDAS-{sample_rate_hz:04d}Hz-"
+            f"{channel_count:04d}ch-{samples_per_channel:04d}pt-{timestamp}.bin"
+        )
+        self._current_file_path = output_path / filename
+        self._current_metadata_path = self._current_file_path.with_suffix(".json")
+        self._file_handle = open(self._current_file_path, "wb")
+        self._current_key = key
+        self._blocks_in_file = 0
+        self._bytes_in_file = 0
+        self.stats["files_created"] += 1
+        self._current_metadata = {
+            "format_version": "wb-monitor-edas-raw-v1",
+            "storage_type": "edas_raw_storage",
+            "data_file": self._current_file_path.name,
+            "metadata_file": self._current_metadata_path.name,
+            "created_at": now.isoformat(timespec="milliseconds"),
+            "closed_at": None,
+            "dtype": "float64",
+            "byte_order": "little",
+            "array_order": "C",
+            "matrix_shape_per_block": [channel_count, samples_per_channel],
+            "sample_rate_hz": sample_rate_hz,
+            "packet_duration_seconds": float(request.packet.header.packet_duration_seconds),
+            "blocks_per_file": int(request.blocks_per_file),
+            "blocks_written": 0,
+            "bytes_written": 0,
+            "comm_counts": [],
+            "packet_start_times": [],
+            "packet_end_times": [],
+            "block_bytes": [],
+        }
+        self._write_metadata(closed_at=None)
+        self.storage_status.emit(f"Started {self._current_file_path.name}")
+
+    def _append_metadata(self, packet: Any, block_bytes: int) -> None:
+        if self._current_metadata is None:
+            return
+        self._current_metadata["blocks_written"] = self._blocks_in_file
+        self._current_metadata["bytes_written"] = self._bytes_in_file
+        self._current_metadata["comm_counts"].append(int(packet.header.comm_count))
+        self._current_metadata["packet_start_times"].append(float(packet.packet_start_time))
+        self._current_metadata["packet_end_times"].append(float(packet.packet_end_time))
+        self._current_metadata["block_bytes"].append(int(block_bytes))
+
+    def _write_metadata(self, closed_at: Optional[str]) -> None:
+        if self._current_metadata_path is None or self._current_metadata is None:
+            return
+        metadata = dict(self._current_metadata)
+        metadata["closed_at"] = closed_at
+        metadata["blocks_written"] = self._blocks_in_file
+        metadata["bytes_written"] = self._bytes_in_file
+        self._current_metadata_path.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _close_current_file(self, closed_at: Optional[str]) -> None:
+        if self._file_handle is not None:
+            self._file_handle.flush()
+            self._file_handle.close()
+            self._file_handle = None
+        if self._current_metadata_path is not None and self._current_metadata is not None:
+            self._write_metadata(closed_at=closed_at)
+        self._current_file_path = None
+        self._current_metadata_path = None
+        self._current_metadata = None
