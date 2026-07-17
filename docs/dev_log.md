@@ -154,3 +154,25 @@
 - Tab3 worker 滚动缓存合成测试通过，输出 `WORKER_OK (400, 600) 240000 (400, 0, 399, 1, 67, 747)`。
 - Debug 日志配置冒烟测试通过，输出 `DEBUG_LOG_OK True`，并确认 `TAB3_NODE` 可写入指定日志文件。
 - 中文自检通过：本次新增和修改的源码、README、开发日志未发现 `Unicode replacement character` 或问号乱码。
+
+## 2026-07-17 23:43:16 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/fip_tab1/fip_tab1_manager.py`、`src/alignment/aligned_types.py`、`src/das_tab3/das_tab3_manager.py`、`src/das_tab3/das_storage_worker.py`、`src/ui/main_window.py`、`src/main.py`、`docs/2026-07-17 数据存储.md`、`docs/dev_log.md`
+
+### 更新摘要
+
+1. Tab1 通信设置新增 `FIP数量` 与 `绘图FIP`：支持在 1 个或 2 个 FIP 传感器之间切换；单 FIP 模式保持旧软件效果不变。
+2. 双 FIP 模式下，单个 TCP 包仍为 `0.2 s`，包体按 `400000` 点解释：前 `200000` 点为 FIP1，后 `200000` 点为 FIP2。
+3. Tab1 处理线程在同一 `comm_count` 内同时处理 FIP1/FIP2，并为两路分别维护相位展开、滤波、降采样状态；旧 `ProcessedData.downsampled_data` 等字段继续指向 Tab1 当前 `绘图FIP` 选择的传感器。
+4. Tab1 相位存储更新为支持双 FIP：单 FIP 仍保存一维 `phase_data`；双 FIP 保存二维 `phase_data`，形状为 `2 x samples_per_sensor`，并新增 `fip1_phase_data`、`fip2_phase_data`、`fip_sensor_count` 与 `wb-monitor-tab1-fip-v2` 格式标记。
+5. Tab3 在 Tab1 选择 `2个` FIP 后，Curve1/Curve2 选项从 `FIP` 动态切换为 `FIP1`、`FIP2`；两张曲线可分别绘制不同 FIP 传感器。
+6. `FIPSessionPacket` 和 joint 存储升级为多 FIP 感知：joint `.npz` 格式版本更新为 `wb-monitor-joint-v3`，新增 `fip_sensor_count`、`fip_selected_sensor`、`fip1_raw_200khz`、`fip2_raw_200khz`、`fip1_display_data`、`fip2_display_data`，同时保留旧 `fip_raw_200khz` 与 `fip_display_data` 兼容字段。
+7. 更新 `docs/2026-07-17 数据存储.md`，补充 Tab1 单/双 FIP 存储格式、Tab3 FIP1/FIP2 绘图选项、joint v3 字段和本次验证记录。
+
+### 验证
+
+- `python -m py_compile src\fip_tab1\fip_tab1_manager.py src\alignment\aligned_types.py src\das_tab3\das_storage_worker.py src\das_tab3\das_tab3_manager.py src\ui\main_window.py src\main.py` 通过。
+- Tab1 双 FIP 合成测试通过：模拟 `400000` 点包，处理输出 FIP1/FIP2 各 `40000` 点，Tab1 存储请求形状为 `(2, 40000)`。
+- MainWindow 离屏 UI 检查通过：默认 Tab3 选项为 `FIP`；Tab1 切到 `2个` 后 Curve1/Curve2 选项变为 `FIP1/FIP2`，并可选择 Tab1 绘图 FIP2。

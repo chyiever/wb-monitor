@@ -188,12 +188,22 @@ class DASTab3Manager(QObject):
             sample_rate_hz=processed_data.effective_rate,
             unwrapped_data=processed_data.unwrapped_data,
             display_data=processed_data.downsampled_data,
+            sensor_count=getattr(processed_data, "sensor_count", 1),
+            selected_sensor=getattr(processed_data, "selected_sensor", 1),
+            unwrapped_by_sensor=getattr(processed_data, "unwrapped_by_sensor", {}) or {
+                getattr(processed_data, "selected_sensor", 1): processed_data.unwrapped_data
+            },
+            display_by_sensor=getattr(processed_data, "downsampled_by_sensor", {}) or {
+                getattr(processed_data, "selected_sensor", 1): processed_data.downsampled_data
+            },
         )
         self._fip_recent_packets.append(packet)
         self.coordinator.push_fip_packet(packet)
         self.logger.debug(
-            "TAB3_NODE manager.fip_packet comm=%s display_points=%d sample_rate=%.1f recent=%d",
+            "TAB3_NODE manager.fip_packet comm=%s sensors=%s selected=FIP%s display_points=%d sample_rate=%.1f recent=%d",
             processed_data.comm_count,
+            getattr(processed_data, "sensor_count", 1),
+            getattr(processed_data, "selected_sensor", 1),
             len(processed_data.downsampled_data),
             float(processed_data.effective_rate),
             len(self._fip_recent_packets),
@@ -202,6 +212,8 @@ class DASTab3Manager(QObject):
             processed_data.comm_count,
             processed_data.downsampled_data,
             processed_data.effective_rate,
+            sensor_count=getattr(processed_data, "sensor_count", 1),
+            values_by_sensor=getattr(processed_data, "downsampled_by_sensor", None),
         )
 
     def _handle_raw_packet(self, raw_packet: DASRawPacket) -> None:

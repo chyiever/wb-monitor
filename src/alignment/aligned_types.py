@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -26,6 +26,10 @@ class FIPSessionPacket:
     sample_rate_hz: float
     unwrapped_data: np.ndarray
     display_data: np.ndarray
+    sensor_count: int = 1
+    selected_sensor: int = 1
+    unwrapped_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
+    display_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
 
 
 @dataclass

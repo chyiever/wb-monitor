@@ -259,6 +259,8 @@ class PCCPMonitorApp:
         # Connect downsampling control
         if hasattr(self.main_window, 'downsample_spin'):
             self.main_window.downsample_spin.valueChanged.connect(self._update_downsample_factor)
+        if hasattr(self.main_window, 'fip_sensor_settings_changed'):
+            self.main_window.fip_sensor_settings_changed.connect(self._update_fip_sensor_settings)
 
         if hasattr(self.main_window, 'tab2_settings_changed'):
             self.main_window.tab2_settings_changed.connect(self._sync_tab2_settings)
@@ -403,11 +405,19 @@ class PCCPMonitorApp:
                     f"range=[{np.min(packet.phase_data):.3f}, {np.max(packet.phase_data):.3f}]"
                 )
 
+            fip_settings = (
+                self.main_window.get_tab1_fip_settings()
+                if hasattr(self.main_window, 'get_tab1_fip_settings')
+                else {"sensor_count": 1, "selected_sensor": 1}
+            )
+
             # 简单的数据包格式转换
             raw_packet = RawDataPacket(
                 timestamp=packet.timestamp,
                 phase_data=packet.phase_data,
-                comm_count=packet.comm_count
+                comm_count=packet.comm_count,
+                sensor_count=fip_settings.get("sensor_count", 1),
+                selected_sensor=fip_settings.get("selected_sensor", 1),
             )
 
             # 仅将数据包发送到后台处理线程，主线程立即返回
@@ -436,6 +446,8 @@ class PCCPMonitorApp:
             if self.signal_filter is not None:
                 self.signal_filter.reset_filter_state()
             self.downsampler.reset_state()
+            if hasattr(self.main_window, 'get_tab1_fip_settings'):
+                self._update_fip_sensor_settings(self.main_window.get_tab1_fip_settings())
 
             # 清空绘图控件，确保从干净的状态开始
             self.main_window.time_plot.clear()
@@ -672,6 +684,23 @@ class PCCPMonitorApp:
 
         except Exception as e:
             self.logger.error(f"Error updating storage settings: {e}")
+
+    def _update_fip_sensor_settings(self, settings: Dict[str, Any]):
+        """Apply Tab1 FIP sensor count and plotting sensor changes."""
+        try:
+            sensor_count = int(settings.get("sensor_count", 1))
+            selected_sensor = int(settings.get("selected_sensor", 1))
+            if self.tab1_manager:
+                self.tab1_manager.update_fip_selection(sensor_count, selected_sensor)
+            if self.tab3_manager:
+                self._sync_tab3_settings()
+            self.logger.info(
+                "FIP sensor settings updated: sensor_count=%d selected=FIP%d",
+                sensor_count,
+                selected_sensor,
+            )
+        except Exception as e:
+            self.logger.error(f"Error updating FIP sensor settings: {e}")
 
     def _start_tab3_monitoring(self):
         """Start the independent DAS monitoring pipeline."""

@@ -45,6 +45,7 @@ class MainWindow(QMainWindow):
     psd_settings_changed = pyqtSignal(dict)
     time_settings_changed = pyqtSignal(dict)
     filter_settings_changed = pyqtSignal(dict)  # 新增滤波器设置变化信号
+    fip_sensor_settings_changed = pyqtSignal(dict)
     tab2_settings_changed = pyqtSignal()
     tab2_clear_alarms_requested = pyqtSignal()
     tab3_start_requested = pyqtSignal()
@@ -123,6 +124,7 @@ class MainWindow(QMainWindow):
         self._create_tab2()  # 信号检测
         self._create_tab3()  # DAS数据（暂时禁用）
         self._create_tab4()  # 信号定位（暂时禁用）
+        self._update_fip_sensor_controls(emit=False)
 
         # 禁用Tab3和Tab4
         self.tab_widget.setTabEnabled(3, False)
@@ -232,20 +234,35 @@ class MainWindow(QMainWindow):
         self.port_spin.setValue(3677)
         layout.addWidget(self.port_spin, 1, 1)
 
+        # FIP传感器数量
+        layout.addWidget(QLabel("FIP数量:"), 2, 0)
+        self.fip_sensor_count_combo = QComboBox()
+        self.fip_sensor_count_combo.addItem("1个", 1)
+        self.fip_sensor_count_combo.addItem("2个", 2)
+        self.fip_sensor_count_combo.setCurrentIndex(0)
+        layout.addWidget(self.fip_sensor_count_combo, 2, 1)
+
+        # Tab1绘图使用的FIP传感器
+        layout.addWidget(QLabel("绘图FIP:"), 3, 0)
+        self.fip_plot_sensor_combo = QComboBox()
+        self.fip_plot_sensor_combo.addItem("FIP1", 1)
+        self.fip_plot_sensor_combo.setEnabled(False)
+        layout.addWidget(self.fip_plot_sensor_combo, 3, 1)
+
         # 连接状态
-        layout.addWidget(QLabel("连接状态:"), 2, 0)
+        layout.addWidget(QLabel("连接状态:"), 4, 0)
         self.conn_status_label = QLabel("未连接")
         self.conn_status_label.setStyleSheet("color: red; font-weight: bold;")
-        layout.addWidget(self.conn_status_label, 2, 1)
+        layout.addWidget(self.conn_status_label, 4, 1)
 
         # 统计信息
-        layout.addWidget(QLabel("接收数据包:"), 3, 0)
+        layout.addWidget(QLabel("接收数据包:"), 5, 0)
         self.packet_count_label = QLabel("0")
-        layout.addWidget(self.packet_count_label, 3, 1)
+        layout.addWidget(self.packet_count_label, 5, 1)
 
-        layout.addWidget(QLabel("丢包率:"), 4, 0)
+        layout.addWidget(QLabel("丢包率:"), 6, 0)
         self.loss_rate_label = QLabel("0%")
-        layout.addWidget(self.loss_rate_label, 4, 1)
+        layout.addWidget(self.loss_rate_label, 6, 1)
 
         return group
 
@@ -1111,12 +1128,94 @@ class MainWindow(QMainWindow):
         # TODO: 实现配置重置
         pass
 
+    def get_tab1_fip_settings(self) -> Dict[str, int]:
+        """Return Tab1 FIP sensor count and selected plotting sensor."""
+        sensor_count = self._combo_current_data_int(
+            getattr(self, 'fip_sensor_count_combo', None),
+            1,
+        )
+        sensor_count = min(max(sensor_count, 1), 2)
+        selected_sensor = self._combo_current_data_int(
+            getattr(self, 'fip_plot_sensor_combo', None),
+            1,
+        )
+        selected_sensor = min(max(selected_sensor, 1), sensor_count)
+        return {
+            "sensor_count": sensor_count,
+            "selected_sensor": selected_sensor,
+        }
+
+    def _combo_current_data_int(self, combo, default: int) -> int:
+        if combo is None:
+            return default
+        data = combo.currentData()
+        if data is not None:
+            try:
+                return int(data)
+            except (TypeError, ValueError):
+                pass
+        text = combo.currentText()
+        digits = "".join(ch for ch in text if ch.isdigit())
+        return int(digits) if digits else default
+
+    def _on_fip_sensor_count_changed(self):
+        """Refresh dependent controls after switching between one/two FIP sensors."""
+        self._update_fip_sensor_controls(emit=True)
+
+    def _on_fip_plot_sensor_changed(self):
+        """Notify the controller that Tab1 should plot another FIP sensor."""
+        if hasattr(self, 'fip_sensor_settings_changed'):
+            self.fip_sensor_settings_changed.emit(self.get_tab1_fip_settings())
+
+    def _update_fip_sensor_controls(self, emit: bool = True):
+        settings = self.get_tab1_fip_settings()
+        sensor_count = settings["sensor_count"]
+        selected_sensor = settings["selected_sensor"]
+
+        if hasattr(self, 'fip_plot_sensor_combo'):
+            combo = self.fip_plot_sensor_combo
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("FIP1", 1)
+            if sensor_count == 2:
+                combo.addItem("FIP2", 2)
+            combo.setCurrentIndex(max(0, selected_sensor - 1))
+            combo.setEnabled(sensor_count == 2)
+            combo.blockSignals(False)
+
+        self._update_tab3_fip_curve_options(sensor_count)
+
+        if emit and hasattr(self, 'fip_sensor_settings_changed'):
+            self.fip_sensor_settings_changed.emit(self.get_tab1_fip_settings())
+            if hasattr(self, 'tab3_settings_changed'):
+                self.tab3_settings_changed.emit()
+
+    def _update_tab3_fip_curve_options(self, sensor_count: int):
+        if not hasattr(self, 'tab3_curve1_combo') or not hasattr(self, 'tab3_curve2_combo'):
+            return
+        options = ["Off", "DAS Channel", "FIP"] if sensor_count == 1 else ["Off", "DAS Channel", "FIP1", "FIP2"]
+        for combo in (self.tab3_curve1_combo, self.tab3_curve2_combo):
+            current = combo.currentText()
+            if sensor_count == 2 and current == "FIP":
+                current = "FIP1"
+            elif sensor_count == 1 and current in ("FIP1", "FIP2"):
+                current = "FIP"
+            if current not in options:
+                current = "DAS Channel"
+
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItems(options)
+            combo.setCurrentText(current)
+            combo.blockSignals(False)
+
     def get_current_config(self) -> Dict[str, Any]:
         """获取当前配置 - Tab1简化版本"""
         config = {
             "communication": {
                 "ip": self.ip_edit.text(),
-                "port": self.port_spin.value()
+                "port": self.port_spin.value(),
+                "fip": self.get_tab1_fip_settings(),
             },
             "preprocessing": {
                 "filter": {
@@ -1337,23 +1436,29 @@ class MainWindow(QMainWindow):
         """Show the latest Tab3 eDAS-only storage status."""
         self.tab3_edas_last_storage_label.setText(path)
 
-    def update_tab3_fip_curve(self, comm_count: int, values, sample_rate_hz: float):
+    def update_tab3_fip_curve(
+        self,
+        comm_count: int,
+        values,
+        sample_rate_hz: float,
+        sensor_count: int = 1,
+        values_by_sensor: Dict[int, Any] = None,
+    ):
         """Update cached FIP comparison curves shown in Tab3."""
         curve1_mode = self.tab3_curve1_combo.currentText()
         curve2_mode = self.tab3_curve2_combo.currentText()
-        if curve1_mode != "FIP":
+        fip_modes = ("FIP", "FIP1", "FIP2")
+        if curve1_mode not in fip_modes:
             self._render_tab3_curve(self.tab3_curve1_fip_curve, curve1_mode, [], [], "FIP")
-        if curve2_mode != "FIP":
+        if curve2_mode not in fip_modes:
             self._render_tab3_curve(self.tab3_curve2_fip_curve, curve2_mode, [], [], "FIP")
-        if curve1_mode != "FIP" and curve2_mode != "FIP":
+        if curve1_mode not in fip_modes and curve2_mode not in fip_modes:
             return
         if not self.is_tab3_plot_enabled():
             return
-        values_arr = np.asarray(values)
-        if values_arr.size == 0:
-            return
         now = time.monotonic()
         if now - self._tab3_last_fip_plot_monotonic < self._tab3_fip_plot_min_interval_seconds:
+            values_arr = np.asarray(values)
             self._tab3_logger.debug(
                 "TAB3_NODE ui.fip_curve skip_throttle comm=%s points=%d",
                 comm_count,
@@ -1362,19 +1467,39 @@ class MainWindow(QMainWindow):
             return
         self._tab3_last_fip_plot_monotonic = now
         started = time.perf_counter()
-        step = max(1, int(np.ceil(values_arr.size / max(1, self._tab3_curve_max_points))))
-        selected_indexes = np.arange(0, values_arr.size, step, dtype=np.float64)
-        times = (comm_count * 0.2) + selected_indexes / max(float(sample_rate_hz), 1.0)
-        plot_values = np.ascontiguousarray(values_arr[::step], dtype=np.float32)
-        self._render_tab3_curve(self.tab3_curve1_fip_curve, curve1_mode, times, plot_values, "FIP")
-        self._render_tab3_curve(self.tab3_curve2_fip_curve, curve2_mode, times, plot_values, "FIP")
+        rendered_points = 0
+        source_points = 0
+        for curve_item, curve_mode in (
+            (self.tab3_curve1_fip_curve, curve1_mode),
+            (self.tab3_curve2_fip_curve, curve2_mode),
+        ):
+            if curve_mode not in fip_modes:
+                continue
+            sensor_index = 2 if curve_mode == "FIP2" else 1
+            sensor_values = None
+            if isinstance(values_by_sensor, dict):
+                sensor_values = values_by_sensor.get(sensor_index)
+            if sensor_values is None and (curve_mode == "FIP" or sensor_count == 1 or sensor_index == 1):
+                sensor_values = values
+            values_arr = np.asarray(sensor_values) if sensor_values is not None else np.asarray([])
+            if values_arr.size == 0:
+                self._render_tab3_curve(curve_item, curve_mode, [], [], curve_mode)
+                continue
+
+            step = max(1, int(np.ceil(values_arr.size / max(1, self._tab3_curve_max_points))))
+            selected_indexes = np.arange(0, values_arr.size, step, dtype=np.float64)
+            times = (comm_count * 0.2) + selected_indexes / max(float(sample_rate_hz), 1.0)
+            plot_values = np.ascontiguousarray(values_arr[::step], dtype=np.float32)
+            source_points = max(source_points, int(values_arr.size))
+            rendered_points = max(rendered_points, int(plot_values.size))
+            self._render_tab3_curve(curve_item, curve_mode, times, plot_values, curve_mode)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         self._tab3_logger.debug(
-            "TAB3_NODE ui.fip_curve comm=%s source_points=%d plot_points=%d step=%d elapsed_ms=%.2f",
+            "TAB3_NODE ui.fip_curve comm=%s sensors=%s source_points=%d plot_points=%d elapsed_ms=%.2f",
             comm_count,
-            values_arr.size,
-            plot_values.size,
-            step,
+            sensor_count,
+            source_points,
+            rendered_points,
             elapsed_ms,
         )
         if elapsed_ms > self._tab3_ui_slow_threshold_ms:
@@ -1382,7 +1507,7 @@ class MainWindow(QMainWindow):
                 "TAB3_NODE ui.fip_curve_slow comm=%s elapsed_ms=%.2f plot_points=%d",
                 comm_count,
                 elapsed_ms,
-                plot_values.size,
+                rendered_points,
             )
 
     def update_tab3_plot_payload(self, payload: Dict[str, Any]):
@@ -1961,6 +2086,11 @@ class MainWindow(QMainWindow):
             # 降采样参数变化时，也需要更新PSD设置（因为PSD计算依赖采样率）
             if hasattr(self, 'downsample_spin'):
                 self.downsample_spin.valueChanged.connect(self._update_psd_settings)
+
+            if hasattr(self, 'fip_sensor_count_combo'):
+                self.fip_sensor_count_combo.currentIndexChanged.connect(self._on_fip_sensor_count_changed)
+            if hasattr(self, 'fip_plot_sensor_combo'):
+                self.fip_plot_sensor_combo.currentIndexChanged.connect(self._on_fip_plot_sensor_changed)
 
             if hasattr(self, 'tab2_enable_btn'):
                 self.tab2_enable_btn.toggled.connect(self._update_tab2_enable_button_state)

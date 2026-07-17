@@ -24,14 +24,96 @@ import math
 import numpy as np
 from collections import deque
 from queue import Queue, Empty, Full
-from dataclasses import dataclass
-from typing import Optional, Dict, Any
+from dataclasses import dataclass, field
+from typing import Optional, Dict, Any, Tuple
 from datetime import datetime, timedelta
 from PyQt5.QtCore import QThread, pyqtSignal, QObject, QTimer
 from PyQt5.QtWidgets import QApplication
 import pyqtgraph as pg
 
-from config import PACKET_DURATION
+from config import ORIGINAL_SAMPLE_RATE, PACKET_DURATION
+
+
+FIP_POINTS_PER_SENSOR = 200000
+MAX_FIP_SENSOR_COUNT = 2
+
+
+def normalize_fip_sensor_count(sensor_count: int) -> int:
+    """Clamp the user-facing FIP sensor count to the supported range."""
+    try:
+        count = int(sensor_count)
+    except (TypeError, ValueError):
+        count = 1
+    return min(max(count, 1), MAX_FIP_SENSOR_COUNT)
+
+
+def normalize_fip_sensor_index(sensor_index: int, sensor_count: int) -> int:
+    """Clamp a selected FIP sensor index to the active sensor count."""
+    count = normalize_fip_sensor_count(sensor_count)
+    try:
+        index = int(sensor_index)
+    except (TypeError, ValueError):
+        index = 1
+    return min(max(index, 1), count)
+
+
+def split_fip_sensor_data(
+    phase_data: np.ndarray,
+    sensor_count: int,
+    logger: Optional[logging.Logger] = None,
+    comm_count: Optional[int] = None,
+) -> Dict[int, np.ndarray]:
+    """Split one TCP payload into per-sensor FIP arrays.
+
+    In one-sensor mode the payload is left untouched for exact compatibility
+    with the historical Tab1 behavior. In two-sensor mode the first 200000
+    points are FIP1 and the next 200000 points are FIP2.
+    """
+    data = np.asarray(phase_data)
+    count = normalize_fip_sensor_count(sensor_count)
+    if count == 1:
+        return {1: data}
+
+    expected_points = FIP_POINTS_PER_SENSOR * count
+    if data.size < expected_points:
+        if logger is not None:
+            logger.warning(
+                "FIP packet #%s expected %d points for %d sensors, got %d; "
+                "falling back to available FIP1 data only.",
+                "-" if comm_count is None else comm_count,
+                expected_points,
+                count,
+                data.size,
+            )
+        return {1: data[: min(data.size, FIP_POINTS_PER_SENSOR)]}
+
+    if data.size > expected_points and logger is not None:
+        logger.warning(
+            "FIP packet #%s has %d points for %d sensors; ignoring %d trailing point(s).",
+            "-" if comm_count is None else comm_count,
+            data.size,
+            count,
+            data.size - expected_points,
+        )
+
+    return {
+        1: data[:FIP_POINTS_PER_SENSOR],
+        2: data[FIP_POINTS_PER_SENSOR:expected_points],
+    }
+
+
+def _data_sample_count(data: np.ndarray) -> int:
+    arr = np.asarray(data)
+    if arr.ndim == 2:
+        return int(arr.shape[1])
+    return int(arr.size)
+
+
+def _data_sensor_count(data: np.ndarray) -> int:
+    arr = np.asarray(data)
+    if arr.ndim == 2:
+        return int(arr.shape[0])
+    return 1
 
 
 @dataclass
@@ -40,6 +122,8 @@ class RawDataPacket:
     timestamp: float
     phase_data: np.ndarray
     comm_count: int
+    sensor_count: int = 1
+    selected_sensor: int = 1
 
 
 @dataclass
@@ -52,6 +136,12 @@ class ProcessedData:
     psd_data: np.ndarray  # PSD专用数据：相位展开后、未滤波，再按系统降采样抽取
     effective_rate: float
     comm_count: int
+    sensor_count: int = 1
+    selected_sensor: int = 1
+    unwrapped_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
+    filtered_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
+    downsampled_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
+    psd_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
 
 
 @dataclass
@@ -62,6 +152,8 @@ class StorageRequest:
     timestamp: float
     sample_rate: float
     data_type: str = "phase_unwrapped"
+    sensor_count: int = 1
+    selected_sensor: int = 1
 
 
 class DataProcessingThread(QThread):
@@ -78,6 +170,9 @@ class DataProcessingThread(QThread):
         self.phase_unwrapper = phase_unwrapper
         self.signal_filter = signal_filter
         self.downsampler = downsampler
+        self._phase_unwrappers: Dict[int, Any] = {1: phase_unwrapper}
+        self._signal_filters: Dict[int, Any] = {1: signal_filter}
+        self._downsamplers: Dict[int, Any] = {1: downsampler}
 
         # 上一包的 comm_count，用于检测缺包缺口（T1-15）
         self._last_comm_count: Optional[int] = None
@@ -140,6 +235,81 @@ class DataProcessingThread(QThread):
                 self.stats['processing_failure_count'] += 1
                 self.logger.error(f'Processing error: {e}')
 
+    def reset_state(self, clear_queue: bool = False):
+        """Reset per-sensor streaming state, optionally discarding queued packets."""
+        if clear_queue:
+            while True:
+                try:
+                    self.input_queue.get_nowait()
+                except Empty:
+                    break
+        self._last_comm_count = None
+        for unwrapper in self._phase_unwrappers.values():
+            if hasattr(unwrapper, 'reset'):
+                unwrapper.reset()
+        for signal_filter in self._signal_filters.values():
+            if signal_filter is not None and hasattr(signal_filter, 'reset_filter_state'):
+                signal_filter.reset_filter_state()
+        for downsampler in self._downsamplers.values():
+            if downsampler is not None and hasattr(downsampler, 'reset_state'):
+                downsampler.reset_state()
+
+    def _get_sensor_processors(self, sensor_index: int) -> Tuple[Any, Any, Any]:
+        """Return independent processor objects for one FIP sensor."""
+        if sensor_index not in self._phase_unwrappers:
+            self._phase_unwrappers[sensor_index] = type(self.phase_unwrapper)()
+        if sensor_index not in self._signal_filters:
+            self._signal_filters[sensor_index] = self._clone_signal_filter()
+        if sensor_index not in self._downsamplers:
+            self._downsamplers[sensor_index] = self._clone_downsampler()
+
+        signal_filter = self._signal_filters[sensor_index]
+        downsampler = self._downsamplers[sensor_index]
+        self._sync_signal_filter(signal_filter)
+        self._sync_downsampler(downsampler)
+        return self._phase_unwrappers[sensor_index], signal_filter, downsampler
+
+    def _clone_signal_filter(self):
+        if self.signal_filter is None:
+            return None
+        clone = type(self.signal_filter)(sample_rate=self.signal_filter.sample_rate)
+        self._copy_signal_filter_config(clone, self.signal_filter)
+        return clone
+
+    def _clone_downsampler(self):
+        source = self.downsampler
+        return type(source)(method=source.method, factor=source.get_current_factor())
+
+    def _sync_signal_filter(self, signal_filter) -> None:
+        if signal_filter is None or signal_filter is self.signal_filter:
+            return
+        source = self.signal_filter
+        if source is None:
+            return
+        same_config = (
+            signal_filter.filter_type == source.filter_type
+            and signal_filter.cutoff_freq == source.cutoff_freq
+            and signal_filter.filter_order == source.filter_order
+            and signal_filter.sample_rate == source.sample_rate
+        )
+        if not same_config:
+            self._copy_signal_filter_config(signal_filter, source)
+
+    def _copy_signal_filter_config(self, target, source) -> None:
+        if source.filter_type == 'none':
+            target.design_filter('none', source.cutoff_freq, source.filter_order)
+        else:
+            target.design_filter(source.filter_type, source.cutoff_freq, source.filter_order)
+
+    def _sync_downsampler(self, downsampler) -> None:
+        if downsampler is None or downsampler is self.downsampler:
+            return
+        source = self.downsampler
+        if downsampler.method != source.method:
+            downsampler.set_method(source.method)
+        if downsampler.get_current_factor() != source.get_current_factor():
+            downsampler.set_downsampling_factor(source.get_current_factor())
+
     def _process_packet(self, packet: RawDataPacket) -> Optional[ProcessedData]:
         """处理单个原始数据包：缺口检测、相位展开、滤波、降采样。
 
@@ -169,42 +339,91 @@ class DataProcessingThread(QThread):
                 gap = packet.comm_count - self._last_comm_count - 1
                 self.logger.warning(
                     'comm_count gap in DataProcessingThread: last=%d, current=%d, missing=%d. '
-                    'Resetting phase unwrapper to prevent cross-gap phase error.',
+                    'Resetting per-sensor processor state to prevent cross-gap phase error.',
                     self._last_comm_count,
                     packet.comm_count,
                     gap,
                 )
-                self.phase_unwrapper.reset()
+                self.reset_state(clear_queue=False)
                 self.stats['gap_count'] += 1
             self._last_comm_count = packet.comm_count
 
-            phase_data = packet.phase_data
-            if np.max(np.abs(phase_data)) > 5:
-                phase_data = phase_data / np.pi
-
-            unwrapped, _ = self.phase_unwrapper.unwrap_phase(phase_data)
-            if len(unwrapped) == 0:
-                self.stats['phase_unwrap_failure_count'] += 1
-                self.logger.warning('Phase unwrapping failed for packet #%d', packet.comm_count)
+            sensor_inputs = split_fip_sensor_data(
+                packet.phase_data,
+                packet.sensor_count,
+                logger=self.logger,
+                comm_count=packet.comm_count,
+            )
+            if not sensor_inputs:
+                self.logger.warning('No FIP sensor data available for packet #%d', packet.comm_count)
                 return None
 
-            if self.signal_filter is not None:
-                filtered, _ = self.signal_filter.apply_filter(unwrapped)
-            else:
-                filtered = unwrapped.copy()
+            unwrapped_by_sensor: Dict[int, np.ndarray] = {}
+            filtered_by_sensor: Dict[int, np.ndarray] = {}
+            downsampled_by_sensor: Dict[int, np.ndarray] = {}
+            psd_by_sensor: Dict[int, np.ndarray] = {}
+            effective_rate_by_sensor: Dict[int, float] = {}
 
-            downsampled, _ = self.downsampler.downsample(filtered)
-            downsample_factor = max(1, self.downsampler.get_current_factor())
-            psd_data = unwrapped[::downsample_factor]
-            effective_rate = 1000000.0 / self.downsampler.get_current_factor()
+            for sensor_index, phase_data in sensor_inputs.items():
+                if phase_data.size == 0:
+                    continue
+
+                phase_data = np.asarray(phase_data)
+                if np.max(np.abs(phase_data)) > 5:
+                    phase_data = phase_data / np.pi
+
+                phase_unwrapper, signal_filter, downsampler = self._get_sensor_processors(sensor_index)
+                unwrapped, _ = phase_unwrapper.unwrap_phase(phase_data)
+                if len(unwrapped) == 0:
+                    self.stats['phase_unwrap_failure_count'] += 1
+                    self.logger.warning(
+                        'Phase unwrapping failed for packet #%d sensor FIP%d',
+                        packet.comm_count,
+                        sensor_index,
+                    )
+                    continue
+
+                if signal_filter is not None:
+                    filtered, _ = signal_filter.apply_filter(unwrapped)
+                else:
+                    filtered = unwrapped.copy()
+
+                downsampled, _ = downsampler.downsample(filtered)
+                downsample_factor = max(1, downsampler.get_current_factor())
+                psd_data = unwrapped[::downsample_factor]
+                effective_rate = ORIGINAL_SAMPLE_RATE / downsample_factor
+
+                unwrapped_by_sensor[sensor_index] = unwrapped
+                filtered_by_sensor[sensor_index] = filtered
+                downsampled_by_sensor[sensor_index] = downsampled
+                psd_by_sensor[sensor_index] = psd_data
+                effective_rate_by_sensor[sensor_index] = effective_rate
+
+            if not downsampled_by_sensor:
+                return None
+
+            actual_sensor_count = max(downsampled_by_sensor.keys())
+            selected_sensor = normalize_fip_sensor_index(packet.selected_sensor, actual_sensor_count)
+            if selected_sensor not in downsampled_by_sensor:
+                selected_sensor = min(downsampled_by_sensor.keys())
+
+            unwrapped = unwrapped_by_sensor[selected_sensor]
+            filtered = filtered_by_sensor[selected_sensor]
+            downsampled = downsampled_by_sensor[selected_sensor]
+            psd_data = psd_by_sensor[selected_sensor]
+            effective_rate = effective_rate_by_sensor[selected_sensor]
 
             if packet.comm_count % 50 == 0:
+                sensor_summary = ", ".join(
+                    f"FIP{idx}:{len(unwrapped_by_sensor[idx])}->{len(filtered_by_sensor[idx])}->{len(downsampled_by_sensor[idx])}"
+                    for idx in sorted(downsampled_by_sensor)
+                )
                 self.logger.info(
-                    'Packet #%d: %d->%d->%d samples',
+                    'Packet #%d sensors=%d selected=FIP%d %s',
                     packet.comm_count,
-                    len(unwrapped),
-                    len(filtered),
-                    len(downsampled),
+                    actual_sensor_count,
+                    selected_sensor,
+                    sensor_summary,
                 )
 
             return ProcessedData(
@@ -215,6 +434,12 @@ class DataProcessingThread(QThread):
                 psd_data=psd_data,
                 effective_rate=effective_rate,
                 comm_count=packet.comm_count,
+                sensor_count=actual_sensor_count,
+                selected_sensor=selected_sensor,
+                unwrapped_by_sensor=unwrapped_by_sensor,
+                filtered_by_sensor=filtered_by_sensor,
+                downsampled_by_sensor=downsampled_by_sensor,
+                psd_by_sensor=psd_by_sensor,
             )
         except Exception as e:
             self.stats['processing_failure_count'] += 1
@@ -476,6 +701,16 @@ class PSDPlotThread(QThread):
         if not enabled:
             self.packet_count = 0
 
+    def reset_state(self, clear_queue: bool = False):
+        """Reset PSD packet cadence and optionally discard queued packets."""
+        self.packet_count = 0
+        if clear_queue:
+            while True:
+                try:
+                    self.input_queue.get_nowait()
+                except Empty:
+                    break
+
     def run(self):
         """PSD计算循环"""
         self.running = True
@@ -539,6 +774,7 @@ class DataStorageThread(QThread):
         self._drain_mode = False
 
         self.phase_unwrapper = phase_unwrapper
+        self._phase_unwrappers: Dict[int, Any] = {1: phase_unwrapper}
         self.storage_path = storage_path
         self.storage_interval_seconds = float(storage_interval_seconds)
         self.target_chunk_samples = 0
@@ -546,6 +782,7 @@ class DataStorageThread(QThread):
         self.buffered_sample_count = 0
         self.current_chunk_start_comm_count = None
         self.current_chunk_last_comm_count = None
+        self.current_chunk_sensor_count = None
         self.run_started_at = None
         self.saved_file_count = 0
         self.saved_sample_count = 0
@@ -635,6 +872,9 @@ class DataStorageThread(QThread):
         self.saved_file_count = 0
         self.saved_sample_count = 0
         self.last_buffered_comm_count = None
+        for unwrapper in self._phase_unwrappers.values():
+            if hasattr(unwrapper, 'reset'):
+                unwrapper.reset()
         self._clear_buffer()
 
     def end_run_cycle(self):
@@ -646,34 +886,91 @@ class DataStorageThread(QThread):
         self.buffered_sample_count = 0
         self.current_chunk_start_comm_count = None
         self.current_chunk_last_comm_count = None
+        self.current_chunk_sensor_count = None
         self.last_buffered_comm_count = None
 
+    def _get_phase_unwrapper(self, sensor_index: int):
+        if sensor_index not in self._phase_unwrappers:
+            self._phase_unwrappers[sensor_index] = type(self.phase_unwrapper)()
+        return self._phase_unwrappers[sensor_index]
+
     def _build_storage_request(self, packet: RawDataPacket) -> Optional[StorageRequest]:
-        phase_data = packet.phase_data
-        if np.max(np.abs(phase_data)) > 5:
-            phase_data = phase_data / np.pi
+        sensor_inputs = split_fip_sensor_data(
+            packet.phase_data,
+            packet.sensor_count,
+            logger=self.logger,
+            comm_count=packet.comm_count,
+        )
+        if not sensor_inputs:
+            return None
 
-        unwrapped, _ = self.phase_unwrapper.unwrap_phase(phase_data)
-        if len(unwrapped) == 0:
-            self.stats['phase_unwrap_failure_count'] += 1
-            self.logger.warning(
-                'Storage phase unwrapping failed for packet #%d, storing wrapped phase fallback',
-                packet.comm_count,
+        storage_by_sensor: Dict[int, np.ndarray] = {}
+        for sensor_index, phase_data in sensor_inputs.items():
+            if phase_data.size == 0:
+                continue
+            phase_data = np.asarray(phase_data)
+            if np.max(np.abs(phase_data)) > 5:
+                phase_data = phase_data / np.pi
+
+            phase_unwrapper = self._get_phase_unwrapper(sensor_index)
+            unwrapped, _ = phase_unwrapper.unwrap_phase(phase_data)
+            if len(unwrapped) == 0:
+                self.stats['phase_unwrap_failure_count'] += 1
+                self.logger.warning(
+                    'Storage phase unwrapping failed for packet #%d FIP%d, storing wrapped phase fallback',
+                    packet.comm_count,
+                    sensor_index,
+                )
+                unwrapped = np.asarray(phase_data, dtype=np.float64) * np.pi
+
+            storage_by_sensor[sensor_index] = np.asarray(
+                unwrapped[::self.STORAGE_DOWNSAMPLE_FACTOR],
+                dtype=np.float64,
             )
-            unwrapped = np.asarray(phase_data, dtype=np.float64) * np.pi
 
-        storage_data = np.asarray(unwrapped[::self.STORAGE_DOWNSAMPLE_FACTOR], dtype=np.float64)
+        if not storage_by_sensor:
+            return None
+
+        sensor_ids = sorted(storage_by_sensor)
+        if len(sensor_ids) == 1:
+            storage_data = storage_by_sensor[sensor_ids[0]]
+        else:
+            min_length = min(len(storage_by_sensor[sensor_id]) for sensor_id in sensor_ids)
+            if min_length <= 0:
+                return None
+            storage_data = np.vstack([
+                storage_by_sensor[sensor_id][:min_length]
+                for sensor_id in sensor_ids
+            ])
+
         return StorageRequest(
             data=storage_data,
             comm_count=packet.comm_count,
             timestamp=packet.timestamp,
             sample_rate=self.STORAGE_SAMPLE_RATE,
             data_type='phase_unwrapped_downsampled',
+            sensor_count=len(sensor_ids),
+            selected_sensor=normalize_fip_sensor_index(packet.selected_sensor, len(sensor_ids)),
         )
 
     def _append_request(self, request: StorageRequest):
+        request_sensor_count = _data_sensor_count(request.data)
+        if (
+            self.buffered_requests
+            and self.current_chunk_sensor_count is not None
+            and request_sensor_count != self.current_chunk_sensor_count
+        ):
+            self.logger.info(
+                'FIP sensor count changed in storage stream: %s -> %s; flushing current chunk',
+                self.current_chunk_sensor_count,
+                request_sensor_count,
+            )
+            self._flush_buffered_data()
+
         if self.current_chunk_start_comm_count is None:
             self.current_chunk_start_comm_count = request.comm_count
+        if self.current_chunk_sensor_count is None:
+            self.current_chunk_sensor_count = request_sensor_count
 
         if self.last_buffered_comm_count is not None:
             if request.comm_count > self.last_buffered_comm_count + 1:
@@ -696,7 +993,7 @@ class DataStorageThread(QThread):
         self.current_chunk_last_comm_count = request.comm_count
         self.last_buffered_comm_count = request.comm_count
         self.buffered_requests.append(request)
-        self.buffered_sample_count += len(request.data)
+        self.buffered_sample_count += _data_sample_count(request.data)
 
     def begin_drain(self):
         """停止接受新包，进入排空模式（T1-09 两阶段停止第一阶段）。
@@ -818,7 +1115,7 @@ class DataStorageThread(QThread):
 
         while samples_needed > 0 and self.buffered_requests:
             request = self.buffered_requests[0]
-            request_length = len(request.data)
+            request_length = _data_sample_count(request.data)
 
             if request_length <= samples_needed:
                 chunk_parts.append(request.data)
@@ -827,15 +1124,21 @@ class DataStorageThread(QThread):
                 self.buffered_sample_count -= request_length
                 samples_needed -= request_length
             else:
-                chunk_parts.append(request.data[:samples_needed])
+                if np.asarray(request.data).ndim == 2:
+                    chunk_parts.append(request.data[:, :samples_needed])
+                    remaining_data = request.data[:, samples_needed:]
+                else:
+                    chunk_parts.append(request.data[:samples_needed])
+                    remaining_data = request.data[samples_needed:]
                 end_comm_count = request.comm_count
-                remaining_data = request.data[samples_needed:]
                 self.buffered_requests[0] = StorageRequest(
                     data=remaining_data,
                     comm_count=request.comm_count,
                     timestamp=request.timestamp,
                     sample_rate=request.sample_rate,
                     data_type=request.data_type,
+                    sensor_count=request.sensor_count,
+                    selected_sensor=request.selected_sensor,
                 )
                 self.buffered_sample_count -= samples_needed
                 samples_needed = 0
@@ -846,11 +1149,14 @@ class DataStorageThread(QThread):
         if self.buffered_requests:
             self.current_chunk_start_comm_count = self.buffered_requests[0].comm_count
             self.current_chunk_last_comm_count = self.buffered_requests[-1].comm_count
+            self.current_chunk_sensor_count = _data_sensor_count(self.buffered_requests[0].data)
         else:
             self.current_chunk_start_comm_count = None
             self.current_chunk_last_comm_count = None
+            self.current_chunk_sensor_count = None
 
-        return np.concatenate(chunk_parts), start_comm_count, end_comm_count
+        axis = 1 if np.asarray(chunk_parts[0]).ndim == 2 else 0
+        return np.concatenate(chunk_parts, axis=axis), start_comm_count, end_comm_count
 
     def _build_file_timestamp(self, sample_rate: float) -> datetime:
         base_time = self.run_started_at or datetime.now()
@@ -862,11 +1168,13 @@ class DataStorageThread(QThread):
         try:
             from pathlib import Path
 
-            if phase_data is None or len(phase_data) == 0:
+            if phase_data is None or _data_sample_count(phase_data) == 0:
                 return
 
             sample_rate = float(self.STORAGE_SAMPLE_RATE)
-            duration_seconds = 0.0 if sample_rate <= 0 else len(phase_data) / sample_rate
+            sensor_count = _data_sensor_count(phase_data)
+            sample_count = _data_sample_count(phase_data)
+            duration_seconds = 0.0 if sample_rate <= 0 else sample_count / sample_rate
 
             base_path = Path(self.storage_path)
             base_path.mkdir(parents=True, exist_ok=True)
@@ -874,37 +1182,51 @@ class DataStorageThread(QThread):
             file_timestamp = self._build_file_timestamp(sample_rate)
             self.saved_file_count += 1
             timestamp_str = file_timestamp.strftime('%Y%m%dT%H%M%S.%f')[:-3]
-            filename = f'{self.saved_file_count:07d}-FIP-200K-{timestamp_str}.npz'
+            filename_prefix = 'FIP2' if sensor_count == 2 else 'FIP'
+            filename = f'{self.saved_file_count:07d}-{filename_prefix}-200K-{timestamp_str}.npz'
             file_path = base_path / filename
+            data_info = {
+                'type': 'phase_unwrapped_downsampled',
+                'length': int(sample_count),
+                'samples_per_sensor': int(sample_count),
+                'total_values': int(np.asarray(phase_data).size),
+                'sensor_count': int(sensor_count),
+                'downsample_factor': self.STORAGE_DOWNSAMPLE_FACTOR,
+                'packet_count_estimate': int(math.ceil(sample_count / max(sample_rate * PACKET_DURATION, 1))),
+                'start_comm_count': start_comm_count,
+                'end_comm_count': end_comm_count,
+                'duration_seconds': duration_seconds,
+                'file_sequence': self.saved_file_count,
+                'stream_start_time': file_timestamp.isoformat(timespec='milliseconds'),
+                'save_time': datetime.now().isoformat(),
+            }
 
-            np.savez_compressed(
-                file_path,
-                phase_data=phase_data,
-                comm_count=end_comm_count,
-                timestamp=self.saved_sample_count / sample_rate if sample_rate > 0 else 0.0,
-                sample_rate=sample_rate,
-                data_info={
-                    'type': 'phase_unwrapped_downsampled',
-                    'length': int(len(phase_data)),
-                    'downsample_factor': self.STORAGE_DOWNSAMPLE_FACTOR,
-                    'packet_count_estimate': int(math.ceil(len(phase_data) / max(sample_rate * PACKET_DURATION, 1))),
-                    'start_comm_count': start_comm_count,
-                    'end_comm_count': end_comm_count,
-                    'duration_seconds': duration_seconds,
-                    'file_sequence': self.saved_file_count,
-                    'stream_start_time': file_timestamp.isoformat(timespec='milliseconds'),
-                    'save_time': datetime.now().isoformat(),
-                }
-            )
+            payload = {
+                'phase_data': phase_data,
+                'comm_count': end_comm_count,
+                'timestamp': self.saved_sample_count / sample_rate if sample_rate > 0 else 0.0,
+                'sample_rate': sample_rate,
+                'fip_sensor_count': np.int32(sensor_count),
+                'data_info': data_info,
+                'format_version': np.array('wb-monitor-tab1-fip-v2' if sensor_count == 2 else 'wb-monitor-tab1-fip-v1'),
+            }
+            if sensor_count == 2:
+                payload['fip1_phase_data'] = np.asarray(phase_data[0], dtype=np.float64)
+                payload['fip2_phase_data'] = np.asarray(phase_data[1], dtype=np.float64)
+            else:
+                payload['fip1_phase_data'] = np.asarray(phase_data, dtype=np.float64)
 
-            self.saved_sample_count += len(phase_data)
+            np.savez_compressed(file_path, **payload)
+
+            self.saved_sample_count += sample_count
             self.stats['saved_file_count'] = self.saved_file_count
             self.stats['saved_sample_count'] = self.saved_sample_count
 
             self.logger.info(
-                'Saved data to %s (samples=%d, duration=%.1fs, start_comm=%s, end_comm=%s)',
+                'Saved data to %s (sensors=%d, samples_per_sensor=%d, duration=%.1fs, start_comm=%s, end_comm=%s)',
                 filename,
-                len(phase_data),
+                sensor_count,
+                sample_count,
                 duration_seconds,
                 start_comm_count,
                 end_comm_count,
@@ -940,6 +1262,8 @@ class OptimizedTab1ThreadManager(QObject):
         self.psd_plot_widget = None
         self.time_curve = None
         self.psd_curve = None
+        self.fip_sensor_count = 1
+        self.selected_fip_sensor = 1
 
         # 设置信号连接
         self._setup_connections()
@@ -1012,6 +1336,9 @@ class OptimizedTab1ThreadManager(QObject):
         """启动所有线程"""
         # 清空绘图数据
         self._clear_plots()
+        self.data_processor.reset_state(clear_queue=True)
+        self.time_plotter._reset_stream_state()
+        self.psd_plotter.reset_state(clear_queue=True)
         self.storage_thread.begin_run_cycle()
 
         self.data_processor.start()
@@ -1095,6 +1422,28 @@ class OptimizedTab1ThreadManager(QObject):
             self.logger.info(f"Tab1ThreadManager received packet #{packet.comm_count}, queued: {success}")
 
         return success
+
+    def update_fip_selection(self, sensor_count: int, selected_sensor: int):
+        """Apply Tab1 FIP sensor count/plot selection changes."""
+        sensor_count = normalize_fip_sensor_count(sensor_count)
+        selected_sensor = normalize_fip_sensor_index(selected_sensor, sensor_count)
+        count_changed = sensor_count != self.fip_sensor_count
+        selected_changed = selected_sensor != self.selected_fip_sensor
+        if not count_changed and not selected_changed:
+            return
+
+        self.fip_sensor_count = sensor_count
+        self.selected_fip_sensor = selected_sensor
+        if count_changed:
+            self.data_processor.reset_state(clear_queue=True)
+        self.time_plotter._reset_stream_state()
+        self.psd_plotter.reset_state(clear_queue=True)
+        self._clear_plots()
+        self.logger.info(
+            "Tab1 FIP selection updated: sensor_count=%d selected=FIP%d",
+            sensor_count,
+            selected_sensor,
+        )
 
     def _distribute_processed_data(self, processed_data: ProcessedData):
         """Distribute processed data to plotting threads."""

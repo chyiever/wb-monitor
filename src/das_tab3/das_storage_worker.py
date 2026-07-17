@@ -41,6 +41,24 @@ class DASStorageRequest:
         self.end_comm = end_comm
 
 
+def _empty_fip_array() -> np.ndarray:
+    return np.array([], dtype=np.float64)
+
+
+def _get_fip_sensor_array(packet: Any, mapping_name: str, fallback_name: str, sensor_index: int) -> np.ndarray:
+    """Return one FIP sensor array while preserving old single-sensor packets."""
+    if packet is None:
+        return _empty_fip_array()
+    mapping = getattr(packet, mapping_name, None)
+    if isinstance(mapping, dict) and sensor_index in mapping:
+        return mapping[sensor_index]
+    selected_sensor = int(getattr(packet, "selected_sensor", 1))
+    sensor_count = int(getattr(packet, "sensor_count", 1))
+    if sensor_index == selected_sensor or (sensor_count == 1 and sensor_index == 1):
+        return getattr(packet, fallback_name, _empty_fip_array())
+    return _empty_fip_array()
+
+
 class DASStorageWorker(QThread):
     storage_saved = pyqtSignal(str)
 
@@ -181,6 +199,52 @@ class DASStorageWorker(QThread):
                     ],
                     dtype=object,
                 ),
+                "fip_sensor_count": np.array(
+                    [
+                        f.fip_packet.sensor_count
+                        if f.fip_packet is not None
+                        else 0
+                        for f in frames
+                    ],
+                    dtype=np.int32,
+                ),
+                "fip_selected_sensor": np.array(
+                    [
+                        f.fip_packet.selected_sensor
+                        if f.fip_packet is not None
+                        else 0
+                        for f in frames
+                    ],
+                    dtype=np.int32,
+                ),
+                "fip1_raw_200khz": np.array(
+                    [
+                        _get_fip_sensor_array(f.fip_packet, "unwrapped_by_sensor", "unwrapped_data", 1)
+                        for f in frames
+                    ],
+                    dtype=object,
+                ),
+                "fip2_raw_200khz": np.array(
+                    [
+                        _get_fip_sensor_array(f.fip_packet, "unwrapped_by_sensor", "unwrapped_data", 2)
+                        for f in frames
+                    ],
+                    dtype=object,
+                ),
+                "fip1_display_data": np.array(
+                    [
+                        _get_fip_sensor_array(f.fip_packet, "display_by_sensor", "display_data", 1)
+                        for f in frames
+                    ],
+                    dtype=object,
+                ),
+                "fip2_display_data": np.array(
+                    [
+                        _get_fip_sensor_array(f.fip_packet, "display_by_sensor", "display_data", 2)
+                        for f in frames
+                    ],
+                    dtype=object,
+                ),
                 "das_raw_matrix": np.array(
                     [
                         f.das_packet.matrix
@@ -219,7 +283,7 @@ class DASStorageWorker(QThread):
                 ),
                 # incremental=True 表示本文件是增量 chunk，不是全量快照（T3-02）
                 "incremental": np.bool_(True),
-                "format_version": np.array("wb-monitor-joint-v2"),
+                "format_version": np.array("wb-monitor-joint-v3"),
                 "created_at": np.array(now.isoformat(timespec="milliseconds")),
             }
 
