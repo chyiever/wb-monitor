@@ -113,3 +113,19 @@
 - MainWindow offscreen 检查通过：Tab3 四个动作按钮最小高度均为 `44`，无 `QScrollArea`。
 - eDAS-only 存储线程合成测试通过：新元数据 `storage_parameters` 与 `das_parameters` 写入正确。
 - 已执行 UTF-8 中文自检，本次修改文件未发现问号乱码。
+
+## 2026-07-17 03:20:00 +08:00
+
+- 更新范围：`docs/2026-07-17 数据存储.md`
+
+### 更新摘要
+
+1. 在数据存储文档中补充 `raw storage` 紧凑 UI 标签与存储模式归属说明。
+2. 明确 `Len(s)` 和 `JCache` 属于 `FIP+eDAS SAVE` 联合存储，用于 joint `.npz` 的分块时长与对齐缓存。
+3. 明确 `Blocks` 和 `Q` 属于 `eDAS SAVE` 独立存储，用于 eDAS-only `.bin + .json` 的分文件块数与写盘队列容量。
+4. 补充两个按钮同时开启时，两套参数分别影响各自写盘链路且互不共享队列。
+
+### 验证
+
+- 已执行 UTF-8 中文自检，`docs/2026-07-17 数据存储.md` 和 `docs/dev_log.md` 未发现问号乱码。
+- `git diff --check` 通过。
