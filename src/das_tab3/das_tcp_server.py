@@ -187,11 +187,16 @@ class DASTCPServer(QObject):
                 self._receive_times_ms.append(receive_ms)
                 if len(self._receive_times_ms) > 200:
                     self._receive_times_ms = self._receive_times_ms[-200:]
-                if receive_ms > 500.0:
+                expected_receive_ms = max(float(packet_duration_seconds) * 1000.0, 1.0)
+                slow_receive_threshold_ms = max(500.0, expected_receive_ms * 1.5)
+                if receive_ms > slow_receive_threshold_ms:
                     self.logger.warning(
-                        "TAB3_NODE das_tcp.slow_receive comm=%s receive_ms=%.2f data_bytes=%s",
+                        "TAB3_NODE das_tcp.slow_receive comm=%s receive_ms=%.2f "
+                        "threshold_ms=%.2f expected_packet_ms=%.2f data_bytes=%s",
                         comm_count,
                         receive_ms,
+                        slow_receive_threshold_ms,
+                        expected_receive_ms,
                         data_bytes,
                     )
                 header_payload = {

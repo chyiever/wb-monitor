@@ -158,6 +158,57 @@ def split_fip_sensor_data(
     }
 
 
+def validate_wrapped_phase_input(
+    phase_data: np.ndarray,
+    logger: Optional[logging.Logger] = None,
+    comm_count: Optional[int] = None,
+    sensor_index: Optional[int] = None,
+    context: str = "processing",
+) -> np.ndarray:
+    """Validate wrapped FIP phase before unwrapping without changing amplitudes."""
+    data = np.asarray(phase_data, dtype=np.float64)
+    if data.size == 0:
+        return data
+
+    if not np.all(np.isfinite(data)):
+        if logger is not None:
+            logger.warning(
+                "FIP phase input contains non-finite values in %s packet #%s FIP%s. "
+                "No amplitude repair was applied.",
+                context,
+                "-" if comm_count is None else comm_count,
+                "-" if sensor_index is None else sensor_index,
+            )
+
+    max_abs = float(np.max(np.abs(data))) if data.size else 0.0
+    if max_abs <= 1.1:
+        return data
+
+    should_log = comm_count is None or int(comm_count) % 50 == 0
+    if logger is not None and should_log:
+        logger.warning(
+            "FIP phase input in %s packet #%s FIP%s is outside the expected [-1, 1] "
+            "wrapped range (max_abs=%.6g). No amplitude scaling was applied.",
+            context,
+            "-" if comm_count is None else comm_count,
+            "-" if sensor_index is None else sensor_index,
+            max_abs,
+        )
+    return data
+
+
+def _array_summary_values(data: np.ndarray) -> Tuple[int, float, float, float]:
+    arr = np.asarray(data)
+    size = int(arr.size)
+    if size == 0:
+        return 0, float("nan"), float("nan"), float("nan")
+    first = float(arr.flat[0])
+    finite = arr[np.isfinite(arr)]
+    if finite.size == 0:
+        return size, first, float("nan"), float("nan")
+    return size, first, float(np.min(finite)), float(np.max(finite))
+
+
 def _data_sample_count(data: np.ndarray) -> int:
     arr = np.asarray(data)
     if arr.ndim == 2:
@@ -248,6 +299,8 @@ class DataProcessingThread(QThread):
             'queue_drop_count': 0,
             'processing_failure_count': 0,
             'phase_unwrap_failure_count': 0,
+            'processing_time_sum_ms': 0.0,
+            'processing_time_max_ms': 0.0,
             'gap_count': 0,  # 检测到 comm_count 缺口的次数（T1-15）
         }
 
@@ -287,10 +340,32 @@ class DataProcessingThread(QThread):
         while self.running:
             try:
                 packet = self.input_queue.get(timeout=0.1)
+                started = time.perf_counter()
                 processed = self._process_packet(packet)
+                elapsed_ms = (time.perf_counter() - started) * 1000.0
+                self.stats['processing_time_sum_ms'] += elapsed_ms
+                self.stats['processing_time_max_ms'] = max(
+                    self.stats['processing_time_max_ms'], elapsed_ms
+                )
                 if processed is not None:
                     self.stats['packets_processed'] += 1
                     self.data_processed.emit(processed)
+                if packet.comm_count % 50 == 0:
+                    processed_count = max(1, self.stats['packets_processed'])
+                    self.logger.info(
+                        "FIP_PROCESS_STATS comm=%s processed=%d enqueued=%d queue=%d/%d "
+                        "queue_peak=%d queue_dropped=%d gaps=%d avg_ms=%.2f max_ms=%.2f",
+                        packet.comm_count,
+                        self.stats['packets_processed'],
+                        self.stats['packets_enqueued'],
+                        self.input_queue.qsize(),
+                        self.INPUT_QUEUE_MAXSIZE,
+                        self.stats['queue_peak'],
+                        self.stats['queue_drop_count'],
+                        self.stats['gap_count'],
+                        self.stats['processing_time_sum_ms'] / processed_count,
+                        self.stats['processing_time_max_ms'],
+                    )
             except Empty:
                 continue
             except Exception as e:
@@ -395,11 +470,13 @@ class DataProcessingThread(QThread):
                 )
 
             # --- 缺口检测（T1-15）---
+            gap_detected = False
             if (
                 self._last_comm_count is not None
                 and packet.comm_count != self._last_comm_count + 1
             ):
                 gap = packet.comm_count - self._last_comm_count - 1
+                gap_detected = True
                 self.logger.warning(
                     'comm_count gap in DataProcessingThread: last=%d, current=%d, missing=%d. '
                     'Resetting per-sensor processor state to prevent cross-gap phase error.',
@@ -428,16 +505,47 @@ class DataProcessingThread(QThread):
             downsampled_by_sensor: Dict[int, np.ndarray] = {}
             psd_by_sensor: Dict[int, np.ndarray] = {}
             effective_rate_by_sensor: Dict[int, float] = {}
+            actual_input_sensor_count = max(sensor_inputs.keys())
+            selected_sensor_for_filter = normalize_fip_sensor_index(
+                packet.selected_sensor,
+                actual_input_sensor_count,
+            )
+            log_packet_detail = gap_detected or packet.comm_count % 50 == 0
 
             for sensor_index, phase_data in sensor_inputs.items():
                 if phase_data.size == 0:
                     continue
 
-                phase_data = np.asarray(phase_data)
-                if np.max(np.abs(phase_data)) > 5:
-                    phase_data = phase_data / np.pi
+                phase_data = validate_wrapped_phase_input(
+                    phase_data,
+                    logger=self.logger,
+                    comm_count=packet.comm_count,
+                    sensor_index=sensor_index,
+                    context="processing",
+                )
+                input_size, input_first, input_min, input_max = _array_summary_values(phase_data)
+                if abs(input_first) <= 1e-12:
+                    self.logger.warning(
+                        "FIP_PROCESS_INPUT_FIRST_ZERO comm=%s sensor=FIP%s input_first=%.9g "
+                        "input_range=[%.9g,%.9g] points=%d",
+                        packet.comm_count,
+                        sensor_index,
+                        input_first,
+                        input_min,
+                        input_max,
+                        input_size,
+                    )
 
-                phase_unwrapper, signal_filter, downsampler = self._get_sensor_processors(sensor_index)
+                if sensor_index == selected_sensor_for_filter:
+                    phase_unwrapper, signal_filter, downsampler = self._get_sensor_processors(sensor_index)
+                    downsample_factor = max(1, downsampler.get_current_factor())
+                else:
+                    if sensor_index not in self._phase_unwrappers:
+                        self._phase_unwrappers[sensor_index] = type(self.phase_unwrapper)()
+                    phase_unwrapper = self._phase_unwrappers[sensor_index]
+                    signal_filter = None
+                    downsampler = None
+                    downsample_factor = max(1, self.downsampler.get_current_factor())
                 unwrapped, _ = phase_unwrapper.unwrap_phase(phase_data)
                 if len(unwrapped) == 0:
                     self.stats['phase_unwrap_failure_count'] += 1
@@ -448,21 +556,74 @@ class DataProcessingThread(QThread):
                     )
                     continue
 
-                if signal_filter is not None:
-                    filtered, _ = signal_filter.apply_filter(unwrapped)
-                else:
-                    filtered = unwrapped.copy()
-
-                downsampled, _ = downsampler.downsample(filtered)
-                downsample_factor = max(1, downsampler.get_current_factor())
-                psd_data = unwrapped[::downsample_factor]
+                psd_data = np.asarray(unwrapped[::downsample_factor], dtype=np.float64)
                 effective_rate = normalize_fip_sample_rate(packet.sample_rate_hz) / downsample_factor
+
+                if signal_filter is not None and downsampler is not None:
+                    filtered, _ = signal_filter.apply_filter(unwrapped)
+                    downsampled, _ = downsampler.downsample(filtered)
+                else:
+                    filtered = unwrapped
+                    downsampled = psd_data
 
                 unwrapped_by_sensor[sensor_index] = unwrapped
                 filtered_by_sensor[sensor_index] = filtered
                 downsampled_by_sensor[sensor_index] = downsampled
                 psd_by_sensor[sensor_index] = psd_data
                 effective_rate_by_sensor[sensor_index] = effective_rate
+
+                if log_packet_detail:
+                    unwrapped_size, unwrapped_first, unwrapped_min, unwrapped_max = _array_summary_values(unwrapped)
+                    psd_size, psd_first, psd_min, psd_max = _array_summary_values(psd_data)
+                    filtered_size, filtered_first, filtered_min, filtered_max = _array_summary_values(filtered)
+                    down_size, down_first, down_min, down_max = _array_summary_values(downsampled)
+                    self.logger.info(
+                        "FIP_PROCESS_SENSOR comm=%s sensor=FIP%s selected_for_filter=%s "
+                        "input=%d first=%.9g range=[%.9g,%.9g] "
+                        "unwrapped=%d first=%.9g range=[%.9g,%.9g] "
+                        "unfiltered_ds=%d first=%.9g range=[%.9g,%.9g] "
+                        "filtered=%d first=%.9g range=[%.9g,%.9g] "
+                        "display_ds=%d first=%.9g range=[%.9g,%.9g] effective_rate=%.1f",
+                        packet.comm_count,
+                        sensor_index,
+                        sensor_index == selected_sensor_for_filter,
+                        input_size,
+                        input_first,
+                        input_min,
+                        input_max,
+                        unwrapped_size,
+                        unwrapped_first,
+                        unwrapped_min,
+                        unwrapped_max,
+                        psd_size,
+                        psd_first,
+                        psd_min,
+                        psd_max,
+                        filtered_size,
+                        filtered_first,
+                        filtered_min,
+                        filtered_max,
+                        down_size,
+                        down_first,
+                        down_min,
+                        down_max,
+                        effective_rate,
+                    )
+                if psd_data.size and abs(float(psd_data[0])) <= 1e-12:
+                    self.logger.warning(
+                        "FIP_PROCESS_UNFILTERED_FIRST_ZERO comm=%s sensor=FIP%s value=%.9g",
+                        packet.comm_count,
+                        sensor_index,
+                        float(psd_data[0]),
+                    )
+                if downsampled.size and abs(float(downsampled[0])) <= 1e-12:
+                    self.logger.warning(
+                        "FIP_PROCESS_DISPLAY_FIRST_ZERO comm=%s sensor=FIP%s filtered_path=%s value=%.9g",
+                        packet.comm_count,
+                        sensor_index,
+                        sensor_index == selected_sensor_for_filter,
+                        float(downsampled[0]),
+                    )
 
             if not downsampled_by_sensor:
                 return None
@@ -1008,9 +1169,31 @@ class DataStorageThread(QThread):
         for sensor_index, phase_data in sensor_inputs.items():
             if phase_data.size == 0:
                 continue
-            phase_data = np.asarray(phase_data)
-            if np.max(np.abs(phase_data)) > 5:
-                phase_data = phase_data / np.pi
+            phase_data = validate_wrapped_phase_input(
+                phase_data,
+                logger=self.logger,
+                comm_count=packet.comm_count,
+                sensor_index=sensor_index,
+                context="storage",
+            )
+            input_size, input_first, input_min, input_max = _array_summary_values(phase_data)
+            if packet.comm_count % 50 == 0:
+                self.logger.info(
+                    "FIP_STORAGE_INPUT comm=%s sensor=FIP%s points=%d first=%.9g range=[%.9g,%.9g]",
+                    packet.comm_count,
+                    sensor_index,
+                    input_size,
+                    input_first,
+                    input_min,
+                    input_max,
+                )
+            if abs(input_first) <= 1e-12:
+                self.logger.warning(
+                    "FIP_STORAGE_INPUT_FIRST_ZERO comm=%s sensor=FIP%s value=%.9g",
+                    packet.comm_count,
+                    sensor_index,
+                    input_first,
+                )
 
             phase_unwrapper = self._get_phase_unwrapper(sensor_index)
             unwrapped, _ = phase_unwrapper.unwrap_phase(phase_data)

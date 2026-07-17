@@ -1538,6 +1538,19 @@ class MainWindow(QMainWindow):
             plot_values = np.ascontiguousarray(values_arr[::step], dtype=np.float32)
             source_points = max(source_points, int(values_arr.size))
             rendered_points = max(rendered_points, int(plot_values.size))
+            if plot_values.size and abs(float(plot_values[0])) <= 1e-12:
+                self._tab3_logger.warning(
+                    "TAB3_NODE ui.fip_curve_first_zero comm=%s curve=%s sensor=FIP%s "
+                    "source_first=%.9g plot_first=%.9g source_points=%d plot_points=%d step=%d",
+                    comm_count,
+                    curve_mode,
+                    sensor_index,
+                    float(values_arr.flat[0]),
+                    float(plot_values[0]),
+                    int(values_arr.size),
+                    int(plot_values.size),
+                    step,
+                )
             self._render_tab3_curve(curve_item, curve_mode, times, plot_values, curve_mode)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         self._tab3_logger.debug(

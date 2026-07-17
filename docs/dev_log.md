@@ -200,3 +200,28 @@
 - Tab1 双 FIP 变采样率合成测试通过：模拟 `2 MHz`、`1 s`、双 FIP 包，处理输出 FIP1/FIP2 各 `400000` 点，`effective_rate=400000.0`；Tab1 存储请求形状为 `(2, 400000)`，`sample_rate=400000.0`。
 - MainWindow 离屏 UI 检查通过：默认 `packet_duration_seconds=1.0`、`sample_rate_hz=1000000.0`；修改为 `2.0 s`、`2.5 MHz`、双 FIP 后，Tab3 Curve 选项为 `Off / DAS Channel / FIP1 / FIP2`。
 - `git diff --check` 通过。
+
+## 2026-07-18 01:07:03 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/fip_tab1/fip_tcp_server.py`、`src/fip_tab1/fip_tab1_manager.py`、`src/das_tab3/das_tab3_manager.py`、`src/das_tab3/das_tcp_server.py`、`src/ui/main_window.py`、`src/main.py`、`read/fip_edas_joint_reader.ipynb`、`docs/2026-07-18-Tab3-FIP丢帧缺口与首点0分析修复.md`、`docs/2026-07-17-FIP-eDAS联调问题数量与修复日志.md`、`docs/2026-07-17 数据存储.md`、`docs/dev_log.md`
+
+### 更新摘要
+
+1. 分析 2026-07-18 00:26-00:40 日志，确认 Tab3 FIP 缺口来自 Tab1 `DataProcessingThread` 队列满后丢弃旧 FIP 包，而不是 DAS TCP 丢包；DAS 统计中 `missing=0`，`DASPlotWorker` 中 `dropped=0`。
+2. FIP TCP 解析由 `struct.unpack` 改为 `np.frombuffer(dtype=">i8")`，保留 `<32,32>` 的 `int64 / 2^32` 协议解码，避免 2,000,000 点包创建巨大 Python tuple。
+3. 新增 FIP 首样本诊断链路：`FIP_TCP_PARSE`、`FIP_TCP_FIRST_SAMPLE_ZERO`、`FIP_MAIN_FIRST_SAMPLE_ZERO`、`FIP_PROCESS_INPUT_FIRST_ZERO`、`FIP_PROCESS_UNFILTERED_FIRST_ZERO`、`TAB3_NODE manager.fip_first_zero`、`TAB3_NODE ui.fip_curve_first_zero`。
+4. 删除处理链和存储链旧的 `max(abs(data)) > 5` 自动除以 `pi` 逻辑；后续只记录异常范围，不做猜测性幅值缩放，保持数据真实性和完整性。
+5. Tab3 FIP 曲线和 joint 存储改为使用未滤波、已展开、降采样数据 `psd_data/psd_by_sensor`，不再使用滤波后的 `downsampled_data`。
+6. `FIPSessionPacket` 中写入的 FIP 数组长度改为与 `fip_sample_rate_hz` 匹配，修复旧代码将 1 MHz 全量展开数组标记为约 200 kHz 的 joint 存储语义不一致问题。
+7. 双 FIP 处理时，非 Tab1 当前选中的传感器跳过滤波路径，只生成未滤波降采样数据，降低处理线程 CPU 压力。
+8. DAS `slow_receive` 阈值改为按包时长计算，默认 1 s 包不再因约 1000 ms 接收耗时误报 warning。
+9. 更新 `read/fip_edas_joint_reader.ipynb`，新增 `FIP_SENSOR_TO_PLOT`，优先读取 `fip1_*` / `fip2_*` 分路字段，缺失时回退兼容字段。
+10. 新增专项分析文档，并更新 FIP-eDAS 联调日志和数据存储文档。
+
+### 验证
+
+- `python -m py_compile src\fip_tab1\fip_tcp_server.py src\fip_tab1\fip_tab1_manager.py src\das_tab3\das_tab3_manager.py src\das_tab3\das_tcp_server.py src\ui\main_window.py src\main.py` 通过。
+- 合成链路测试通过，输出 `SYNTHETIC_OK tcp_decode dual_fip_processing tab3_unfiltered notebook_fip2`。
+- Notebook 编码和语法检查通过，输出 `question_count 0`、`replacement_count 0`、`code_cells_ok 6`。

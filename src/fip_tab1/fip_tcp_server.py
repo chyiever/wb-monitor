@@ -350,14 +350,34 @@ class OptimizedTCPServer(QObject):
 
             # Parse <32,32> fixed point format (big endian)
             point_count = data_length // 8
-            raw_values = struct.unpack(f'>{point_count}q', data_buff)
+            raw_values = np.frombuffer(data_buff, dtype=">i8", count=point_count)
 
             # Convert to float (<32,32> format: divide by 2^32)
-            data_array = np.array(raw_values, dtype=np.float64) / (2**32)
+            data_array = raw_values.astype(np.float64) / float(2**32)
 
             # 每 50 包记录一次解析结果
             if comm_count % 50 == 0:
-                self.logger.info(f"Data parsed: {point_count} points, range=[{np.min(data_array):.3f}, {np.max(data_array):.3f}]")
+                self.logger.info(
+                    "FIP_TCP_PARSE comm=%s raw_comm=%s points=%d raw_first=%d "
+                    "raw_range=[%d,%d] decoded_first=%.9g decoded_range=[%.9g,%.9g]",
+                    comm_count,
+                    raw_comm_count,
+                    point_count,
+                    int(raw_values[0]) if point_count else 0,
+                    int(np.min(raw_values)) if point_count else 0,
+                    int(np.max(raw_values)) if point_count else 0,
+                    float(data_array[0]) if point_count else float("nan"),
+                    float(np.min(data_array)) if point_count else float("nan"),
+                    float(np.max(data_array)) if point_count else float("nan"),
+                )
+            if point_count and abs(float(data_array[0])) <= 1e-12:
+                self.logger.warning(
+                    "FIP_TCP_FIRST_SAMPLE_ZERO comm=%s raw_comm=%s raw_first=%d decoded_first=%.9g",
+                    comm_count,
+                    raw_comm_count,
+                    int(raw_values[0]),
+                    float(data_array[0]),
+                )
 
             # timestamp 仅作为绘图缓冲区的起始提示（seconds），
             # 绘图缓冲区会以实际样本数连续延伸，此值只在首包或断连重锚时有意义。

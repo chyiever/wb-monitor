@@ -183,39 +183,56 @@ class DASTab3Manager(QObject):
     def process_fip_processed_data(self, processed_data: ProcessedData) -> None:
         """Receive processed Tab1 data, push it into alignment, and update plots."""
         packet_duration_seconds = max(float(getattr(processed_data, "packet_duration_seconds", 1.0)), 1e-6)
+        selected_sensor = getattr(processed_data, "selected_sensor", 1)
+        unfiltered_by_sensor = getattr(processed_data, "psd_by_sensor", {}) or {
+            selected_sensor: processed_data.psd_data
+        }
+        selected_unfiltered = unfiltered_by_sensor.get(selected_sensor)
+        if selected_unfiltered is None:
+            selected_unfiltered = processed_data.psd_data
+        display_by_sensor = {
+            sensor_index: np.asarray(values)
+            for sensor_index, values in unfiltered_by_sensor.items()
+        }
+        selected_unfiltered = np.asarray(selected_unfiltered)
         packet = FIPSessionPacket(
             comm_count=processed_data.comm_count,
             packet_duration_seconds=packet_duration_seconds,
             sample_rate_hz=processed_data.effective_rate,
-            unwrapped_data=processed_data.unwrapped_data,
-            display_data=processed_data.downsampled_data,
+            unwrapped_data=selected_unfiltered,
+            display_data=selected_unfiltered,
             sensor_count=getattr(processed_data, "sensor_count", 1),
-            selected_sensor=getattr(processed_data, "selected_sensor", 1),
-            unwrapped_by_sensor=getattr(processed_data, "unwrapped_by_sensor", {}) or {
-                getattr(processed_data, "selected_sensor", 1): processed_data.unwrapped_data
-            },
-            display_by_sensor=getattr(processed_data, "downsampled_by_sensor", {}) or {
-                getattr(processed_data, "selected_sensor", 1): processed_data.downsampled_data
-            },
+            selected_sensor=selected_sensor,
+            unwrapped_by_sensor=display_by_sensor,
+            display_by_sensor=display_by_sensor,
         )
         self._fip_recent_packets.append(packet)
         self.coordinator.push_fip_packet(packet)
         self.logger.debug(
-            "TAB3_NODE manager.fip_packet comm=%s sensors=%s selected=FIP%s display_points=%d sample_rate=%.1f duration=%.6f recent=%d",
+            "TAB3_NODE manager.fip_packet comm=%s sensors=%s selected=FIP%s display_points=%d "
+            "sample_rate=%.1f duration=%.6f recent=%d source=unfiltered_downsampled first=%.9g",
             processed_data.comm_count,
             getattr(processed_data, "sensor_count", 1),
-            getattr(processed_data, "selected_sensor", 1),
-            len(processed_data.downsampled_data),
+            selected_sensor,
+            len(selected_unfiltered),
             float(processed_data.effective_rate),
             packet_duration_seconds,
             len(self._fip_recent_packets),
+            float(selected_unfiltered[0]) if len(selected_unfiltered) else float("nan"),
         )
+        if len(selected_unfiltered) and abs(float(selected_unfiltered[0])) <= 1e-12:
+            self.logger.warning(
+                "TAB3_NODE manager.fip_first_zero comm=%s selected=FIP%s source=unfiltered_downsampled value=%.9g",
+                processed_data.comm_count,
+                selected_sensor,
+                float(selected_unfiltered[0]),
+            )
         self.main_window.update_tab3_fip_curve(
             processed_data.comm_count,
-            processed_data.downsampled_data,
+            selected_unfiltered,
             processed_data.effective_rate,
             sensor_count=getattr(processed_data, "sensor_count", 1),
-            values_by_sensor=getattr(processed_data, "downsampled_by_sensor", None),
+            values_by_sensor=display_by_sensor,
             packet_duration_seconds=packet_duration_seconds,
         )
 

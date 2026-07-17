@@ -401,7 +401,15 @@ class PCCPMonitorApp:
                 self.logger.info(
                     f"Received packet #{packet.comm_count}: "
                     f"{len(packet.phase_data)} points, "
-                    f"range=[{np.min(packet.phase_data):.3f}, {np.max(packet.phase_data):.3f}]"
+                    f"first={float(packet.phase_data[0]) if len(packet.phase_data) else float('nan'):.9g}, "
+                    f"range=[{np.min(packet.phase_data):.9g}, {np.max(packet.phase_data):.9g}]"
+                )
+            if len(packet.phase_data) and abs(float(packet.phase_data[0])) <= 1e-12:
+                self.logger.warning(
+                    "FIP_MAIN_FIRST_SAMPLE_ZERO comm=%s first=%.9g points=%d",
+                    packet.comm_count,
+                    float(packet.phase_data[0]),
+                    len(packet.phase_data),
                 )
 
             fip_settings = (
