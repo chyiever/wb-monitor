@@ -96,6 +96,7 @@ class FIPTab2Manager(QObject):
             comm_count=processed_data.comm_count,
             sample_rate=processed_data.effective_rate,
             data=processed_data.downsampled_data,
+            packet_duration_seconds=max(float(getattr(processed_data, "packet_duration_seconds", 1.0)), 1e-6),
         )
         self.feature_worker.enqueue_packet(packet)
 

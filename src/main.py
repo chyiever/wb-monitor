@@ -42,7 +42,6 @@ from config import (
     EFFECTIVE_SAMPLE_RATE,
     TIME_DISPLAY_DOWNSAMPLE,
     TIME_DISPLAY_SAMPLE_RATE,
-    PACKET_DURATION,
     PERFORMANCE_LOG_INTERVAL,
     get_sample_rate_info
 )
@@ -408,8 +407,15 @@ class PCCPMonitorApp:
             fip_settings = (
                 self.main_window.get_tab1_fip_settings()
                 if hasattr(self.main_window, 'get_tab1_fip_settings')
-                else {"sensor_count": 1, "selected_sensor": 1}
+                else {
+                    "sensor_count": 1,
+                    "selected_sensor": 1,
+                    "packet_duration_seconds": 1.0,
+                    "sample_rate_hz": ORIGINAL_SAMPLE_RATE,
+                }
             )
+            packet_duration_seconds = max(float(fip_settings.get("packet_duration_seconds", 1.0)), 1e-6)
+            sample_rate_hz = max(float(fip_settings.get("sample_rate_hz", ORIGINAL_SAMPLE_RATE)), 1.0)
 
             # 简单的数据包格式转换
             raw_packet = RawDataPacket(
@@ -418,6 +424,8 @@ class PCCPMonitorApp:
                 comm_count=packet.comm_count,
                 sensor_count=fip_settings.get("sensor_count", 1),
                 selected_sensor=fip_settings.get("selected_sensor", 1),
+                packet_duration_seconds=packet_duration_seconds,
+                sample_rate_hz=sample_rate_hz,
             )
 
             # 仅将数据包发送到后台处理线程，主线程立即返回
@@ -686,18 +694,30 @@ class PCCPMonitorApp:
             self.logger.error(f"Error updating storage settings: {e}")
 
     def _update_fip_sensor_settings(self, settings: Dict[str, Any]):
-        """Apply Tab1 FIP sensor count and plotting sensor changes."""
+        """Apply Tab1 FIP input and plotting setting changes."""
         try:
             sensor_count = int(settings.get("sensor_count", 1))
             selected_sensor = int(settings.get("selected_sensor", 1))
+            packet_duration_seconds = max(float(settings.get("packet_duration_seconds", 1.0)), 1e-6)
+            sample_rate_hz = max(float(settings.get("sample_rate_hz", ORIGINAL_SAMPLE_RATE)), 1.0)
+            sample_rate_changed = self._sync_signal_filter_sample_rate(sample_rate_hz, source="fip_input_settings")
+            if sample_rate_changed:
+                self._refresh_preprocessing_parameters(source="fip_input_settings")
             if self.tab1_manager:
-                self.tab1_manager.update_fip_selection(sensor_count, selected_sensor)
+                self.tab1_manager.update_fip_selection(
+                    sensor_count,
+                    selected_sensor,
+                    packet_duration_seconds=packet_duration_seconds,
+                    sample_rate_hz=sample_rate_hz,
+                )
             if self.tab3_manager:
                 self._sync_tab3_settings()
             self.logger.info(
-                "FIP sensor settings updated: sensor_count=%d selected=FIP%d",
+                "FIP input settings updated: sensor_count=%d selected=FIP%d duration=%.6fs sample_rate=%.1fHz",
                 sensor_count,
                 selected_sensor,
+                packet_duration_seconds,
+                sample_rate_hz,
             )
         except Exception as e:
             self.logger.error(f"Error updating FIP sensor settings: {e}")
@@ -802,11 +822,38 @@ class PCCPMonitorApp:
         }
         return mapping.get(ui_filter_type, "bandpass")
 
+    def _get_tab1_sample_rate_hz(self) -> float:
+        if hasattr(self.main_window, 'get_tab1_fip_settings'):
+            try:
+                settings = self.main_window.get_tab1_fip_settings()
+                return max(float(settings.get("sample_rate_hz", ORIGINAL_SAMPLE_RATE)), 1.0)
+            except Exception:
+                return ORIGINAL_SAMPLE_RATE
+        return ORIGINAL_SAMPLE_RATE
+
+    def _sync_signal_filter_sample_rate(self, sample_rate_hz: float, source: str = "runtime") -> bool:
+        if not self.signal_filter:
+            return False
+        sample_rate_hz = max(float(sample_rate_hz), 1.0)
+        old_sample_rate = float(getattr(self.signal_filter, 'sample_rate', ORIGINAL_SAMPLE_RATE))
+        if abs(old_sample_rate - sample_rate_hz) <= 1e-6:
+            return False
+        self.signal_filter.sample_rate = sample_rate_hz
+        self.logger.info(
+            "[%s] FIP filter sample rate synced: %.1fHz -> %.1fHz",
+            source,
+            old_sample_rate,
+            sample_rate_hz,
+        )
+        return True
+
     def _refresh_preprocessing_parameters(self, source: str = "runtime"):
         """从UI读取并应用最新预处理参数（滤波 + 降采样）。"""
         try:
             if not self.signal_filter or not self.downsampler:
                 return
+
+            self._sync_signal_filter_sample_rate(self._get_tab1_sample_rate_hz(), source=source)
 
             # 1) 降采样参数
             if hasattr(self.main_window, 'downsample_spin'):
@@ -856,6 +903,8 @@ class PCCPMonitorApp:
             if not self.signal_filter:
                 return
 
+            self._sync_signal_filter_sample_rate(self._get_tab1_sample_rate_hz(), source="filter_settings")
+
             ui_type = settings.get('type', '带通')
             filter_type = self._map_filter_type_from_ui(ui_type)
             low_freq = settings.get('low_freq', 100)
@@ -892,9 +941,10 @@ class PCCPMonitorApp:
                 old_factor = self.downsampler.get_current_factor()
                 success = self.downsampler.set_downsampling_factor(new_factor)
                 if success:
-                    new_sample_rate = ORIGINAL_SAMPLE_RATE / new_factor
+                    current_input_rate = self._get_tab1_sample_rate_hz()
+                    new_sample_rate = current_input_rate / new_factor
                     self.logger.info(f"Downsample factor updated: {old_factor}x -> {new_factor}x "
-                                   f"({ORIGINAL_SAMPLE_RATE/1e6:.1f}MHz -> {new_sample_rate/1e3:.1f}kHz)")
+                                   f"({current_input_rate/1e6:.3f}MHz -> {new_sample_rate/1e3:.1f}kHz)")
 
                     # 通知线程系统清空缓冲区（通过重启实现）
                     if self.tab1_manager and hasattr(self.tab1_manager, 'data_processor'):

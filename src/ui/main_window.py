@@ -234,35 +234,53 @@ class MainWindow(QMainWindow):
         self.port_spin.setValue(3677)
         layout.addWidget(self.port_spin, 1, 1)
 
+        # FIP单包时长
+        layout.addWidget(QLabel("单包时长(s):"), 2, 0)
+        self.fip_packet_duration_spin = QDoubleSpinBox()
+        self.fip_packet_duration_spin.setRange(0.001, 60.0)
+        self.fip_packet_duration_spin.setDecimals(3)
+        self.fip_packet_duration_spin.setSingleStep(0.1)
+        self.fip_packet_duration_spin.setValue(1.0)
+        layout.addWidget(self.fip_packet_duration_spin, 2, 1)
+
+        # FIP原始采样率
+        layout.addWidget(QLabel("采样率(MHz):"), 3, 0)
+        self.fip_sample_rate_mhz_spin = QDoubleSpinBox()
+        self.fip_sample_rate_mhz_spin.setRange(0.001, 100.0)
+        self.fip_sample_rate_mhz_spin.setDecimals(3)
+        self.fip_sample_rate_mhz_spin.setSingleStep(0.1)
+        self.fip_sample_rate_mhz_spin.setValue(1.0)
+        layout.addWidget(self.fip_sample_rate_mhz_spin, 3, 1)
+
         # FIP传感器数量
-        layout.addWidget(QLabel("FIP数量:"), 2, 0)
+        layout.addWidget(QLabel("FIP数量:"), 4, 0)
         self.fip_sensor_count_combo = QComboBox()
         self.fip_sensor_count_combo.addItem("1个", 1)
         self.fip_sensor_count_combo.addItem("2个", 2)
         self.fip_sensor_count_combo.setCurrentIndex(0)
-        layout.addWidget(self.fip_sensor_count_combo, 2, 1)
+        layout.addWidget(self.fip_sensor_count_combo, 4, 1)
 
         # Tab1绘图使用的FIP传感器
-        layout.addWidget(QLabel("绘图FIP:"), 3, 0)
+        layout.addWidget(QLabel("绘图FIP:"), 5, 0)
         self.fip_plot_sensor_combo = QComboBox()
         self.fip_plot_sensor_combo.addItem("FIP1", 1)
         self.fip_plot_sensor_combo.setEnabled(False)
-        layout.addWidget(self.fip_plot_sensor_combo, 3, 1)
+        layout.addWidget(self.fip_plot_sensor_combo, 5, 1)
 
         # 连接状态
-        layout.addWidget(QLabel("连接状态:"), 4, 0)
+        layout.addWidget(QLabel("连接状态:"), 6, 0)
         self.conn_status_label = QLabel("未连接")
         self.conn_status_label.setStyleSheet("color: red; font-weight: bold;")
-        layout.addWidget(self.conn_status_label, 4, 1)
+        layout.addWidget(self.conn_status_label, 6, 1)
 
         # 统计信息
-        layout.addWidget(QLabel("接收数据包:"), 5, 0)
+        layout.addWidget(QLabel("接收数据包:"), 7, 0)
         self.packet_count_label = QLabel("0")
-        layout.addWidget(self.packet_count_label, 5, 1)
+        layout.addWidget(self.packet_count_label, 7, 1)
 
-        layout.addWidget(QLabel("丢包率:"), 6, 0)
+        layout.addWidget(QLabel("丢包率:"), 8, 0)
         self.loss_rate_label = QLabel("0%")
-        layout.addWidget(self.loss_rate_label, 6, 1)
+        layout.addWidget(self.loss_rate_label, 8, 1)
 
         return group
 
@@ -1128,8 +1146,8 @@ class MainWindow(QMainWindow):
         # TODO: 实现配置重置
         pass
 
-    def get_tab1_fip_settings(self) -> Dict[str, int]:
-        """Return Tab1 FIP sensor count and selected plotting sensor."""
+    def get_tab1_fip_settings(self) -> Dict[str, Any]:
+        """Return Tab1 FIP input and selected plotting settings."""
         sensor_count = self._combo_current_data_int(
             getattr(self, 'fip_sensor_count_combo', None),
             1,
@@ -1140,9 +1158,19 @@ class MainWindow(QMainWindow):
             1,
         )
         selected_sensor = min(max(selected_sensor, 1), sensor_count)
+        packet_duration_seconds = self._spin_float_value(
+            getattr(self, 'fip_packet_duration_spin', None),
+            1.0,
+        )
+        sample_rate_mhz = self._spin_float_value(
+            getattr(self, 'fip_sample_rate_mhz_spin', None),
+            1.0,
+        )
         return {
             "sensor_count": sensor_count,
             "selected_sensor": selected_sensor,
+            "packet_duration_seconds": max(packet_duration_seconds, 0.001),
+            "sample_rate_hz": max(sample_rate_mhz, 0.001) * 1_000_000.0,
         }
 
     def _combo_current_data_int(self, combo, default: int) -> int:
@@ -1158,6 +1186,14 @@ class MainWindow(QMainWindow):
         digits = "".join(ch for ch in text if ch.isdigit())
         return int(digits) if digits else default
 
+    def _spin_float_value(self, spin, default: float) -> float:
+        if spin is None:
+            return default
+        try:
+            return float(spin.value())
+        except (TypeError, ValueError):
+            return default
+
     def _on_fip_sensor_count_changed(self):
         """Refresh dependent controls after switching between one/two FIP sensors."""
         self._update_fip_sensor_controls(emit=True)
@@ -1166,6 +1202,14 @@ class MainWindow(QMainWindow):
         """Notify the controller that Tab1 should plot another FIP sensor."""
         if hasattr(self, 'fip_sensor_settings_changed'):
             self.fip_sensor_settings_changed.emit(self.get_tab1_fip_settings())
+
+    def _on_fip_input_settings_changed(self):
+        """Notify dependent pipelines after FIP packet duration or sample rate changes."""
+        self._update_psd_settings()
+        if hasattr(self, 'fip_sensor_settings_changed'):
+            self.fip_sensor_settings_changed.emit(self.get_tab1_fip_settings())
+        if hasattr(self, 'tab3_settings_changed'):
+            self.tab3_settings_changed.emit()
 
     def _update_fip_sensor_controls(self, emit: bool = True):
         settings = self.get_tab1_fip_settings()
@@ -1443,6 +1487,7 @@ class MainWindow(QMainWindow):
         sample_rate_hz: float,
         sensor_count: int = 1,
         values_by_sensor: Dict[int, Any] = None,
+        packet_duration_seconds: float = 1.0,
     ):
         """Update cached FIP comparison curves shown in Tab3."""
         curve1_mode = self.tab3_curve1_combo.currentText()
@@ -1488,7 +1533,8 @@ class MainWindow(QMainWindow):
 
             step = max(1, int(np.ceil(values_arr.size / max(1, self._tab3_curve_max_points))))
             selected_indexes = np.arange(0, values_arr.size, step, dtype=np.float64)
-            times = (comm_count * 0.2) + selected_indexes / max(float(sample_rate_hz), 1.0)
+            safe_packet_duration = max(float(packet_duration_seconds), 1e-6)
+            times = (comm_count * safe_packet_duration) + selected_indexes / max(float(sample_rate_hz), 1.0)
             plot_values = np.ascontiguousarray(values_arr[::step], dtype=np.float32)
             source_points = max(source_points, int(values_arr.size))
             rendered_points = max(rendered_points, int(plot_values.size))
@@ -1963,8 +2009,9 @@ class MainWindow(QMainWindow):
         # 获取当前前面板的降采样因子来计算有效采样率
         current_downsample_factor = self.downsample_spin.value()
         # 计算有效采样率：默认5倍降采样 1MHz -> 200kHz
-        ORIGINAL_SAMPLE_RATE = 1000000.0  # 1MHz
-        effective_sample_rate = ORIGINAL_SAMPLE_RATE / current_downsample_factor
+        fip_settings = self.get_tab1_fip_settings() if hasattr(self, 'get_tab1_fip_settings') else {}
+        original_sample_rate = float(fip_settings.get('sample_rate_hz', 1_000_000.0))
+        effective_sample_rate = max(original_sample_rate, 1.0) / current_downsample_factor
         window_length_samples = int(window_duration_sec * effective_sample_rate)
 
         psd_settings = {
@@ -1979,10 +2026,10 @@ class MainWindow(QMainWindow):
             self.psd_settings_changed.emit(psd_settings)
 
     def _update_time_display_settings(self):
-        """更新时域显示设置 - 仅支持显示时长调整，更新间隔固定为0.2s"""
+        """更新时域显示设置 - 仅支持显示时长调整，刷新节奏由后台线程控制"""
         time_settings = {
             'duration': self.time_display_duration_spin.value()
-            # 注意：更新间隔固定为0.2s，不再从UI获取
+            # 注意：刷新节奏不再从UI获取
         }
 
         # 发送信号给主程序
@@ -2087,6 +2134,10 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'downsample_spin'):
                 self.downsample_spin.valueChanged.connect(self._update_psd_settings)
 
+            if hasattr(self, 'fip_packet_duration_spin'):
+                self.fip_packet_duration_spin.valueChanged.connect(self._on_fip_input_settings_changed)
+            if hasattr(self, 'fip_sample_rate_mhz_spin'):
+                self.fip_sample_rate_mhz_spin.valueChanged.connect(self._on_fip_input_settings_changed)
             if hasattr(self, 'fip_sensor_count_combo'):
                 self.fip_sensor_count_combo.currentIndexChanged.connect(self._on_fip_sensor_count_changed)
             if hasattr(self, 'fip_plot_sensor_combo'):

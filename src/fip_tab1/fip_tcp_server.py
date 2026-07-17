@@ -31,7 +31,8 @@ class DataPacket:
         self.data_size = len(data_array) * 8
 
 
-COMM_INTERVAL = 0.2  # 每次通信间隔（秒），发送方固定 5Hz
+COMM_INTERVAL = 1.0  # Default FIP packet duration; runtime value is configured in Tab1.
+MAX_DATA_LENGTH_BYTES = 128 * 1024 * 1024
 
 
 class OptimizedTCPServer(QObject):
@@ -219,11 +220,12 @@ class OptimizedTCPServer(QObject):
                 comm_count = self._normalize_comm_count(raw_comm_count)
 
                 # Basic validation only
-                if data_length == 0 or data_length > 10000000:
+                if data_length == 0 or data_length > MAX_DATA_LENGTH_BYTES:
                     # 非法包长会导致字节流永久失步：后续 recv 会把包体误当包头解析。
                     # 正确处理：关闭连接，由外层 _server_loop 重新等待新连接，恢复同步。
                     self.logger.error(
                         f"Invalid data_length={data_length} from {self.client_address}, "
+                        f"max_allowed={MAX_DATA_LENGTH_BYTES}, "
                         "closing connection to resync byte stream."
                     )
                     break

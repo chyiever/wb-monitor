@@ -176,3 +176,27 @@
 - `python -m py_compile src\fip_tab1\fip_tab1_manager.py src\alignment\aligned_types.py src\das_tab3\das_storage_worker.py src\das_tab3\das_tab3_manager.py src\ui\main_window.py src\main.py` 通过。
 - Tab1 双 FIP 合成测试通过：模拟 `400000` 点包，处理输出 FIP1/FIP2 各 `40000` 点，Tab1 存储请求形状为 `(2, 40000)`。
 - MainWindow 离屏 UI 检查通过：默认 Tab3 选项为 `FIP`；Tab1 切到 `2个` 后 Curve1/Curve2 选项变为 `FIP1/FIP2`，并可选择 Tab1 绘图 FIP2。
+
+## 2026-07-18 00:17:55 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/fip_tab1/fip_tab1_manager.py`、`src/fip_tab1/fip_tcp_server.py`、`src/alignment/aligned_session_coordinator.py`、`src/das_tab3/das_tab3_manager.py`、`src/fip_tab2/fip_types.py`、`src/fip_tab2/fip_tab2_manager.py`、`src/fip_tab2/fip_feature_worker.py`、`src/ui/main_window.py`、`src/main.py`、`docs/2026-07-17 数据存储.md`、`docs/dev_log.md`
+
+### 更新摘要
+
+1. Tab1 通信设置新增 `单包时长(s)` 输入框，默认 `1.000 s`；新增 `采样率(MHz)` 输入框，默认 `1.000 MHz`。
+2. FIP 拆包点数由 `round(sample_rate_hz * packet_duration_seconds)` 动态计算；双 FIP 时包体按每路点数切分为 FIP1/FIP2，默认 `1 s x 1 MHz x 2` 对应 `2,000,000` 个相位点。
+3. `RawDataPacket`、`ProcessedData` 和 Tab1 存储请求增加 FIP 包时长与原始采样率字段；处理后的 `effective_rate` 改为 `sample_rate_hz / downsample_factor`。
+4. Tab1 `.npz` 存储采样率改为 `raw_sample_rate_hz / 5`，默认仍为 `200K`；文件名采样率标签、`sample_rate`、`raw_sample_rate_hz`、`packet_duration_seconds` 和 `data_info` 元数据随 UI 参数更新。
+5. FIP TCP 包体合法长度上限从旧 `10 MB` 提高到 `128 MB`，避免默认双 FIP 1s 包或更高采样率包被拒收。
+6. Tab3 FIP 曲线、`FIPSessionPacket` 和 `AlignedSessionCoordinator` 改为使用 Tab1 传入的 `packet_duration_seconds`；默认空状态包时长改为 `1.0 s`。
+7. Tab2 输入包增加 `packet_duration_seconds`，采样率或包时长变化时重置特征时间轴；缺包后按 `comm_count * packet_duration_seconds` 对齐新的时间原点。
+8. 更新 `docs/2026-07-17 数据存储.md`，说明 Tab1 新输入参数、动态点数、动态存储采样率、`.npz` 元数据和本轮验证记录。
+
+### 验证
+
+- `python -m py_compile src\fip_tab1\fip_tab1_manager.py src\fip_tab1\fip_tcp_server.py src\alignment\aligned_session_coordinator.py src\das_tab3\das_tab3_manager.py src\fip_tab2\fip_types.py src\fip_tab2\fip_tab2_manager.py src\fip_tab2\fip_feature_worker.py src\ui\main_window.py src\main.py` 通过。
+- Tab1 双 FIP 变采样率合成测试通过：模拟 `2 MHz`、`1 s`、双 FIP 包，处理输出 FIP1/FIP2 各 `400000` 点，`effective_rate=400000.0`；Tab1 存储请求形状为 `(2, 400000)`，`sample_rate=400000.0`。
+- MainWindow 离屏 UI 检查通过：默认 `packet_duration_seconds=1.0`、`sample_rate_hz=1000000.0`；修改为 `2.0 s`、`2.5 MHz`、双 FIP 后，Tab3 Curve 选项为 `Off / DAS Channel / FIP1 / FIP2`。
+- `git diff --check` 通过。

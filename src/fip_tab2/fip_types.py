@@ -22,6 +22,7 @@ class FIPTab2InputPacket:
     comm_count: int
     sample_rate: float
     data: np.ndarray
+    packet_duration_seconds: float = 1.0
 
 
 @dataclass

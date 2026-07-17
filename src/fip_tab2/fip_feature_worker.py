@@ -26,6 +26,7 @@ class FIPFeatureWorker(QThread):
         self.running = False
 
         self.sample_rate = 200000.0
+        self.packet_duration_seconds = 1.0
         self.filter_enabled = True
         self.filter_low_hz = 100.0
         self.filter_high_hz = 10000.0
@@ -124,11 +125,19 @@ class FIPFeatureWorker(QThread):
             2. 将流时间原点推进到缺口结束后的正确位置，
                防止后续特征帧的时间戳出现系统偏移。
         """
-        packet_rate = float(packet.sample_rate)
-        if abs(packet_rate - self.sample_rate) > 1e-6:
-            # 采样率变化时需要重建滤波器状态
+        packet_rate = max(float(packet.sample_rate), 1.0)
+        packet_duration = max(float(getattr(packet, "packet_duration_seconds", self.packet_duration_seconds)), 1e-6)
+        if (
+            abs(packet_rate - self.sample_rate) > 1e-6
+            or abs(packet_duration - self.packet_duration_seconds) > 1e-9
+        ):
+            # 采样率或包时长变化时需要重建滤波器和滑窗状态
             self.sample_rate = packet_rate
+            self.packet_duration_seconds = packet_duration
             self.reset_state()
+
+        if self._last_comm_count is None and self._stream_sample_index == 0:
+            self._stream_time_origin = packet.comm_count * self.packet_duration_seconds
 
         # --- 缺口检测（T2-03）---
         if self._last_comm_count is not None and packet.comm_count != self._last_comm_count + 1:
@@ -140,9 +149,8 @@ class FIPFeatureWorker(QThread):
                 packet.comm_count,
                 gap,
             )
-            # 将时间原点推进到当前包应有的理论起始时间（按包间隔 0.2 s 估算）
-            # 这样下一包的特征时间戳仍然与实际采集时间大致对齐
-            self._stream_time_origin += (self._stream_sample_index / self.sample_rate)
+            # 将时间原点推进到当前包应有的理论起始时间
+            self._stream_time_origin = packet.comm_count * self.packet_duration_seconds
             self._stream_sample_index = 0
             self._signal_buffer = np.array([], dtype=np.float64)
             self._buffer_start_sample_index = 0
@@ -162,6 +170,7 @@ class FIPFeatureWorker(QThread):
                 comm_count=packet.comm_count,
                 sample_rate=self.sample_rate,
                 data=filtered,
+                packet_duration_seconds=self.packet_duration_seconds,
             )
         )
 

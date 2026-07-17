@@ -31,10 +31,11 @@ from PyQt5.QtCore import QThread, pyqtSignal, QObject, QTimer
 from PyQt5.QtWidgets import QApplication
 import pyqtgraph as pg
 
-from config import ORIGINAL_SAMPLE_RATE, PACKET_DURATION
+from config import ORIGINAL_SAMPLE_RATE
 
 
-FIP_POINTS_PER_SENSOR = 200000
+DEFAULT_FIP_PACKET_DURATION_SECONDS = 1.0
+DEFAULT_FIP_SAMPLE_RATE_HZ = ORIGINAL_SAMPLE_RATE
 MAX_FIP_SENSOR_COUNT = 2
 
 
@@ -57,48 +58,103 @@ def normalize_fip_sensor_index(sensor_index: int, sensor_count: int) -> int:
     return min(max(index, 1), count)
 
 
+def normalize_fip_packet_duration(packet_duration_seconds: float) -> float:
+    """Clamp FIP packet duration to a positive runtime value."""
+    try:
+        duration = float(packet_duration_seconds)
+    except (TypeError, ValueError):
+        duration = DEFAULT_FIP_PACKET_DURATION_SECONDS
+    return max(duration, 1e-6)
+
+
+def normalize_fip_sample_rate(sample_rate_hz: float) -> float:
+    """Clamp FIP raw sample rate to a positive runtime value."""
+    try:
+        sample_rate = float(sample_rate_hz)
+    except (TypeError, ValueError):
+        sample_rate = DEFAULT_FIP_SAMPLE_RATE_HZ
+    return max(sample_rate, 1.0)
+
+
+def fip_points_per_sensor(
+    packet_duration_seconds: float,
+    sample_rate_hz: float = DEFAULT_FIP_SAMPLE_RATE_HZ,
+) -> int:
+    """Expected raw points per FIP sensor for one TCP packet."""
+    duration = normalize_fip_packet_duration(packet_duration_seconds)
+    sample_rate = normalize_fip_sample_rate(sample_rate_hz)
+    return max(1, int(round(sample_rate * duration)))
+
+
 def split_fip_sensor_data(
     phase_data: np.ndarray,
     sensor_count: int,
+    packet_duration_seconds: float = DEFAULT_FIP_PACKET_DURATION_SECONDS,
+    sample_rate_hz: float = DEFAULT_FIP_SAMPLE_RATE_HZ,
     logger: Optional[logging.Logger] = None,
     comm_count: Optional[int] = None,
 ) -> Dict[int, np.ndarray]:
     """Split one TCP payload into per-sensor FIP arrays.
 
-    In one-sensor mode the payload is left untouched for exact compatibility
-    with the historical Tab1 behavior. In two-sensor mode the first 200000
-    points are FIP1 and the next 200000 points are FIP2.
+    In one-sensor mode the payload is left untouched for exact compatibility.
+    In two-sensor mode the expected split point is derived from
+    packet_duration_seconds * sample_rate_hz, with an even-split fallback
+    when the received packet length does not match the UI duration/rate.
     """
     data = np.asarray(phase_data)
     count = normalize_fip_sensor_count(sensor_count)
     if count == 1:
         return {1: data}
 
-    expected_points = FIP_POINTS_PER_SENSOR * count
+    points_per_sensor = fip_points_per_sensor(packet_duration_seconds, sample_rate_hz)
+    expected_points = points_per_sensor * count
     if data.size < expected_points:
+        if data.size >= count and data.size % count == 0:
+            fallback_points = data.size // count
+            if logger is not None:
+                logger.warning(
+                    "FIP packet #%s expected %d points for %d sensors at %.6fs, got %d; "
+                    "sample_rate=%.1fHz; splitting evenly at %d point(s) per sensor.",
+                    "-" if comm_count is None else comm_count,
+                    expected_points,
+                    count,
+                    normalize_fip_packet_duration(packet_duration_seconds),
+                    data.size,
+                    normalize_fip_sample_rate(sample_rate_hz),
+                    fallback_points,
+                )
+            return {
+                1: data[:fallback_points],
+                2: data[fallback_points:fallback_points * count],
+            }
         if logger is not None:
             logger.warning(
-                "FIP packet #%s expected %d points for %d sensors, got %d; "
-                "falling back to available FIP1 data only.",
+                "FIP packet #%s expected %d points for %d sensors at %.6fs, got %d; "
+                "sample_rate=%.1fHz; falling back to available FIP1 data only.",
                 "-" if comm_count is None else comm_count,
                 expected_points,
                 count,
+                normalize_fip_packet_duration(packet_duration_seconds),
                 data.size,
+                normalize_fip_sample_rate(sample_rate_hz),
             )
-        return {1: data[: min(data.size, FIP_POINTS_PER_SENSOR)]}
+        return {1: data[: min(data.size, points_per_sensor)]}
 
     if data.size > expected_points and logger is not None:
         logger.warning(
-            "FIP packet #%s has %d points for %d sensors; ignoring %d trailing point(s).",
+            "FIP packet #%s has %d points for %d sensors at %.6fs, sample_rate=%.1fHz; "
+            "ignoring %d trailing point(s).",
             "-" if comm_count is None else comm_count,
             data.size,
             count,
+            normalize_fip_packet_duration(packet_duration_seconds),
+            normalize_fip_sample_rate(sample_rate_hz),
             data.size - expected_points,
         )
 
     return {
-        1: data[:FIP_POINTS_PER_SENSOR],
-        2: data[FIP_POINTS_PER_SENSOR:expected_points],
+        1: data[:points_per_sensor],
+        2: data[points_per_sensor:expected_points],
     }
 
 
@@ -124,6 +180,8 @@ class RawDataPacket:
     comm_count: int
     sensor_count: int = 1
     selected_sensor: int = 1
+    packet_duration_seconds: float = DEFAULT_FIP_PACKET_DURATION_SECONDS
+    sample_rate_hz: float = DEFAULT_FIP_SAMPLE_RATE_HZ
 
 
 @dataclass
@@ -138,6 +196,8 @@ class ProcessedData:
     comm_count: int
     sensor_count: int = 1
     selected_sensor: int = 1
+    packet_duration_seconds: float = DEFAULT_FIP_PACKET_DURATION_SECONDS
+    raw_sample_rate_hz: float = DEFAULT_FIP_SAMPLE_RATE_HZ
     unwrapped_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
     filtered_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
     downsampled_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
@@ -154,6 +214,8 @@ class StorageRequest:
     data_type: str = "phase_unwrapped"
     sensor_count: int = 1
     selected_sensor: int = 1
+    packet_duration_seconds: float = DEFAULT_FIP_PACKET_DURATION_SECONDS
+    raw_sample_rate_hz: float = DEFAULT_FIP_SAMPLE_RATE_HZ
 
 
 class DataProcessingThread(QThread):
@@ -296,6 +358,7 @@ class DataProcessingThread(QThread):
             self._copy_signal_filter_config(signal_filter, source)
 
     def _copy_signal_filter_config(self, target, source) -> None:
+        target.sample_rate = source.sample_rate
         if source.filter_type == 'none':
             target.design_filter('none', source.cutoff_freq, source.filter_order)
         else:
@@ -351,6 +414,8 @@ class DataProcessingThread(QThread):
             sensor_inputs = split_fip_sensor_data(
                 packet.phase_data,
                 packet.sensor_count,
+                packet_duration_seconds=packet.packet_duration_seconds,
+                sample_rate_hz=packet.sample_rate_hz,
                 logger=self.logger,
                 comm_count=packet.comm_count,
             )
@@ -391,7 +456,7 @@ class DataProcessingThread(QThread):
                 downsampled, _ = downsampler.downsample(filtered)
                 downsample_factor = max(1, downsampler.get_current_factor())
                 psd_data = unwrapped[::downsample_factor]
-                effective_rate = ORIGINAL_SAMPLE_RATE / downsample_factor
+                effective_rate = normalize_fip_sample_rate(packet.sample_rate_hz) / downsample_factor
 
                 unwrapped_by_sensor[sensor_index] = unwrapped
                 filtered_by_sensor[sensor_index] = filtered
@@ -436,6 +501,8 @@ class DataProcessingThread(QThread):
                 comm_count=packet.comm_count,
                 sensor_count=actual_sensor_count,
                 selected_sensor=selected_sensor,
+                packet_duration_seconds=normalize_fip_packet_duration(packet.packet_duration_seconds),
+                raw_sample_rate_hz=normalize_fip_sample_rate(packet.sample_rate_hz),
                 unwrapped_by_sensor=unwrapped_by_sensor,
                 filtered_by_sensor=filtered_by_sensor,
                 downsampled_by_sensor=downsampled_by_sensor,
@@ -759,7 +826,7 @@ class DataStorageThread(QThread):
     """Persist exact storage windows using an independent raw-packet path."""
 
     STORAGE_DOWNSAMPLE_FACTOR = 5
-    STORAGE_SAMPLE_RATE = 1000000.0 / STORAGE_DOWNSAMPLE_FACTOR
+    DEFAULT_STORAGE_SAMPLE_RATE = DEFAULT_FIP_SAMPLE_RATE_HZ / STORAGE_DOWNSAMPLE_FACTOR
     RAW_QUEUE_MAXSIZE = 2000
 
     def __init__(self, phase_unwrapper, storage_path: str = "D:/PCCP/FIPdata", storage_interval_seconds: float = 10.0):
@@ -775,6 +842,9 @@ class DataStorageThread(QThread):
 
         self.phase_unwrapper = phase_unwrapper
         self._phase_unwrappers: Dict[int, Any] = {1: phase_unwrapper}
+        self.raw_sample_rate_hz = DEFAULT_FIP_SAMPLE_RATE_HZ
+        self.storage_sample_rate_hz = self.raw_sample_rate_hz / self.STORAGE_DOWNSAMPLE_FACTOR
+        self.packet_duration_seconds = DEFAULT_FIP_PACKET_DURATION_SECONDS
         self.storage_path = storage_path
         self.storage_interval_seconds = float(storage_interval_seconds)
         self.target_chunk_samples = 0
@@ -783,9 +853,12 @@ class DataStorageThread(QThread):
         self.current_chunk_start_comm_count = None
         self.current_chunk_last_comm_count = None
         self.current_chunk_sensor_count = None
+        self.current_chunk_sample_rate = None
+        self.current_chunk_packet_duration = None
         self.run_started_at = None
         self.saved_file_count = 0
         self.saved_sample_count = 0
+        self.saved_duration_seconds = 0.0
         self.last_buffered_comm_count = None
 
         self.logger = logging.getLogger(f'{__name__}.DataStorageThread')
@@ -858,19 +931,42 @@ class DataStorageThread(QThread):
     def set_storage_interval_seconds(self, interval_seconds: float):
         safe_seconds = max(float(interval_seconds), 0.1)
         self.storage_interval_seconds = safe_seconds
-        self.target_chunk_samples = max(1, int(round(safe_seconds * self.STORAGE_SAMPLE_RATE)))
+        self.target_chunk_samples = max(1, int(round(safe_seconds * self.storage_sample_rate_hz)))
         self.logger.info(
             'Storage interval set to %.1fs (%d samples at %.0fHz)',
             self.storage_interval_seconds,
             self.target_chunk_samples,
-            self.STORAGE_SAMPLE_RATE,
+            self.storage_sample_rate_hz,
         )
         self._save_completed_chunks()
+
+    def set_input_parameters(self, sample_rate_hz: float, packet_duration_seconds: float):
+        """Update raw FIP sample rate and packet duration used by storage metadata."""
+        sample_rate_hz = normalize_fip_sample_rate(sample_rate_hz)
+        packet_duration_seconds = normalize_fip_packet_duration(packet_duration_seconds)
+        changed = (
+            abs(sample_rate_hz - self.raw_sample_rate_hz) > 1e-6
+            or abs(packet_duration_seconds - self.packet_duration_seconds) > 1e-9
+        )
+        if self.buffered_requests and changed:
+            self._flush_buffered_data()
+            self._clear_buffer()
+        self.raw_sample_rate_hz = sample_rate_hz
+        self.storage_sample_rate_hz = sample_rate_hz / self.STORAGE_DOWNSAMPLE_FACTOR
+        self.packet_duration_seconds = packet_duration_seconds
+        self.target_chunk_samples = max(1, int(round(self.storage_interval_seconds * self.storage_sample_rate_hz)))
+        self.logger.info(
+            'FIP storage input parameters set: raw_sample_rate=%.1fHz, packet_duration=%.6fs, storage_rate=%.1fHz',
+            self.raw_sample_rate_hz,
+            self.packet_duration_seconds,
+            self.storage_sample_rate_hz,
+        )
 
     def begin_run_cycle(self):
         self.run_started_at = datetime.now()
         self.saved_file_count = 0
         self.saved_sample_count = 0
+        self.saved_duration_seconds = 0.0
         self.last_buffered_comm_count = None
         for unwrapper in self._phase_unwrappers.values():
             if hasattr(unwrapper, 'reset'):
@@ -887,6 +983,8 @@ class DataStorageThread(QThread):
         self.current_chunk_start_comm_count = None
         self.current_chunk_last_comm_count = None
         self.current_chunk_sensor_count = None
+        self.current_chunk_sample_rate = None
+        self.current_chunk_packet_duration = None
         self.last_buffered_comm_count = None
 
     def _get_phase_unwrapper(self, sensor_index: int):
@@ -898,6 +996,8 @@ class DataStorageThread(QThread):
         sensor_inputs = split_fip_sensor_data(
             packet.phase_data,
             packet.sensor_count,
+            packet_duration_seconds=packet.packet_duration_seconds,
+            sample_rate_hz=packet.sample_rate_hz,
             logger=self.logger,
             comm_count=packet.comm_count,
         )
@@ -947,10 +1047,12 @@ class DataStorageThread(QThread):
             data=storage_data,
             comm_count=packet.comm_count,
             timestamp=packet.timestamp,
-            sample_rate=self.STORAGE_SAMPLE_RATE,
+            sample_rate=normalize_fip_sample_rate(packet.sample_rate_hz) / self.STORAGE_DOWNSAMPLE_FACTOR,
             data_type='phase_unwrapped_downsampled',
             sensor_count=len(sensor_ids),
             selected_sensor=normalize_fip_sensor_index(packet.selected_sensor, len(sensor_ids)),
+            packet_duration_seconds=normalize_fip_packet_duration(packet.packet_duration_seconds),
+            raw_sample_rate_hz=normalize_fip_sample_rate(packet.sample_rate_hz),
         )
 
     def _append_request(self, request: StorageRequest):
@@ -958,12 +1060,26 @@ class DataStorageThread(QThread):
         if (
             self.buffered_requests
             and self.current_chunk_sensor_count is not None
-            and request_sensor_count != self.current_chunk_sensor_count
+            and (
+                request_sensor_count != self.current_chunk_sensor_count
+                or (
+                    self.current_chunk_sample_rate is not None
+                    and abs(float(request.sample_rate) - float(self.current_chunk_sample_rate)) > 1e-6
+                )
+                or (
+                    self.current_chunk_packet_duration is not None
+                    and abs(float(request.packet_duration_seconds) - float(self.current_chunk_packet_duration)) > 1e-9
+                )
+            )
         ):
             self.logger.info(
-                'FIP sensor count changed in storage stream: %s -> %s; flushing current chunk',
+                'FIP storage stream parameters changed: sensors %s -> %s, rate %s -> %s, duration %s -> %s; flushing current chunk',
                 self.current_chunk_sensor_count,
                 request_sensor_count,
+                self.current_chunk_sample_rate,
+                request.sample_rate,
+                self.current_chunk_packet_duration,
+                request.packet_duration_seconds,
             )
             self._flush_buffered_data()
 
@@ -971,6 +1087,8 @@ class DataStorageThread(QThread):
             self.current_chunk_start_comm_count = request.comm_count
         if self.current_chunk_sensor_count is None:
             self.current_chunk_sensor_count = request_sensor_count
+            self.current_chunk_sample_rate = float(request.sample_rate)
+            self.current_chunk_packet_duration = float(request.packet_duration_seconds)
 
         if self.last_buffered_comm_count is not None:
             if request.comm_count > self.last_buffered_comm_count + 1:
@@ -1093,16 +1211,16 @@ class DataStorageThread(QThread):
 
     def _save_completed_chunks(self):
         while self.buffered_sample_count >= self.target_chunk_samples:
-            chunk_data, start_comm_count, end_comm_count = self._extract_chunk(self.target_chunk_samples)
-            self._save_chunk(chunk_data, start_comm_count, end_comm_count)
+            chunk_data, start_comm_count, end_comm_count, sample_rate, packet_duration, raw_sample_rate = self._extract_chunk(self.target_chunk_samples)
+            self._save_chunk(chunk_data, start_comm_count, end_comm_count, sample_rate, packet_duration, raw_sample_rate)
 
     def _flush_buffered_data(self):
         if not self.buffered_requests or self.buffered_sample_count <= 0:
             return
 
         self.logger.info('Flushing partial storage buffer with %d sample(s)', self.buffered_sample_count)
-        chunk_data, start_comm_count, end_comm_count = self._extract_chunk(self.buffered_sample_count)
-        self._save_chunk(chunk_data, start_comm_count, end_comm_count)
+        chunk_data, start_comm_count, end_comm_count, sample_rate, packet_duration, raw_sample_rate = self._extract_chunk(self.buffered_sample_count)
+        self._save_chunk(chunk_data, start_comm_count, end_comm_count, sample_rate, packet_duration, raw_sample_rate)
 
     def _extract_chunk(self, target_samples: int):
         if target_samples <= 0 or self.buffered_sample_count < target_samples:
@@ -1112,6 +1230,9 @@ class DataStorageThread(QThread):
         samples_needed = target_samples
         start_comm_count = self.current_chunk_start_comm_count
         end_comm_count = self.current_chunk_last_comm_count
+        chunk_sample_rate = float(self.buffered_requests[0].sample_rate)
+        chunk_packet_duration = float(self.buffered_requests[0].packet_duration_seconds)
+        chunk_raw_sample_rate = float(self.buffered_requests[0].raw_sample_rate_hz)
 
         while samples_needed > 0 and self.buffered_requests:
             request = self.buffered_requests[0]
@@ -1139,6 +1260,8 @@ class DataStorageThread(QThread):
                     data_type=request.data_type,
                     sensor_count=request.sensor_count,
                     selected_sensor=request.selected_sensor,
+                    packet_duration_seconds=request.packet_duration_seconds,
+                    raw_sample_rate_hz=request.raw_sample_rate_hz,
                 )
                 self.buffered_sample_count -= samples_needed
                 samples_needed = 0
@@ -1150,28 +1273,47 @@ class DataStorageThread(QThread):
             self.current_chunk_start_comm_count = self.buffered_requests[0].comm_count
             self.current_chunk_last_comm_count = self.buffered_requests[-1].comm_count
             self.current_chunk_sensor_count = _data_sensor_count(self.buffered_requests[0].data)
+            self.current_chunk_sample_rate = float(self.buffered_requests[0].sample_rate)
+            self.current_chunk_packet_duration = float(self.buffered_requests[0].packet_duration_seconds)
         else:
             self.current_chunk_start_comm_count = None
             self.current_chunk_last_comm_count = None
             self.current_chunk_sensor_count = None
+            self.current_chunk_sample_rate = None
+            self.current_chunk_packet_duration = None
 
         axis = 1 if np.asarray(chunk_parts[0]).ndim == 2 else 0
-        return np.concatenate(chunk_parts, axis=axis), start_comm_count, end_comm_count
+        return (
+            np.concatenate(chunk_parts, axis=axis),
+            start_comm_count,
+            end_comm_count,
+            chunk_sample_rate,
+            chunk_packet_duration,
+            chunk_raw_sample_rate,
+        )
 
     def _build_file_timestamp(self, sample_rate: float) -> datetime:
         base_time = self.run_started_at or datetime.now()
-        if sample_rate <= 0:
-            return base_time
-        return base_time + timedelta(seconds=self.saved_sample_count / sample_rate)
+        return base_time + timedelta(seconds=self.saved_duration_seconds)
 
-    def _save_chunk(self, phase_data: np.ndarray, start_comm_count: int, end_comm_count: int):
+    def _save_chunk(
+        self,
+        phase_data: np.ndarray,
+        start_comm_count: int,
+        end_comm_count: int,
+        sample_rate: float,
+        packet_duration_seconds: float,
+        raw_sample_rate_hz: float,
+    ):
         try:
             from pathlib import Path
 
             if phase_data is None or _data_sample_count(phase_data) == 0:
                 return
 
-            sample_rate = float(self.STORAGE_SAMPLE_RATE)
+            sample_rate = normalize_fip_sample_rate(sample_rate)
+            raw_sample_rate_hz = normalize_fip_sample_rate(raw_sample_rate_hz)
+            packet_duration_seconds = normalize_fip_packet_duration(packet_duration_seconds)
             sensor_count = _data_sensor_count(phase_data)
             sample_count = _data_sample_count(phase_data)
             duration_seconds = 0.0 if sample_rate <= 0 else sample_count / sample_rate
@@ -1183,7 +1325,8 @@ class DataStorageThread(QThread):
             self.saved_file_count += 1
             timestamp_str = file_timestamp.strftime('%Y%m%dT%H%M%S.%f')[:-3]
             filename_prefix = 'FIP2' if sensor_count == 2 else 'FIP'
-            filename = f'{self.saved_file_count:07d}-{filename_prefix}-200K-{timestamp_str}.npz'
+            sample_rate_label = self._format_sample_rate_label(sample_rate)
+            filename = f'{self.saved_file_count:07d}-{filename_prefix}-{sample_rate_label}-{timestamp_str}.npz'
             file_path = base_path / filename
             data_info = {
                 'type': 'phase_unwrapped_downsampled',
@@ -1192,7 +1335,11 @@ class DataStorageThread(QThread):
                 'total_values': int(np.asarray(phase_data).size),
                 'sensor_count': int(sensor_count),
                 'downsample_factor': self.STORAGE_DOWNSAMPLE_FACTOR,
-                'packet_count_estimate': int(math.ceil(sample_count / max(sample_rate * PACKET_DURATION, 1))),
+                'packet_duration_seconds': float(packet_duration_seconds),
+                'raw_sample_rate_hz': float(raw_sample_rate_hz),
+                'packet_points_per_sensor': int(round(raw_sample_rate_hz * packet_duration_seconds)),
+                'storage_points_per_packet_per_sensor': int(round(sample_rate * packet_duration_seconds)),
+                'packet_count_estimate': int(math.ceil(sample_count / max(sample_rate * packet_duration_seconds, 1))),
                 'start_comm_count': start_comm_count,
                 'end_comm_count': end_comm_count,
                 'duration_seconds': duration_seconds,
@@ -1204,8 +1351,10 @@ class DataStorageThread(QThread):
             payload = {
                 'phase_data': phase_data,
                 'comm_count': end_comm_count,
-                'timestamp': self.saved_sample_count / sample_rate if sample_rate > 0 else 0.0,
+                'timestamp': self.saved_duration_seconds,
                 'sample_rate': sample_rate,
+                'raw_sample_rate_hz': raw_sample_rate_hz,
+                'packet_duration_seconds': packet_duration_seconds,
                 'fip_sensor_count': np.int32(sensor_count),
                 'data_info': data_info,
                 'format_version': np.array('wb-monitor-tab1-fip-v2' if sensor_count == 2 else 'wb-monitor-tab1-fip-v1'),
@@ -1219,6 +1368,7 @@ class DataStorageThread(QThread):
             np.savez_compressed(file_path, **payload)
 
             self.saved_sample_count += sample_count
+            self.saved_duration_seconds += duration_seconds
             self.stats['saved_file_count'] = self.saved_file_count
             self.stats['saved_sample_count'] = self.saved_sample_count
 
@@ -1234,6 +1384,13 @@ class DataStorageThread(QThread):
         except Exception as e:
             self.stats['storage_failure_count'] += 1
             self.logger.error(f'Error saving data: {e}')
+
+    def _format_sample_rate_label(self, sample_rate: float) -> str:
+        if sample_rate >= 1_000_000 and abs(sample_rate % 1_000_000) < 1e-6:
+            return f'{int(sample_rate / 1_000_000)}M'
+        if sample_rate >= 1000 and abs(sample_rate % 1000) < 1e-6:
+            return f'{int(sample_rate / 1000)}K'
+        return f'{int(round(sample_rate))}Hz'
 
     def get_stats(self) -> Dict[str, Any]:
         return dict(self.stats)
@@ -1264,6 +1421,8 @@ class OptimizedTab1ThreadManager(QObject):
         self.psd_curve = None
         self.fip_sensor_count = 1
         self.selected_fip_sensor = 1
+        self.fip_packet_duration_seconds = DEFAULT_FIP_PACKET_DURATION_SECONDS
+        self.fip_sample_rate_hz = DEFAULT_FIP_SAMPLE_RATE_HZ
 
         # 设置信号连接
         self._setup_connections()
@@ -1423,26 +1582,41 @@ class OptimizedTab1ThreadManager(QObject):
 
         return success
 
-    def update_fip_selection(self, sensor_count: int, selected_sensor: int):
-        """Apply Tab1 FIP sensor count/plot selection changes."""
+    def update_fip_selection(
+        self,
+        sensor_count: int,
+        selected_sensor: int,
+        packet_duration_seconds: float = DEFAULT_FIP_PACKET_DURATION_SECONDS,
+        sample_rate_hz: float = DEFAULT_FIP_SAMPLE_RATE_HZ,
+    ):
+        """Apply Tab1 FIP input and plot selection changes."""
         sensor_count = normalize_fip_sensor_count(sensor_count)
         selected_sensor = normalize_fip_sensor_index(selected_sensor, sensor_count)
+        packet_duration_seconds = normalize_fip_packet_duration(packet_duration_seconds)
+        sample_rate_hz = normalize_fip_sample_rate(sample_rate_hz)
         count_changed = sensor_count != self.fip_sensor_count
         selected_changed = selected_sensor != self.selected_fip_sensor
-        if not count_changed and not selected_changed:
+        duration_changed = abs(packet_duration_seconds - self.fip_packet_duration_seconds) > 1e-9
+        sample_rate_changed = abs(sample_rate_hz - self.fip_sample_rate_hz) > 1e-6
+        if not count_changed and not selected_changed and not duration_changed and not sample_rate_changed:
             return
 
         self.fip_sensor_count = sensor_count
         self.selected_fip_sensor = selected_sensor
-        if count_changed:
+        self.fip_packet_duration_seconds = packet_duration_seconds
+        self.fip_sample_rate_hz = sample_rate_hz
+        self.storage_thread.set_input_parameters(sample_rate_hz, packet_duration_seconds)
+        if count_changed or duration_changed or sample_rate_changed:
             self.data_processor.reset_state(clear_queue=True)
         self.time_plotter._reset_stream_state()
         self.psd_plotter.reset_state(clear_queue=True)
         self._clear_plots()
         self.logger.info(
-            "Tab1 FIP selection updated: sensor_count=%d selected=FIP%d",
+            "Tab1 FIP settings updated: sensor_count=%d selected=FIP%d duration=%.6fs sample_rate=%.1fHz",
             sensor_count,
             selected_sensor,
+            packet_duration_seconds,
+            sample_rate_hz,
         )
 
     def _distribute_processed_data(self, processed_data: ProcessedData):

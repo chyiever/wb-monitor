@@ -24,8 +24,9 @@ class AlignedSessionCoordinator(QObject):
     alignment_status_changed = pyqtSignal(dict)
 
     # 两路 comm_count 差异超过此阈值时，对齐状态降级为 "lagging"（T3-03）
-    # 每包对应约 0.2 s，5 包 = 1 s 的容忍窗口
+    # Keep a small packet-count drift tolerance; actual frame duration comes from packets.
     MAX_COMM_COUNT_DRIFT = 5
+    DEFAULT_PACKET_DURATION_SECONDS = 1.0
 
     def __init__(self, cache_seconds: float = 10.0) -> None:
         super().__init__()
@@ -179,12 +180,12 @@ class AlignedSessionCoordinator(QObject):
             durations.append(self._fip_packets[self._last_fip_comm_count].packet_duration_seconds)
         if self._last_das_comm_count is not None and self._last_das_comm_count in self._das_packets:
             durations.append(self._das_packets[self._last_das_comm_count].packet_duration_seconds)
-        return max(durations) if durations else 0.2
+        return max(durations) if durations else self.DEFAULT_PACKET_DURATION_SECONDS
 
     def _build_frame_locked(self, comm_count: int) -> AlignedPacketFrame:
         fip_packet = self._fip_packets.get(comm_count)
         das_packet = self._das_packets.get(comm_count)
-        packet_duration = 0.2
+        packet_duration = self.DEFAULT_PACKET_DURATION_SECONDS
         if das_packet is not None:
             packet_duration = das_packet.packet_duration_seconds
         elif fip_packet is not None:
