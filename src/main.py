@@ -125,7 +125,7 @@ class PCCPMonitorApp:
             level=logging.INFO,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(log_dir / 'pccp_monitor.log'),
+                logging.FileHandler(log_dir / 'pccp_monitor.log', encoding='utf-8'),
                 logging.StreamHandler()  # 同时输出到控制台
             ]
         )
@@ -334,7 +334,7 @@ class PCCPMonitorApp:
 
             storage_path = self.main_window.get_tab2_storage_settings().get("path", "D:/PCCP/FIPmonitor")
             self.fip_tab2_manager = FIPTab2Manager(self.main_window, storage_path=storage_path)
-            self.tab1_manager.data_processor.data_processed.connect(self.fip_tab2_manager.process_processed_data)
+            self.tab1_manager.data_processor.data_processed.connect(self._process_tab2_data)
             self._sync_tab2_settings()
 
             self.alignment_coordinator = AlignedSessionCoordinator(cache_seconds=10.0)
@@ -347,6 +347,29 @@ class PCCPMonitorApp:
         except Exception as e:
             self.logger.error(f"Error initializing processors: {e}")
             self._show_error_message("初始化失败", f"处理器初始化失败: {e}")
+
+    def _is_tab2_enabled(self) -> bool:
+        """Return whether Tab2 is enabled from the UI master switch."""
+        getter = getattr(self.main_window, "is_tab2_enabled", None)
+        return bool(getter()) if callable(getter) else False
+
+    def _is_tab2_running(self) -> bool:
+        """Return whether any Tab2 worker thread is running."""
+        if not self.fip_tab2_manager:
+            return False
+        workers = (
+            self.fip_tab2_manager.feature_worker,
+            self.fip_tab2_manager.detection_worker,
+            self.fip_tab2_manager.plot_worker,
+            self.fip_tab2_manager.storage_worker,
+        )
+        return any(worker.isRunning() for worker in workers)
+
+    def _process_tab2_data(self, processed_data) -> None:
+        """Forward processed FIP packets to Tab2 only when Tab2 is enabled and running."""
+        if not self._is_tab2_enabled() or not self._is_tab2_running():
+            return
+        self.fip_tab2_manager.process_processed_data(processed_data)
 
     def _process_data_packet(self, packet):
         """
@@ -413,9 +436,13 @@ class PCCPMonitorApp:
                 self.main_window.psd_plot
             )
 
-            if self.fip_tab2_manager:
+            tab2_enabled = self._is_tab2_enabled()
+            if self.fip_tab2_manager and tab2_enabled:
                 self.fip_tab2_manager.reset()
-                self._sync_tab2_settings()
+                self.fip_tab2_manager.sync_from_ui()
+            elif self.fip_tab2_manager:
+                self.main_window.clear_feature_displays()
+                self.logger.info("Tab2 disabled by UI; Tab2 workers will not start.")
 
             self._sync_tab1_storage_settings()
 
@@ -425,8 +452,9 @@ class PCCPMonitorApp:
 
             # Start optimized Tab1 thread system
             self.tab1_manager.start()
-            if self.fip_tab2_manager:
+            if self.fip_tab2_manager and tab2_enabled:
                 self.fip_tab2_manager.start()
+                self.logger.info("Tab2 pipeline started by UI master switch.")
 
             # 启动后同步一次前面板绘图开关状态。
             # 说明：按钮初始状态不会主动触发toggled信号，
@@ -455,7 +483,7 @@ class PCCPMonitorApp:
             self.logger.info("Stopping monitoring system...")
 
             # Stop optimized Tab1 thread system
-            if self.fip_tab2_manager:
+            if self.fip_tab2_manager and self._is_tab2_running():
                 self.fip_tab2_manager.stop()
             if self.tab1_manager:
                 self.tab1_manager.stop()
@@ -619,7 +647,7 @@ class PCCPMonitorApp:
         self._update_storage_settings(enabled, path, interval_seconds)
 
     def _update_storage_settings(self, enabled: bool, path: str, interval_seconds: float):
-        """?????????"""
+        """Update Tab1 phase storage settings from the UI."""
         try:
             if self.tab1_manager:
                 self.tab1_manager.toggle_storage(enabled)
@@ -678,10 +706,24 @@ class PCCPMonitorApp:
             self.alignment_coordinator.stop_session()
 
     def _sync_tab2_settings(self):
-        """Push the latest Tab2 UI settings into the independent Tab2 manager."""
+        """Push the latest Tab2 UI settings and master enable state into the manager."""
         try:
-            if self.fip_tab2_manager:
+            if not self.fip_tab2_manager:
+                return
+
+            if not self._is_tab2_enabled():
+                if self._is_tab2_running():
+                    self.logger.info("Tab2 disabled by UI; stopping Tab2 pipeline.")
+                    self.fip_tab2_manager.stop()
+                self.main_window.clear_feature_displays()
+                return
+
+            self.fip_tab2_manager.sync_from_ui()
+            if self.fip_monitoring_active and not self._is_tab2_running():
+                self.fip_tab2_manager.reset()
                 self.fip_tab2_manager.sync_from_ui()
+                self.fip_tab2_manager.start()
+                self.logger.info("Tab2 enabled by UI; Tab2 pipeline started.")
         except Exception as e:
             self.logger.error(f"Error syncing Tab2 settings: {e}")
 
@@ -823,7 +865,7 @@ class PCCPMonitorApp:
     def cleanup(self):
         """Cleanup resources before exit."""
         try:
-            if self.fip_tab2_manager:
+            if self.fip_tab2_manager and self._is_tab2_running():
                 self.fip_tab2_manager.stop()
 
             if self.tab3_manager:

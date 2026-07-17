@@ -456,6 +456,13 @@ class MainWindow(QMainWindow):
         widget.setMaximumWidth(420)
         layout = QVBoxLayout(widget)
 
+        self.tab2_enable_btn = QPushButton("Start Tab2")
+        self.tab2_enable_btn.setCheckable(True)
+        self.tab2_enable_btn.setChecked(False)
+        self.tab2_enable_btn.setMinimumHeight(42)
+        self._update_tab2_enable_button_state(False)
+        layout.addWidget(self.tab2_enable_btn)
+
         features = [
             ("Short Energy", "short_energy"),
             ("Zero Crossing", "zero_crossing"),
@@ -1124,6 +1131,7 @@ class MainWindow(QMainWindow):
         # 如果Tab2控件存在，添加特征和检测配置
         if hasattr(self, 'detection_feature_checkboxes'):
             config["tab2"] = {
+                "enabled": self.is_tab2_enabled(),
                 "compute_features": self.get_tab2_compute_enabled_features(),
                 "plot_features": self.get_tab2_plot_enabled_features(),
                 "preprocess": self.get_tab2_preprocess_settings(),
@@ -1190,6 +1198,10 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger = logging.getLogger(__name__)
             logger.error(f"Error updating baselines: {e}")
+
+    def is_tab2_enabled(self) -> bool:
+        """Return whether the independent Tab2 pipeline should run."""
+        return bool(getattr(self, "tab2_enable_btn", None) and self.tab2_enable_btn.isChecked())
 
     def get_tab2_compute_enabled_features(self) -> Dict[str, bool]:
         """Return the compute-enabled features from Tab2."""
@@ -1655,6 +1667,35 @@ class MainWindow(QMainWindow):
             self.feature_threshold_lines[index].setValue(0.0)
             plot_widget.setTitle(f"Feature Plot {index + 1}")
 
+    def _update_tab2_enable_button_state(self, enabled: bool):
+        """Refresh the Tab2 master control button text and style."""
+        if not hasattr(self, 'tab2_enable_btn'):
+            return
+        self.tab2_enable_btn.blockSignals(True)
+        self.tab2_enable_btn.setChecked(enabled)
+        self.tab2_enable_btn.blockSignals(False)
+        self.tab2_enable_btn.setText("Stop Tab2" if enabled else "Start Tab2")
+        background = "#1976D2" if enabled else "#4CAF50"
+        hover = "#1565C0" if enabled else "#45a049"
+        pressed = "#0D47A1" if enabled else "#3d8b40"
+        self.tab2_enable_btn.setStyleSheet(f"""
+            QPushButton {{
+                font-size: 16px;
+                font-weight: bold;
+                padding: 8px;
+                background-color: {background};
+                color: white;
+                border: none;
+                border-radius: 4px;
+            }}
+            QPushButton:hover {{
+                background-color: {hover};
+            }}
+            QPushButton:pressed {{
+                background-color: {pressed};
+            }}
+        """)
+
     def _emit_tab2_settings_changed(self):
         """Emit a unified Tab2 settings-changed signal."""
         if hasattr(self, 'tab2_settings_changed'):
@@ -1814,6 +1855,10 @@ class MainWindow(QMainWindow):
             # 降采样参数变化时，也需要更新PSD设置（因为PSD计算依赖采样率）
             if hasattr(self, 'downsample_spin'):
                 self.downsample_spin.valueChanged.connect(self._update_psd_settings)
+
+            if hasattr(self, 'tab2_enable_btn'):
+                self.tab2_enable_btn.toggled.connect(self._update_tab2_enable_button_state)
+                self.tab2_enable_btn.toggled.connect(self._emit_tab2_settings_changed)
 
             tab2_widgets = [
                 getattr(self, 'tab2_filter_enable_check', None),
