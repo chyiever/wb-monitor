@@ -152,13 +152,26 @@ python src/main.py
 
 ```bash
 python run.py --debug
-python run.py --log monitor.log
+python run.py --log logs/monitor.log
+python run.py --debug --log logs/tab3_debug.log
 python run.py --config my_config.json
 ```
 
 说明：
 
+- `python run.py --debug` 会把全局日志级别切到 `DEBUG`，用于联调阶段定位 Tab3 数据链路问题。
+- `python run.py --debug --log logs/tab3_debug.log` 会把详细日志写入单独文件，便于和常规运行日志分开保存。
+- `--log` 支持相对路径和绝对路径；相对路径以当前运行目录为基准。
 - `run.py --config` 目前仍是预留入口，尚未完整打通到主配置加载流程。
+
+Tab3 debug 日志节点统一使用 `TAB3_NODE` 前缀，重点节点包括：
+
+- `main.start` / `main.stop` / `main.sync_settings`：主控启停和参数同步。
+- `das_tcp.header` / `das_tcp.packet` / `das_tcp.stats`：DAS TCP 包头、完整包接收、真实区间包率、吞吐、接收耗时和缺包统计。
+- `manager.fip_packet` / `manager.raw_packet` / `manager.parse`：FIP 转发、DAS 解析、对齐协调、绘图和存储路由。
+- `plot_worker.enqueue` / `plot_worker.payload` / `plot_worker.stats`：绘图队列、丢旧保新、Space-Time 滚动缓存、处理耗时和队列峰值。
+- `ui.fip_curve` / `ui.das_payload`：主线程曲线和 Space-Time 绘制耗时，用于定位鼠标卡顿或界面刷新延迟。
+- `storage.joint_*` / `storage.edas_*`：联合存储和 eDAS-only 写盘入队、写盘耗时、文件切换和队列丢弃。
 
 ## 主要模块说明
 

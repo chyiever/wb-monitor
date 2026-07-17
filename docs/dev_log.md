@@ -129,3 +129,28 @@
 
 - 已执行 UTF-8 中文自检，`docs/2026-07-17 数据存储.md` 和 `docs/dev_log.md` 未发现问号乱码。
 - `git diff --check` 通过。
+
+## 2026-07-17 23:05:00 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`run.py`、`src/main.py`、`src/fip_tab1/fip_tcp_server.py`、`src/das_tab3/das_tcp_server.py`、`src/das_tab3/das_tab3_manager.py`、`src/das_tab3/das_plot_worker.py`、`src/das_tab3/das_storage_worker.py`、`src/ui/main_window.py`、`README.md`、`docs/2026-07-17-FIP-eDAS联调问题数量与修复日志.md`
+
+### 更新摘要
+
+1. 参照 `E:\codes\PCIe-7821\pcie7821_gui` 的 Time-Space 与 phase 时域刷新机制，Tab3 Space-Time 改为固定大小 `float32` 滚动显示缓存，避免每包拼接历史矩阵。
+2. Tab3 UI 增加绘图限频和点数上限：FIP 对比曲线最小刷新间隔 `0.4 s`，DAS/Space-Time 最小刷新间隔 `0.2 s`，曲线进入 `setData()` 前限制到 `12000` 点。
+3. Space-Time 每帧只更新图像和必要 `rect`，`Vmin/Vmax`、色标和 Histogram 范围改为参数变化时更新，降低主线程阻塞风险。
+4. 新增 Tab3 debug 数据流节点日志，统一使用 `TAB3_NODE` 前缀，覆盖 main、DAS TCP、manager、plot worker、UI、joint storage 和 eDAS storage。
+5. `run.py --debug` 改为由 `src.main` 统一配置日志；`--log` 支持指定 UTF-8 日志文件；debug 模式保留本项目详细日志，同时压制 matplotlib 内部 DEBUG 噪声。
+6. 修正 FIP 性能日志 `Rate` 统计公式，改为按当前统计间隔内的包数计算真实区间包率，避免把累计包数误当作瞬时速率。
+7. 联调日志结论更新：原始日志可确认 FIP 真实包率约 `5.001 pkt/s` 且未见缺包；旧日志没有 DAS 成功包和 Tab3 UI 帧耗时，因此不能判断 DAS/eDAS 丢包或绘图延时，本轮已补齐后续定位日志。
+
+### 验证
+
+- `python -m py_compile run.py src\main.py src\fip_tab1\fip_tcp_server.py src\das_tab3\das_tcp_server.py src\das_tab3\das_plot_worker.py src\das_tab3\das_tab3_manager.py src\das_tab3\das_storage_worker.py src\ui\main_window.py` 通过。
+- `python tools\validate_tab3_pipeline.py` 通过，输出 `VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve_points=2400`。
+- MainWindow 离屏 UI 绘图冒烟测试通过，输出 `OFFSCREEN_OK True 12000 (0.0, 0.0, 1.001001001001001, 200.0)`。
+- Tab3 worker 滚动缓存合成测试通过，输出 `WORKER_OK (400, 600) 240000 (400, 0, 399, 1, 67, 747)`。
+- Debug 日志配置冒烟测试通过，输出 `DEBUG_LOG_OK True`，并确认 `TAB3_NODE` 可写入指定日志文件。
+- 中文自检通过：本次新增和修改的源码、README、开发日志未发现 `Unicode replacement character` 或问号乱码。

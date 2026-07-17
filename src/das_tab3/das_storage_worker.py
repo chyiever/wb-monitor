@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Full, Queue
@@ -101,6 +102,14 @@ class DASStorageWorker(QThread):
                     pass
             self._queue.put_nowait(request)
             self.stats["requests_enqueued"] += 1
+            self.logger.debug(
+                "TAB3_NODE storage.joint_enqueue frames=%d end_comm=%s queue_size=%d enqueued=%d dropped=%d",
+                len(request.frames),
+                request.end_comm,
+                self._queue.qsize(),
+                self.stats["requests_enqueued"],
+                self.stats["requests_dropped"],
+            )
         except Full:
             self.stats["requests_dropped"] += 1
             self.logger.error("DAS storage queue full, failed to enqueue request.")
@@ -132,6 +141,7 @@ class DASStorageWorker(QThread):
 
         文件命名：FIPeDAS-YYYYMMDD-HHMMSS.mmm.npz
         """
+        started = time.perf_counter()
         try:
             frames = request.frames
             if not frames:
@@ -214,11 +224,32 @@ class DASStorageWorker(QThread):
             }
 
             np.savez_compressed(file_path, **payload)
+            elapsed_ms = (time.perf_counter() - started) * 1000.0
             self.stats["requests_saved"] += 1
             self.storage_saved.emit(str(file_path))
             self.logger.info(
-                "DAS storage saved %d frames to %s", len(frames), file_path.name
+                "DAS storage saved %d frames to %s in %.2f ms",
+                len(frames),
+                file_path.name,
+                elapsed_ms,
             )
+            self.logger.debug(
+                "TAB3_NODE storage.joint_saved frames=%d end_comm=%s file=%s elapsed_ms=%.2f saved=%d failures=%d",
+                len(frames),
+                request.end_comm,
+                file_path.name,
+                elapsed_ms,
+                self.stats["requests_saved"],
+                self.stats["save_failures"],
+            )
+            if elapsed_ms > 300.0:
+                self.logger.warning(
+                    "TAB3_NODE storage.joint_slow frames=%d end_comm=%s elapsed_ms=%.2f file=%s",
+                    len(frames),
+                    request.end_comm,
+                    elapsed_ms,
+                    file_path.name,
+                )
         except Exception as exc:
             self.stats["save_failures"] += 1
             self.logger.error("DAS storage _save failed: %s", exc)
@@ -297,6 +328,14 @@ class EDASRawStorageWorker(QThread):
                     break
             self._queue.put_nowait(request)
             self.stats["blocks_enqueued"] += 1
+            self.logger.debug(
+                "TAB3_NODE storage.edas_enqueue comm=%s queue_size=%d capacity=%d enqueued=%d dropped=%d",
+                packet.header.comm_count,
+                self._queue.qsize(),
+                capacity,
+                self.stats["blocks_enqueued"],
+                self.stats["blocks_dropped"],
+            )
             return True
         except Full:
             self.stats["blocks_dropped"] += 1
@@ -338,6 +377,7 @@ class EDASRawStorageWorker(QThread):
         self._file_index = 0
 
     def _write_request(self, request: EDASRawStorageRequest) -> None:
+        started = time.perf_counter()
         packet = request.packet
         matrix = np.asarray(packet.matrix, dtype="<f8", order="C")
         if matrix.ndim != 2 or matrix.size == 0:
@@ -362,6 +402,24 @@ class EDASRawStorageWorker(QThread):
         self.storage_status.emit(
             f"{self._current_file_path.name} blocks={self._blocks_in_file} comm={packet.header.comm_count}"
         )
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self.logger.debug(
+            "TAB3_NODE storage.edas_write comm=%s file=%s blocks=%d bytes=%d elapsed_ms=%.2f saved=%d failures=%d",
+            packet.header.comm_count,
+            self._current_file_path.name if self._current_file_path is not None else "-",
+            self._blocks_in_file,
+            len(payload),
+            elapsed_ms,
+            self.stats["blocks_saved"],
+            self.stats["save_failures"],
+        )
+        if elapsed_ms > 100.0:
+            self.logger.warning(
+                "TAB3_NODE storage.edas_slow comm=%s elapsed_ms=%.2f file=%s",
+                packet.header.comm_count,
+                elapsed_ms,
+                self._current_file_path.name if self._current_file_path is not None else "-",
+            )
 
     def _make_key(self, request: EDASRawStorageRequest, matrix: np.ndarray) -> Tuple[str, int, int, int, int]:
         output_dir = str(Path(request.output_dir))
@@ -446,6 +504,13 @@ class EDASRawStorageWorker(QThread):
         }
         self._write_metadata(closed_at=None)
         self.storage_status.emit(f"Started {self._current_file_path.name}")
+        self.logger.debug(
+            "TAB3_NODE storage.edas_open file=%s blocks_per_file=%d queue_packets=%d shape=%s",
+            self._current_file_path.name,
+            request.blocks_per_file,
+            request.queue_packets,
+            tuple(matrix.shape),
+        )
 
     def _append_metadata(self, packet: Any, block_bytes: int) -> None:
         if self._current_metadata is None:
@@ -475,7 +540,15 @@ class EDASRawStorageWorker(QThread):
             self._file_handle.close()
             self._file_handle = None
         if self._current_metadata_path is not None and self._current_metadata is not None:
+            current_name = self._current_file_path.name if self._current_file_path is not None else "-"
             self._write_metadata(closed_at=closed_at)
+            self.logger.debug(
+                "TAB3_NODE storage.edas_close file=%s blocks=%d bytes=%d closed_at=%s",
+                current_name,
+                self._blocks_in_file,
+                self._bytes_in_file,
+                closed_at,
+            )
         self._current_file_path = None
         self._current_metadata_path = None
         self._current_metadata = None

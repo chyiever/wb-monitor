@@ -56,10 +56,11 @@ class PCCPMonitorApp:
     data processing, visualization, and user interface.
     """
 
-    def __init__(self):
+    def __init__(self, args=None):
         """Initialize the PCCP monitoring application."""
+        self.args = args
         # Setup logging
-        self._setup_logging()
+        self._setup_logging(args)
         self.logger = logging.getLogger(__name__)
 
         # 记录系统配置信息
@@ -108,26 +109,37 @@ class PCCPMonitorApp:
         # Initialize processors
         self._initialize_processors()
 
-    def _setup_logging(self):
+    def _setup_logging(self, args=None):
         """Setup application logging.
 
-        生产环境使用 INFO 级别：
-        - DEBUG 级别下每个数据包触发数十条日志，5 Hz × 多条 = 每秒数十次
-          FileHandler I/O，严重拖慢主线程 Qt 事件循环（每包额外 1-3 ms）。
-        - INFO 级别仅输出关键事件，不影响实时性能。
+        Normal mode uses INFO for low overhead. Debug mode is enabled by
+        ``python run.py --debug`` and records per-node Tab3 diagnostics.
         """
-        # Create logs directory if it doesn't exist
         log_dir = Path(__file__).parent.parent / 'logs'
         log_dir.mkdir(exist_ok=True)
 
-        # 生产环境使用 INFO 级别，避免 DEBUG 日志的 I/O 开销拖慢主线程
+        debug_enabled = bool(getattr(args, 'debug', False))
+        log_file = getattr(args, 'log', None)
+        log_path = Path(log_file) if log_file else log_dir / 'pccp_monitor.log'
+        if not log_path.is_absolute():
+            log_path = Path.cwd() / log_path
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        log_level = logging.DEBUG if debug_enabled else logging.INFO
         logging.basicConfig(
-            level=logging.INFO,
+            level=log_level,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             handlers=[
-                logging.FileHandler(log_dir / 'pccp_monitor.log', encoding='utf-8'),
-                logging.StreamHandler()  # 同时输出到控制台
-            ]
+                logging.FileHandler(log_path, encoding='utf-8'),
+                logging.StreamHandler()
+            ],
+            force=True,
+        )
+        logging.getLogger('matplotlib').setLevel(logging.WARNING)
+        logging.getLogger(__name__).info(
+            "Logging initialized: level=%s, file=%s",
+            logging.getLevelName(log_level),
+            log_path,
         )
 
     def _load_configuration(self) -> dict:
@@ -665,6 +677,7 @@ class PCCPMonitorApp:
         """Start the independent DAS monitoring pipeline."""
         try:
             self.logger.info("Starting Tab3 DAS monitoring...")
+            self.logger.debug("TAB3_NODE main.start requested")
             self._ensure_alignment_session_started()
             if self.tab3_manager:
                 self.tab3_manager.reset()
@@ -686,6 +699,7 @@ class PCCPMonitorApp:
         """Stop the independent DAS monitoring pipeline."""
         try:
             self.logger.info("Stopping Tab3 DAS monitoring...")
+            self.logger.debug("TAB3_NODE main.stop requested")
             if self.tab3_manager:
                 self.tab3_manager.stop()
             self.das_monitoring_active = False
@@ -731,6 +745,7 @@ class PCCPMonitorApp:
         """Push the latest Tab3 UI settings into the independent Tab3 manager."""
         try:
             if self.tab3_manager:
+                self.logger.debug("TAB3_NODE main.sync_settings")
                 self.tab3_manager.sync_from_ui()
         except Exception as e:
             self.logger.error(f"Error syncing Tab3 settings: {e}")
@@ -884,7 +899,7 @@ def main(args=None):
     """Main function."""
     try:
         # Create and run application
-        app = PCCPMonitorApp()
+        app = PCCPMonitorApp(args)
         exit_code = app.run()
 
         # Cleanup

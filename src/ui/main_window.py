@@ -11,6 +11,7 @@ Date: 2026-03-11
 import sys
 import os
 import logging
+import time
 from typing import Dict, Any, List, Tuple
 import numpy as np
 from PyQt5.QtWidgets import (
@@ -647,6 +648,15 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(9, 9, 9, 9)
         left_layout.setSpacing(10)
         self.tab3_left_panel = left_panel
+        self._tab3_logger = logging.getLogger(f"{__name__}.Tab3UI")
+        self._tab3_last_fip_plot_monotonic = 0.0
+        self._tab3_last_das_plot_monotonic = 0.0
+        self._tab3_fip_plot_min_interval_seconds = 0.4
+        self._tab3_das_plot_min_interval_seconds = 0.2
+        self._tab3_curve_max_points = 12000
+        self._tab3_space_time_max_pixels = 300000
+        self._tab3_ui_slow_threshold_ms = 80.0
+        self._tab3_last_space_time_rect = None
 
         self._tab3_space_time_levels_locked = True
         self._tab3_colormap_options = [
@@ -1270,6 +1280,8 @@ class MainWindow(QMainWindow):
                 "colormap": self.tab3_colormap_combo.currentData(),
                 "vmin": self.tab3_vmin_spin.value(),
                 "vmax": self.tab3_vmax_spin.value(),
+                "curve_max_points": self._tab3_curve_max_points,
+                "space_time_max_pixels": self._tab3_space_time_max_pixels,
             },
             "storage": {
                 "enabled": self.tab3_joint_storage_toggle_btn.isChecked(),
@@ -1327,17 +1339,66 @@ class MainWindow(QMainWindow):
 
     def update_tab3_fip_curve(self, comm_count: int, values, sample_rate_hz: float):
         """Update cached FIP comparison curves shown in Tab3."""
-        if len(values) == 0 or not self.is_tab3_plot_enabled():
+        curve1_mode = self.tab3_curve1_combo.currentText()
+        curve2_mode = self.tab3_curve2_combo.currentText()
+        if curve1_mode != "FIP":
+            self._render_tab3_curve(self.tab3_curve1_fip_curve, curve1_mode, [], [], "FIP")
+        if curve2_mode != "FIP":
+            self._render_tab3_curve(self.tab3_curve2_fip_curve, curve2_mode, [], [], "FIP")
+        if curve1_mode != "FIP" and curve2_mode != "FIP":
             return
-        times = (comm_count * 0.2) + np.arange(len(values), dtype=np.float64) / max(sample_rate_hz, 1.0)
-        self._render_tab3_curve(self.tab3_curve1_fip_curve, self.tab3_curve1_combo.currentText(), times, values, "FIP")
-        self._render_tab3_curve(self.tab3_curve2_fip_curve, self.tab3_curve2_combo.currentText(), times, values, "FIP")
+        if not self.is_tab3_plot_enabled():
+            return
+        values_arr = np.asarray(values)
+        if values_arr.size == 0:
+            return
+        now = time.monotonic()
+        if now - self._tab3_last_fip_plot_monotonic < self._tab3_fip_plot_min_interval_seconds:
+            self._tab3_logger.debug(
+                "TAB3_NODE ui.fip_curve skip_throttle comm=%s points=%d",
+                comm_count,
+                values_arr.size,
+            )
+            return
+        self._tab3_last_fip_plot_monotonic = now
+        started = time.perf_counter()
+        step = max(1, int(np.ceil(values_arr.size / max(1, self._tab3_curve_max_points))))
+        selected_indexes = np.arange(0, values_arr.size, step, dtype=np.float64)
+        times = (comm_count * 0.2) + selected_indexes / max(float(sample_rate_hz), 1.0)
+        plot_values = np.ascontiguousarray(values_arr[::step], dtype=np.float32)
+        self._render_tab3_curve(self.tab3_curve1_fip_curve, curve1_mode, times, plot_values, "FIP")
+        self._render_tab3_curve(self.tab3_curve2_fip_curve, curve2_mode, times, plot_values, "FIP")
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self._tab3_logger.debug(
+            "TAB3_NODE ui.fip_curve comm=%s source_points=%d plot_points=%d step=%d elapsed_ms=%.2f",
+            comm_count,
+            values_arr.size,
+            plot_values.size,
+            step,
+            elapsed_ms,
+        )
+        if elapsed_ms > self._tab3_ui_slow_threshold_ms:
+            self._tab3_logger.warning(
+                "TAB3_NODE ui.fip_curve_slow comm=%s elapsed_ms=%.2f plot_points=%d",
+                comm_count,
+                elapsed_ms,
+                plot_values.size,
+            )
 
     def update_tab3_plot_payload(self, payload: Dict[str, Any]):
         """Apply the latest DAS plot payload to Tab3 widgets."""
-        self.update_tab3_header_status(payload.get("header", {}))
+        header = payload.get("header", {})
+        self.update_tab3_header_status(header)
         if not self.is_tab3_plot_enabled():
             return
+        now = time.monotonic()
+        comm_count = header.get("comm_count", "-")
+        if now - self._tab3_last_das_plot_monotonic < self._tab3_das_plot_min_interval_seconds:
+            self._tab3_logger.debug("TAB3_NODE ui.das_payload skip_throttle comm=%s", comm_count)
+            return
+        self._tab3_last_das_plot_monotonic = now
+        started = time.perf_counter()
+
         das_times = payload.get("das_curve_time", [])
         das_values = payload.get("das_curve_values", [])
         self._render_tab3_curve(self.tab3_curve1_das_curve, self.tab3_curve1_combo.currentText(), das_times, das_values, "DAS Channel")
@@ -1349,27 +1410,45 @@ class MainWindow(QMainWindow):
         if matrix is None or len(np.shape(matrix)) != 2 or matrix.size == 0:
             self._reset_tab3_space_time_image()
             return
-        matrix = np.asarray(matrix, dtype=np.float64)
+        matrix = np.ascontiguousarray(matrix, dtype=np.float32)
         levels = (self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value())
         if levels[0] >= levels[1]:
             self._set_tab3_space_time_levels(levels[0], levels[0] + 1e-6)
             levels = (self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value())
         x_scale = 1.0
         x_offset = 0.0
-        if x_axis is not None and len(x_axis) > 1:
-            x_scale = float(x_axis[1] - x_axis[0])
+        if x_axis is not None and len(x_axis) > 0:
             x_offset = float(x_axis[0])
+            if len(x_axis) > 1:
+                x_scale = float(x_axis[1] - x_axis[0])
         y_scale = 1.0
         y_offset = 0.0
-        if y_axis is not None and len(y_axis) > 1:
-            y_scale = float(y_axis[1] - y_axis[0])
+        if y_axis is not None and len(y_axis) > 0:
             y_offset = float(y_axis[0])
+            if len(y_axis) > 1:
+                y_scale = float(y_axis[1] - y_axis[0])
         x_width = max(x_scale, 1e-12) * matrix.shape[1]
         y_height = max(y_scale, 1e-12) * matrix.shape[0]
         self.tab3_space_time_image.setImage(matrix, autoLevels=False, levels=levels)
-        self.tab3_space_time_image.setRect(x_offset, y_offset, x_width, y_height)
-        self._apply_tab3_space_time_levels()
-        self._update_tab3_space_time_histogram_range(matrix, levels)
+        rect = (x_offset, y_offset, x_width, y_height)
+        if self._tab3_last_space_time_rect != rect:
+            self.tab3_space_time_image.setRect(*rect)
+            self._tab3_last_space_time_rect = rect
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self._tab3_logger.debug(
+            "TAB3_NODE ui.das_payload comm=%s curve_points=%d matrix_shape=%s elapsed_ms=%.2f",
+            comm_count,
+            len(das_values) if hasattr(das_values, "__len__") else 0,
+            tuple(matrix.shape),
+            elapsed_ms,
+        )
+        if elapsed_ms > self._tab3_ui_slow_threshold_ms:
+            self._tab3_logger.warning(
+                "TAB3_NODE ui.das_payload_slow comm=%s elapsed_ms=%.2f matrix_shape=%s",
+                comm_count,
+                elapsed_ms,
+                tuple(matrix.shape),
+            )
 
     def reset_tab3_views(self):
         """Clear Tab3 plots and status labels."""
@@ -1378,6 +1457,8 @@ class MainWindow(QMainWindow):
         self.tab3_curve2_das_curve.setData([], [])
         self.tab3_curve2_fip_curve.setData([], [])
         self._reset_tab3_space_time_image()
+        self._tab3_last_fip_plot_monotonic = 0.0
+        self._tab3_last_das_plot_monotonic = 0.0
         self.tab3_last_storage_label.setText("-")
         self.tab3_edas_last_storage_label.setText("-")
         self.tab3_packet_count_label.setText("0")
@@ -1629,13 +1710,14 @@ class MainWindow(QMainWindow):
 
     def _reset_tab3_space_time_image(self):
         """Restore the Tab3 space-time image to a known empty state."""
-        empty = np.zeros((1, 1), dtype=np.float64)
+        empty = np.zeros((1, 1), dtype=np.float32)
         self.tab3_space_time_image.setImage(
             empty,
             autoLevels=False,
             levels=(self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value()),
         )
         self.tab3_space_time_image.setRect(0.0, 0.0, 1.0, 1.0)
+        self._tab3_last_space_time_rect = (0.0, 0.0, 1.0, 1.0)
         self._apply_tab3_space_time_levels()
 
     def _configure_tab3_curve_item(self, curve_item):
@@ -1647,12 +1729,36 @@ class MainWindow(QMainWindow):
         if hasattr(curve_item, "setSkipFiniteCheck"):
             curve_item.setSkipFiniteCheck(True)
 
+    def _downsample_tab3_curve(self, times, values) -> Tuple[np.ndarray, np.ndarray]:
+        """Bound one UI curve to a fixed point budget before setData."""
+        values_arr = np.asarray(values)
+        times_arr = np.asarray(times)
+        point_count = min(values_arr.size, times_arr.size)
+        if point_count <= 0:
+            return np.array([], dtype=np.float64), np.array([], dtype=np.float32)
+        values_arr = values_arr[:point_count]
+        times_arr = times_arr[:point_count]
+        step = max(1, int(np.ceil(point_count / max(1, self._tab3_curve_max_points))))
+        return (
+            np.ascontiguousarray(times_arr[::step], dtype=np.float64),
+            np.ascontiguousarray(values_arr[::step], dtype=np.float32),
+        )
+
     def _render_tab3_curve(self, curve_item, curve_mode: str, times, values, expected_mode: str):
         """Render one Tab3 line only when the current UI mode matches."""
         if curve_mode != expected_mode:
-            curve_item.setData([], [])
+            if getattr(curve_item, "_tab3_has_data", False):
+                curve_item.setData([], [])
+                setattr(curve_item, "_tab3_has_data", False)
             return
-        curve_item.setData(times, values)
+        plot_times, plot_values = self._downsample_tab3_curve(times, values)
+        if plot_values.size == 0:
+            if getattr(curve_item, "_tab3_has_data", False):
+                curve_item.setData([], [])
+                setattr(curve_item, "_tab3_has_data", False)
+            return
+        curve_item.setData(plot_times, plot_values)
+        setattr(curve_item, "_tab3_has_data", True)
 
     def clear_alarm_table(self):
         """Clear the alarm table and counters."""

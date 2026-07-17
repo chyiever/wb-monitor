@@ -54,10 +54,5 @@ def parse_arguments():
 if __name__ == '__main__':
     args = parse_arguments()
 
-    # Configure logging level
-    if args.debug:
-        import logging
-        logging.basicConfig(level=logging.DEBUG)
-
-    # Pass arguments to main function
+    # Pass arguments to main function. src.main owns logging configuration.
     sys.exit(main(args))

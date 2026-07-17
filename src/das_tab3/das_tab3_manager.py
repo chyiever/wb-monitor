@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -34,7 +35,7 @@ class DASTab3Manager(QObject):
             port=settings["communication"]["port"],
         )
         self.plot_worker = DASPlotWorker()
-        # 独立存储线程：joint npz 与 eDAS-only bin/json 分开写入，互不抢队列。
+        # Separate writers: joint npz and eDAS-only bin/json use independent queues.
         self.storage_worker = DASStorageWorker()
         self.edas_storage_worker = EDASRawStorageWorker()
         self._joint_storage_enabled = False
@@ -54,6 +55,7 @@ class DASTab3Manager(QObject):
         self._last_snapshot_end_comm = -1
         self._disconnect_alert_active = False
         self._setup_connections()
+        self.logger.debug("TAB3_NODE manager.init settings=%s", settings)
 
     def _setup_connections(self) -> None:
         self.server.packet_received.connect(self._handle_raw_packet)
@@ -67,14 +69,22 @@ class DASTab3Manager(QObject):
         self.coordinator.alignment_status_changed.connect(
             self.main_window.update_tab3_alignment_status
         )
+        self.logger.debug("TAB3_NODE manager.connections_ready")
 
     def start(self) -> bool:
-        """启动 Tab3 管线：DAS TCP 服务器、绘图线程和存储线程。"""
+        """Start Tab3 pipeline: DAS TCP server, plot worker, and storage workers."""
         self.sync_from_ui()
         self.plot_worker.reset_state()
+        self.logger.debug(
+            "TAB3_NODE manager.start ip=%s port=%s joint_enabled=%s edas_enabled=%s",
+            self.server.ip,
+            self.server.port,
+            self._joint_storage_enabled,
+            self._edas_storage_enabled,
+        )
         if not self.plot_worker.isRunning():
             self.plot_worker.start()
-        # 启动独立存储线程（T3-01）
+        # Start background storage workers.
         if not self.storage_worker.isRunning():
             self.storage_worker.start()
         if not self.edas_storage_worker.isRunning():
@@ -85,17 +95,32 @@ class DASTab3Manager(QObject):
         started = self.server.start_server()
         if started:
             self.coordinator.update_online_state("das", False)
-        return started
+            self.logger.info("Tab3 DAS pipeline started")
+            return True
+        self._storage_timer.stop()
+        self._watchdog_timer.stop()
+        self.plot_worker.stop()
+        if self.plot_worker.isRunning():
+            self.plot_worker.wait(3000)
+        self.storage_worker.stop()
+        if self.storage_worker.isRunning():
+            self.storage_worker.wait(3000)
+        self.edas_storage_worker.stop()
+        if self.edas_storage_worker.isRunning():
+            self.edas_storage_worker.wait(3000)
+        self.logger.warning("TAB3_NODE manager.start_failed cleaned_up")
+        return False
 
     def stop(self) -> None:
-        """停止 Tab3 管线。"""
+        """Stop the Tab3 pipeline."""
+        self.logger.debug("TAB3_NODE manager.stop")
         self._storage_timer.stop()
         self._watchdog_timer.stop()
         self.server.stop_server()
         self.plot_worker.stop()
         if self.plot_worker.isRunning():
             self.plot_worker.wait(3000)
-        # 停止存储线程（T3-01）
+        # Stop background storage workers.
         self.storage_worker.stop()
         if self.storage_worker.isRunning():
             self.storage_worker.wait(5000)
@@ -103,23 +128,28 @@ class DASTab3Manager(QObject):
         if self.edas_storage_worker.isRunning():
             self.edas_storage_worker.wait(5000)
         self.coordinator.update_online_state("das", False)
+        self.logger.info("Tab3 DAS pipeline stopped")
 
     def reset(self) -> None:
-        """重置本地状态，准备新一轮监测会话。"""
+        """Reset local state for a new monitoring session."""
         self._fip_recent_packets.clear()
         self._last_snapshot_end_comm = -1
         self._disconnect_alert_active = False
         self.plot_worker.reset_state()
         self.edas_storage_worker.reset_session()
         self.main_window.reset_tab3_views()
+        self.logger.debug("TAB3_NODE manager.reset")
 
     def sync_from_ui(self) -> None:
-        """将最新 UI 设置同步到服务器、绘图线程和存储线程。"""
+        """Synchronize current UI settings into server, plot worker, and storage workers."""
         settings = self.main_window.get_tab3_settings()
         storage_settings = settings["storage"]
         self.server.ip = settings["communication"]["ip"]
         self.server.port = settings["communication"]["port"]
-        self.plot_worker.update_settings(settings["plot"])
+        plot_settings = dict(settings["plot"])
+        plot_settings.setdefault("curve_max_points", 20000)
+        plot_settings.setdefault("space_time_max_pixels", 300000)
+        self.plot_worker.update_settings(plot_settings)
         self._joint_storage_enabled = bool(
             storage_settings.get("joint_enabled", storage_settings.get("enabled", False))
         )
@@ -140,9 +170,18 @@ class DASTab3Manager(QObject):
         self._edas_queue_packets = max(
             1, int(storage_settings.get("edas_queue_packets", self._edas_queue_packets))
         )
+        self.logger.debug(
+            "TAB3_NODE manager.sync ip=%s port=%s plot=%s joint=%s edas=%s cache_seconds=%.1f",
+            self.server.ip,
+            self.server.port,
+            plot_settings,
+            self._joint_storage_enabled,
+            self._edas_storage_enabled,
+            cache_seconds,
+        )
 
     def process_fip_processed_data(self, processed_data: ProcessedData) -> None:
-        """接收 Tab1 处理后数据，推入对齐协调器并更新绘图。"""
+        """Receive processed Tab1 data, push it into alignment, and update plots."""
         packet = FIPSessionPacket(
             comm_count=processed_data.comm_count,
             packet_duration_seconds=0.2,
@@ -152,6 +191,13 @@ class DASTab3Manager(QObject):
         )
         self._fip_recent_packets.append(packet)
         self.coordinator.push_fip_packet(packet)
+        self.logger.debug(
+            "TAB3_NODE manager.fip_packet comm=%s display_points=%d sample_rate=%.1f recent=%d",
+            processed_data.comm_count,
+            len(processed_data.downsampled_data),
+            float(processed_data.effective_rate),
+            len(self._fip_recent_packets),
+        )
         self.main_window.update_tab3_fip_curve(
             processed_data.comm_count,
             processed_data.downsampled_data,
@@ -159,6 +205,7 @@ class DASTab3Manager(QObject):
         )
 
     def _handle_raw_packet(self, raw_packet: DASRawPacket) -> None:
+        started = time.perf_counter()
         parsed = self._parse_packet(raw_packet)
         self.coordinator.update_online_state("das", True)
         self.coordinator.push_das_packet(
@@ -170,19 +217,38 @@ class DASTab3Manager(QObject):
                 matrix=parsed.matrix,
             )
         )
+        storage_queued = False
         if self._edas_storage_enabled:
-            queued = self.edas_storage_worker.enqueue_packet(
+            storage_queued = self.edas_storage_worker.enqueue_packet(
                 parsed,
                 output_dir=self._edas_storage_path,
                 blocks_per_file=self._edas_blocks_per_file,
                 queue_packets=self._edas_queue_packets,
             )
-            if not queued:
+            if not storage_queued:
                 self.main_window.update_tab3_edas_storage_status(
                     f"Dropped DAS packet comm={parsed.header.comm_count}; eDAS save queue full"
                 )
-        if not self.plot_worker.enqueue_packet(parsed):
+        plot_queued = self.plot_worker.enqueue_packet(parsed)
+        if not plot_queued:
             self.logger.warning("DAS plot queue rejected packet comm_count=%d", parsed.header.comm_count)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self.logger.debug(
+            "TAB3_NODE manager.raw_packet comm=%s matrix_shape=%s parse_route_ms=%.2f edas_enabled=%s edas_queued=%s plot_queued=%s",
+            parsed.header.comm_count,
+            tuple(parsed.matrix.shape),
+            elapsed_ms,
+            self._edas_storage_enabled,
+            storage_queued,
+            plot_queued,
+        )
+        if elapsed_ms > 80.0:
+            self.logger.warning(
+                "TAB3_NODE manager.slow_raw_packet comm=%s elapsed_ms=%.2f matrix_shape=%s",
+                parsed.header.comm_count,
+                elapsed_ms,
+                tuple(parsed.matrix.shape),
+            )
 
     def _parse_packet(self, raw_packet: DASRawPacket) -> DASParsedPacket:
         header = raw_packet.header
@@ -198,6 +264,13 @@ class DASTab3Manager(QObject):
         )
         packet_start_time = header.comm_count * header.packet_duration_seconds
         packet_end_time = packet_start_time + header.packet_duration_seconds
+        self.logger.debug(
+            "TAB3_NODE manager.parse comm=%s channels=%d samples_per_channel=%d duration=%.6f",
+            header.comm_count,
+            header.channel_count,
+            samples_per_channel,
+            header.packet_duration_seconds,
+        )
         return DASParsedPacket(
             header=header,
             matrix=matrix,
@@ -206,10 +279,10 @@ class DASTab3Manager(QObject):
         )
 
     def _maybe_store_snapshot(self) -> None:
-        """检查 joint 存储条件，并以增量方式异步提交 FIP+eDAS 写盘请求。
+        """Check joint storage conditions and enqueue incremental FIP+eDAS writes.
 
-        FIP+eDAS SAVE 只在两路同时在线且对齐状态为 aligned 时写 joint npz。
-        若只有一路在线，界面会自动转入对应单源保存：FIP 相位存储或 eDAS SAVE。
+        FIP+eDAS SAVE writes joint npz only when both sources are online and aligned.
+        If only one source is online, the UI routes storage to the matching single-source path.
         """
         settings = self.main_window.get_tab3_settings()
         storage_settings = settings["storage"]
@@ -222,17 +295,31 @@ class DASTab3Manager(QObject):
         status = self.coordinator.snapshot_status()
         frames = self.coordinator.get_frames_since(self._last_snapshot_end_comm)
         if not frames:
+            self.logger.debug("TAB3_NODE manager.joint_storage no_frames status=%s", status.alignment_status)
             return
         end_comm = frames[-1].comm_count
         if end_comm == self._last_snapshot_end_comm:
+            self.logger.debug("TAB3_NODE manager.joint_storage same_end_comm=%s", end_comm)
             return
 
         if not status.fip_online or not status.das_online:
             self._last_snapshot_end_comm = end_comm
+            self.logger.debug(
+                "TAB3_NODE manager.joint_storage fallback fip_online=%s das_online=%s end_comm=%s",
+                status.fip_online,
+                status.das_online,
+                end_comm,
+            )
             self._route_joint_storage_fallback(status)
             return
         if status.alignment_status != "aligned":
             self._last_snapshot_end_comm = end_comm
+            self.logger.debug(
+                "TAB3_NODE manager.joint_storage wait_alignment status=%s frames=%d end_comm=%s",
+                status.alignment_status,
+                len(frames),
+                end_comm,
+            )
             self.main_window.update_tab3_storage_status(
                 f"Waiting aligned state; current={status.alignment_status}, end_comm={end_comm}"
             )
@@ -243,6 +330,13 @@ class DASTab3Manager(QObject):
         chunk_end = float(frames[-1].packet_start_time + frames[-1].packet_duration_seconds)
         chunk_seconds = max(0.0, chunk_end - chunk_start)
         if chunk_seconds + 1e-9 < interval_seconds:
+            self.logger.debug(
+                "TAB3_NODE manager.joint_storage collecting chunk_seconds=%.3f interval=%.3f frames=%d end_comm=%s",
+                chunk_seconds,
+                interval_seconds,
+                len(frames),
+                end_comm,
+            )
             self.main_window.update_tab3_storage_status(
                 f"Collecting joint chunk {chunk_seconds:.1f}/{interval_seconds:.1f}s"
             )
@@ -255,6 +349,12 @@ class DASTab3Manager(QObject):
             end_comm=end_comm,
         )
         self.storage_worker.enqueue_request(request)
+        self.logger.debug(
+            "TAB3_NODE manager.joint_storage queued frames=%d end_comm=%s output_dir=%s",
+            len(frames),
+            end_comm,
+            request.output_dir,
+        )
         self.main_window.update_tab3_storage_status(
             f"Queued {len(frames)} frames (end_comm={end_comm})"
         )
@@ -264,19 +364,22 @@ class DASTab3Manager(QObject):
         if status.das_online and not status.fip_online:
             message = "FIP+eDAS SAVE requires FIP and eDAS; routed to eDAS SAVE."
             self._edas_storage_enabled = True
+            self.logger.debug("TAB3_NODE manager.storage_fallback target=edas")
             self.main_window.route_tab3_joint_storage_fallback("edas", message)
             self.main_window.update_tab3_storage_status(message)
             return
         if status.fip_online and not status.das_online:
             message = "FIP+eDAS SAVE requires FIP and eDAS; routed to Tab1 FIP phase storage."
+            self.logger.debug("TAB3_NODE manager.storage_fallback target=fip")
             self.main_window.route_tab3_joint_storage_fallback("fip", message)
             self.main_window.update_tab3_storage_status(message)
             return
         message = "FIP+eDAS SAVE waits for both FIP and eDAS communication."
+        self.logger.debug("TAB3_NODE manager.storage_fallback target=wait")
         self.main_window.update_tab3_storage_status(message)
 
     def _build_snapshot_path(self, output_dir: str) -> Path:
-        """构建快照文件路径（保留供外部调用，实际写盘由 DASStorageWorker 执行）。"""
+        """Build a snapshot path; actual disk I/O is handled by DASStorageWorker."""
         path = Path(output_dir)
         path.mkdir(parents=True, exist_ok=True)
         now = datetime.now()
@@ -294,4 +397,5 @@ class DASTab3Manager(QObject):
             return
         self._disconnect_alert_active = True
         self.coordinator.update_online_state("das", False)
+        self.logger.warning("TAB3_NODE manager.disconnect_timeout age_seconds=%.2f", age_seconds)
         self.main_window.show_tab3_error("DAS has not received data for 10 seconds.")

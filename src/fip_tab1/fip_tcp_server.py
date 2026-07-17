@@ -62,6 +62,7 @@ class OptimizedTCPServer(QObject):
         self.packets_received = 0
         self.total_data_received = 0
         self.last_stats_time = time.time()
+        self._stats_packets_at_last_log = 0
 
         # Communication counter normalization (per connection/session)
         self._comm_base_raw: Optional[int] = None
@@ -180,6 +181,7 @@ class OptimizedTCPServer(QObject):
                 self.packets_received = 0
                 self.total_data_received = 0
                 self.last_stats_time = time.time()
+                self._stats_packets_at_last_log = 0
                 self._comm_base_raw = None
                 self._last_raw_comm_count = None
                 self.performance_stats = {
@@ -399,9 +401,10 @@ class OptimizedTCPServer(QObject):
             elapsed_time = current_time - self.last_stats_time
 
             if elapsed_time > 0:
-                # Calculate throughput
+                # Calculate interval throughput and packet rate.
                 data_rate_mbps = (self.total_data_received / elapsed_time) / (1024 * 1024)
-                packet_rate = self.packets_received / elapsed_time
+                interval_packets = self.packets_received - self._stats_packets_at_last_log
+                packet_rate = interval_packets / elapsed_time
 
                 # Calculate average receive time
                 avg_receive_time = 0
@@ -424,6 +427,7 @@ class OptimizedTCPServer(QObject):
 
                 # Reset counters for next interval
                 self.total_data_received = 0
+                self._stats_packets_at_last_log = self.packets_received
                 self.last_stats_time = current_time
 
         except Exception as e:
