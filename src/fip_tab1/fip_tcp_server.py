@@ -62,8 +62,12 @@ class OptimizedTCPServer(QObject):
         # Statistics
         self.packets_received = 0
         self.total_data_received = 0
+        self.total_data_received_lifetime = 0
         self.last_stats_time = time.time()
         self._stats_packets_at_last_log = 0
+        self._last_statistics_snapshot_time = time.time()
+        self._last_statistics_snapshot_packets = 0
+        self._last_statistics_snapshot_bytes = 0
 
         # Communication counter normalization (per connection/session)
         self._comm_base_raw: Optional[int] = None
@@ -181,8 +185,12 @@ class OptimizedTCPServer(QObject):
                 # Reset statistics on new connection
                 self.packets_received = 0
                 self.total_data_received = 0
+                self.total_data_received_lifetime = 0
                 self.last_stats_time = time.time()
                 self._stats_packets_at_last_log = 0
+                self._last_statistics_snapshot_time = self.last_stats_time
+                self._last_statistics_snapshot_packets = 0
+                self._last_statistics_snapshot_bytes = 0
                 self._comm_base_raw = None
                 self._last_raw_comm_count = None
                 self.performance_stats = {
@@ -241,6 +249,7 @@ class OptimizedTCPServer(QObject):
                 if packet:
                     self.packets_received += 1
                     self.total_data_received += data_length
+                    self.total_data_received_lifetime += data_length
 
                     # Record performance metrics
                     packet_time = (time.time() - packet_start_time) * 1000.0
@@ -471,14 +480,20 @@ class OptimizedTCPServer(QObject):
     def get_statistics(self) -> dict:
         """Get connection statistics"""
         current_time = time.time()
-        elapsed_time = current_time - self.last_stats_time
+        elapsed_time = current_time - self._last_statistics_snapshot_time
 
-        # Calculate current rates
+        # Calculate interval rates for the UI. Logging statistics use their own
+        # 50-packet counters, so keep this snapshot independent.
         data_rate_mbps = 0
         packet_rate = 0
         if elapsed_time > 0:
-            data_rate_mbps = (self.total_data_received / elapsed_time) / (1024 * 1024)
-            packet_rate = self.packets_received / elapsed_time
+            interval_packets = self.packets_received - self._last_statistics_snapshot_packets
+            interval_bytes = self.total_data_received_lifetime - self._last_statistics_snapshot_bytes
+            data_rate_mbps = (interval_bytes / elapsed_time) / (1024 * 1024)
+            packet_rate = interval_packets / elapsed_time
+            self._last_statistics_snapshot_time = current_time
+            self._last_statistics_snapshot_packets = self.packets_received
+            self._last_statistics_snapshot_bytes = self.total_data_received_lifetime
 
         # Get average performance metrics
         avg_receive_time = 0
@@ -494,7 +509,7 @@ class OptimizedTCPServer(QObject):
         return {
             'connected': self._connected,
             'packets_received': self.packets_received,
-            'total_data_received': self.total_data_received,
+            'total_data_received': self.total_data_received_lifetime,
             'packet_rate': packet_rate,
             'data_rate_mbps': data_rate_mbps,
             'avg_receive_time_ms': avg_receive_time,

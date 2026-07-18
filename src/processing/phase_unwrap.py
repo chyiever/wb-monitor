@@ -25,6 +25,8 @@ class PhaseUnwrapper:
     continuous phase values using the phase difference method.
     """
 
+    RANGE_WARNING_INTERVAL_SEGMENTS = 500
+
     def __init__(self):
         """Initialize the phase unwrapper."""
         self.logger = logging.getLogger(__name__ + '.PhaseUnwrapper')
@@ -36,6 +38,8 @@ class PhaseUnwrapper:
 
         # Previous phase for continuity checking
         self._last_phase = None
+        self._range_warning_segments = 0
+        self._range_warning_suppressed = 0
 
     def unwrap_phase(self, wrapped_phase: np.ndarray) -> Tuple[np.ndarray, dict]:
         """
@@ -66,10 +70,24 @@ class PhaseUnwrapper:
 
             # Check data range
             if np.any(np.abs(wrapped_phase) > 1.1):  # Allow small tolerance
-                self.logger.warning(
-                    f"Input data outside expected range [-1, 1]: "
-                    f"min={np.min(wrapped_phase):.3f}, max={np.max(wrapped_phase):.3f}"
+                self._range_warning_segments += 1
+                should_log_range_warning = (
+                    self._range_warning_segments == 1
+                    or self._range_warning_segments % self.RANGE_WARNING_INTERVAL_SEGMENTS == 0
                 )
+                if should_log_range_warning:
+                    suppressed = self._range_warning_suppressed
+                    self._range_warning_suppressed = 0
+                    self.logger.warning(
+                        "Input data outside expected range [-1, 1]: "
+                        "min=%.3f, max=%.3f, segments=%d, suppressed=%d",
+                        float(np.min(wrapped_phase)),
+                        float(np.max(wrapped_phase)),
+                        self._range_warning_segments,
+                        suppressed,
+                    )
+                else:
+                    self._range_warning_suppressed += 1
 
             # Map to [-π, π] range
             phase_rad = wrapped_phase * np.pi
@@ -179,6 +197,8 @@ class PhaseUnwrapper:
         self.total_processed = 0
         self.total_discontinuities = 0
         self.last_process_time = 0
+        self._range_warning_segments = 0
+        self._range_warning_suppressed = 0
 
         self.logger.info("Phase unwrapper reset")
 
@@ -195,6 +215,8 @@ class PhaseUnwrapper:
             'total_processed': self.total_processed,
             'total_discontinuities': self.total_discontinuities,
             'last_process_time': self.last_process_time,
+            'range_warning_segments': self._range_warning_segments,
+            'range_warning_suppressed': self._range_warning_suppressed,
             'average_discontinuities_per_segment': (
                 self.total_discontinuities / max(1, self.total_processed // 200000)
             )
@@ -258,4 +280,3 @@ def validate_phase_unwrapping(wrapped: np.ndarray, unwrapped: np.ndarray) -> dic
 
     except Exception as e:
         return {'valid': False, 'error': str(e)}
-

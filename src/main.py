@@ -96,6 +96,8 @@ class PCCPMonitorApp:
         self.tab3_manager = None
         self.fip_monitoring_active = False
         self.das_monitoring_active = False
+        self._fip_packet_sample_rate_override_hz = None
+        self._last_fip_packet_shape_signature = None
 
         # 线程统计定时刷新计时器（X-01）：每 2 s 更新状态栏中的线程健康面板
         self._stats_timer = QTimer()
@@ -422,16 +424,26 @@ class PCCPMonitorApp:
                     "sample_rate_hz": ORIGINAL_SAMPLE_RATE,
                 }
             )
+            sensor_count = int(fip_settings.get("sensor_count", 1))
+            selected_sensor = int(fip_settings.get("selected_sensor", 1))
             packet_duration_seconds = max(float(fip_settings.get("packet_duration_seconds", 1.0)), 1e-6)
-            sample_rate_hz = max(float(fip_settings.get("sample_rate_hz", ORIGINAL_SAMPLE_RATE)), 1.0)
+            configured_sample_rate_hz = max(float(fip_settings.get("sample_rate_hz", ORIGINAL_SAMPLE_RATE)), 1.0)
+            sample_rate_hz = self._resolve_fip_packet_sample_rate(
+                point_count=len(packet.phase_data),
+                sensor_count=sensor_count,
+                selected_sensor=selected_sensor,
+                packet_duration_seconds=packet_duration_seconds,
+                configured_sample_rate_hz=configured_sample_rate_hz,
+                comm_count=packet.comm_count,
+            )
 
             # 简单的数据包格式转换
             raw_packet = RawDataPacket(
                 timestamp=packet.timestamp,
                 phase_data=packet.phase_data,
                 comm_count=packet.comm_count,
-                sensor_count=fip_settings.get("sensor_count", 1),
-                selected_sensor=fip_settings.get("selected_sensor", 1),
+                sensor_count=sensor_count,
+                selected_sensor=selected_sensor,
                 packet_duration_seconds=packet_duration_seconds,
                 sample_rate_hz=sample_rate_hz,
             )
@@ -450,6 +462,115 @@ class PCCPMonitorApp:
 
         except Exception as e:
             self.logger.error(f"Error processing data packet #{packet.comm_count}: {e}")
+
+    def _resolve_fip_packet_sample_rate(
+        self,
+        point_count: int,
+        sensor_count: int,
+        selected_sensor: int,
+        packet_duration_seconds: float,
+        configured_sample_rate_hz: float,
+        comm_count: int,
+    ) -> float:
+        """Use the actual FIP packet shape to keep runtime time axes honest."""
+        safe_sensor_count = min(max(int(sensor_count), 1), 2)
+        safe_duration = max(float(packet_duration_seconds), 1e-6)
+        configured_sample_rate_hz = max(float(configured_sample_rate_hz), 1.0)
+        if point_count <= 0:
+            return configured_sample_rate_hz
+
+        expected_points_per_sensor = max(1, int(round(configured_sample_rate_hz * safe_duration)))
+        expected_total_points = expected_points_per_sensor * safe_sensor_count
+        tolerance_points = max(safe_sensor_count, int(round(expected_total_points * 0.01)))
+        if abs(point_count - expected_total_points) <= tolerance_points:
+            if self._fip_packet_sample_rate_override_hz is not None:
+                self.logger.info(
+                    "FIP packet shape matches UI settings again at comm=%s; clearing inferred sample-rate override.",
+                    comm_count,
+                )
+                self._fip_packet_sample_rate_override_hz = None
+                self._last_fip_packet_shape_signature = None
+                self._sync_signal_filter_sample_rate(configured_sample_rate_hz, source="fip_packet_shape_clear")
+                self._refresh_preprocessing_parameters(source="fip_packet_shape_clear")
+                if self.tab1_manager:
+                    self.tab1_manager.update_fip_selection(
+                        safe_sensor_count,
+                        selected_sensor,
+                        packet_duration_seconds=safe_duration,
+                        sample_rate_hz=configured_sample_rate_hz,
+                    )
+            return configured_sample_rate_hz
+
+        if point_count % safe_sensor_count != 0:
+            signature = (safe_sensor_count, point_count, expected_total_points, "uneven")
+            if signature != self._last_fip_packet_shape_signature or comm_count % 500 == 0:
+                self._last_fip_packet_shape_signature = signature
+                self.logger.warning(
+                    "FIP_PACKET_SHAPE_MISMATCH_UNRESOLVED comm=%s sensor_count=%d duration=%.6fs "
+                    "configured_sample_rate=%.1fHz expected_points=%d actual_points=%d; "
+                    "actual points are not divisible by sensor_count, keeping configured sample rate.",
+                    comm_count,
+                    safe_sensor_count,
+                    safe_duration,
+                    configured_sample_rate_hz,
+                    expected_total_points,
+                    point_count,
+                )
+            return configured_sample_rate_hz
+
+        actual_points_per_sensor = max(1, point_count // safe_sensor_count)
+        inferred_sample_rate_hz = max(actual_points_per_sensor / safe_duration, 1.0)
+        relative_delta = abs(inferred_sample_rate_hz - configured_sample_rate_hz) / configured_sample_rate_hz
+        if relative_delta <= 0.01:
+            return configured_sample_rate_hz
+
+        signature = (
+            safe_sensor_count,
+            point_count,
+            expected_total_points,
+            round(configured_sample_rate_hz, 3),
+            round(inferred_sample_rate_hz, 3),
+        )
+        should_log = signature != self._last_fip_packet_shape_signature or comm_count % 500 == 0
+        if should_log:
+            self._last_fip_packet_shape_signature = signature
+            self.logger.warning(
+                "FIP_PACKET_SHAPE_MISMATCH comm=%s sensor_count=%d selected=FIP%d duration=%.6fs "
+                "configured_sample_rate=%.1fHz expected_points=%d actual_points=%d "
+                "actual_points_per_sensor=%d inferred_sample_rate=%.1fHz; "
+                "using inferred sample rate for processing and storage metadata.",
+                comm_count,
+                safe_sensor_count,
+                selected_sensor,
+                safe_duration,
+                configured_sample_rate_hz,
+                expected_total_points,
+                point_count,
+                actual_points_per_sensor,
+                inferred_sample_rate_hz,
+            )
+
+        if (
+            self._fip_packet_sample_rate_override_hz is None
+            or abs(self._fip_packet_sample_rate_override_hz - inferred_sample_rate_hz) > 1e-6
+        ):
+            old_override = self._fip_packet_sample_rate_override_hz
+            self._fip_packet_sample_rate_override_hz = inferred_sample_rate_hz
+            self.logger.warning(
+                "FIP runtime sample rate override applied: %s -> %.1fHz",
+                "None" if old_override is None else f"{old_override:.1f}Hz",
+                inferred_sample_rate_hz,
+            )
+            self._sync_signal_filter_sample_rate(inferred_sample_rate_hz, source="fip_packet_shape")
+            self._refresh_preprocessing_parameters(source="fip_packet_shape")
+            if self.tab1_manager:
+                self.tab1_manager.update_fip_selection(
+                    safe_sensor_count,
+                    selected_sensor,
+                    packet_duration_seconds=safe_duration,
+                    sample_rate_hz=inferred_sample_rate_hz,
+                )
+        return inferred_sample_rate_hz
 
     def _start_monitoring(self):
         """Start the monitoring system."""
@@ -708,6 +829,8 @@ class PCCPMonitorApp:
             selected_sensor = int(settings.get("selected_sensor", 1))
             packet_duration_seconds = max(float(settings.get("packet_duration_seconds", 1.0)), 1e-6)
             sample_rate_hz = max(float(settings.get("sample_rate_hz", ORIGINAL_SAMPLE_RATE)), 1.0)
+            self._fip_packet_sample_rate_override_hz = None
+            self._last_fip_packet_shape_signature = None
             sample_rate_changed = self._sync_signal_filter_sample_rate(sample_rate_hz, source="fip_input_settings")
             if sample_rate_changed:
                 self._refresh_preprocessing_parameters(source="fip_input_settings")
@@ -831,6 +954,8 @@ class PCCPMonitorApp:
         return mapping.get(ui_filter_type, "bandpass")
 
     def _get_tab1_sample_rate_hz(self) -> float:
+        if self._fip_packet_sample_rate_override_hz is not None:
+            return max(float(self._fip_packet_sample_rate_override_hz), 1.0)
         if hasattr(self.main_window, 'get_tab1_fip_settings'):
             try:
                 settings = self.main_window.get_tab1_fip_settings()

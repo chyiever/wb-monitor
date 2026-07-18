@@ -688,7 +688,7 @@ class MainWindow(QMainWindow):
         self._tab3_last_das_plot_monotonic = 0.0
         self._tab3_fip_plot_min_interval_seconds = 0.4
         self._tab3_das_plot_min_interval_seconds = 0.2
-        self._tab3_curve_max_points = 12000
+        self._tab3_curve_max_points = 8000
         self._tab3_space_time_max_pixels = 300000
         self._tab3_ui_slow_threshold_ms = 80.0
         self._tab3_last_space_time_rect = None

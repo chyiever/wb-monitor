@@ -225,3 +225,28 @@
 - `python -m py_compile src\fip_tab1\fip_tcp_server.py src\fip_tab1\fip_tab1_manager.py src\das_tab3\das_tab3_manager.py src\das_tab3\das_tcp_server.py src\ui\main_window.py src\main.py` 通过。
 - 合成链路测试通过，输出 `SYNTHETIC_OK tcp_decode dual_fip_processing tab3_unfiltered notebook_fip2`。
 - Notebook 编码和语法检查通过，输出 `question_count 0`、`replacement_count 0`、`code_cells_ok 6`。
+
+## 2026-07-18 22:13:54 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/main.py`、`src/processing/phase_unwrap.py`、`src/fip_tab1/fip_tcp_server.py`、`src/fip_tab1/fip_tab1_manager.py`、`src/ui/main_window.py`、`docs/2026-07-17-FIP-eDAS联调问题数量与修复日志.md`、`docs/dev_log.md`
+
+### 更新摘要
+
+1. 分析 2026-07-18 08:45:48 至 21:33:54 半天稳定性测试日志：FIP 处理链 `queue_dropped=0`、`gaps=0`，DAS TCP `missing=0`，DAS 绘图队列 `dropped=0`，未发现持续通信丢包。
+2. 发现 FIP 单传感器配置与实际包点数不一致：UI 为 `sensor_count=1`、`1 s`、`1 MHz`，但 TCP 每包实收 `2,000,000` 点，旧代码会把降采样输出误标为 `200 kHz`。
+3. `PCCPMonitorApp._process_data_packet()` 新增 FIP 包形状校验，按 `actual_points_per_sensor / packet_duration_seconds` 推导运行采样率，并通过 `FIP_PACKET_SHAPE_MISMATCH` 日志记录配置点数、实际点数和推导采样率。
+4. 推导出的运行采样率会同步到滤波器、Tab1 处理线程、Tab1 存储线程、Tab3 FIP 曲线和 joint 存储元数据；当后续包形状重新匹配 UI 设置时自动清除 override。
+5. `PhaseUnwrapper` 对越界输入 WARNING 做节流：首次和每 `500` 段输出一次，并记录 `segments` 与 `suppressed`，避免半天运行产生 4.6 万条重复 WARNING。
+6. `OptimizedTCPServer.get_statistics()` 改为使用独立 UI 快照计算区间包率和区间吞吐，修复 UI 状态统计可能被累计包数误导的问题。
+7. Tab3 曲线显示点数预算由 `12000` 下调到 `8000`，用于降低半天测试中偶发的 `ui.fip_curve_slow` 主线程慢帧。
+8. `FIP_PROCESS_SENSOR` 日志补充 `raw_rate` 字段，后续可直接核对原始采样率和降采样后 `effective_rate` 是否一致。
+9. 更新 FIP-eDAS 联调日志，补充半天测试的通信完整性、刷新延迟、告警风暴、采样率元数据一致性和修复验证记录。
+
+### 验证
+
+- `python -m py_compile src\main.py src\processing\phase_unwrap.py src\fip_tab1\fip_tcp_server.py src\fip_tab1\fip_tab1_manager.py src\ui\main_window.py` 通过。
+- FIP 包形状推导与 PhaseUnwrapper 告警节流合成验证通过，输出 `SYNTHETIC_OK inferred_sample_rate 2000000.0 phase_range_warnings 3`。
+- Tab1 处理线程采样率下传验证通过，输出 `PROCESS_OK raw_rate 20.0 effective_rate 4.0 points 4`。
+- `python tools\validate_tab3_pipeline.py` 通过，输出 `VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve_points=2400`。

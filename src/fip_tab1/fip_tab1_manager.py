@@ -556,8 +556,9 @@ class DataProcessingThread(QThread):
                     )
                     continue
 
+                raw_sample_rate = normalize_fip_sample_rate(packet.sample_rate_hz)
                 psd_data = np.asarray(unwrapped[::downsample_factor], dtype=np.float64)
-                effective_rate = normalize_fip_sample_rate(packet.sample_rate_hz) / downsample_factor
+                effective_rate = raw_sample_rate / downsample_factor
 
                 if signal_filter is not None and downsampler is not None:
                     filtered, _ = signal_filter.apply_filter(unwrapped)
@@ -583,7 +584,7 @@ class DataProcessingThread(QThread):
                         "unwrapped=%d first=%.9g range=[%.9g,%.9g] "
                         "unfiltered_ds=%d first=%.9g range=[%.9g,%.9g] "
                         "filtered=%d first=%.9g range=[%.9g,%.9g] "
-                        "display_ds=%d first=%.9g range=[%.9g,%.9g] effective_rate=%.1f",
+                        "display_ds=%d first=%.9g range=[%.9g,%.9g] raw_rate=%.1f effective_rate=%.1f",
                         packet.comm_count,
                         sensor_index,
                         sensor_index == selected_sensor_for_filter,
@@ -607,6 +608,7 @@ class DataProcessingThread(QThread):
                         down_first,
                         down_min,
                         down_max,
+                        raw_sample_rate,
                         effective_rate,
                     )
                 if psd_data.size and abs(float(psd_data[0])) <= 1e-12:
