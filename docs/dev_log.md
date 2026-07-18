@@ -274,3 +274,26 @@
 - `python -m py_compile src\ui\main_window.py src\main.py src\das_tab3\das_tab3_manager.py src\fip_tab1\fip_tab1_manager.py` 通过。
 - MainWindow 离屏 GUI 构造通过，tab 顺序为 `['View', 'Data', 'Tab3', 'Setting']`。
 - 合成 `20 Hz` 正弦信号 Welch PSD 验证通过，PSD 峰值显示在 pyqtgraph 对数横轴 `1.3` 附近。
+
+## 2026-07-19 00:58:00 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/ui/main_window.py`、`docs/2026-07-18-GUI大改日志.md`、`docs/各个tab参数含义与修改说明.md`、`docs/dev_log.md`
+
+### 更新摘要
+
+1. Data tab 中 FIP/eDAS 的 `IP` 标签改为 `监听地址`，并补充 placeholder 和 tooltip，明确本软件作为服务端时应绑定本机地址。
+2. 明确默认 `0.0.0.0` 的含义：服务端监听所有本机网卡；客户端连接时应使用本机实际网卡 IP，不能把 `0.0.0.0` 作为目标地址。
+3. View tab 左侧参数面板加宽并改为更紧凑的两列参数布局，覆盖 FIP 预处理、刷新参数、PSD 参数和坐标轴参数。
+4. View tab 绘图开关短标签化为 `时域 ON/OFF`、`PSD ON/OFF`、`刷新 ON/OFF`，并统一按钮宽度、字号、圆角和颜色。
+5. Space-Time 图和色标恢复为左右布局，色标固定在图右侧，避免 GUI 大改后色标落到图下方。
+6. 新增统一按钮样式 helper，主操作按钮、开关按钮和次级按钮统一尺寸与视觉语义。
+7. 更新 GUI 大改日志和 tab 参数说明文档。
+
+### 验证
+
+- `python -m py_compile src\ui\main_window.py` 通过。
+- MainWindow 离屏构造通过，tab 顺序为 `['View', 'Data', 'Tab3', 'Setting']`。
+- 生成 View tab 离屏截图，确认 Space-Time 色标位于图右侧。
+- Qt 字体度量检查通过，View/Data/Storage/Setting 主按钮文本均能完整放入按钮可用宽度。

@@ -223,8 +223,8 @@ class MainWindow(QMainWindow):
 
     def _create_parameter_panel(self) -> QWidget:
         widget = QWidget()
-        widget.setMinimumWidth(390)
-        widget.setMaximumWidth(450)
+        widget.setMinimumWidth(430)
+        widget.setMaximumWidth(520)
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
@@ -292,36 +292,40 @@ class MainWindow(QMainWindow):
     def _create_processing_group(self) -> QGroupBox:
         group = QGroupBox("FIP预处理")
         layout = QGridLayout(group)
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(3, 1)
         layout.addWidget(QLabel("滤波类型"), 0, 0)
         self.filter_type_combo = QComboBox()
         self.filter_type_combo.addItems(["无滤波", "低通", "高通", "带通", "带阻"])
         self.filter_type_combo.setCurrentText("带通")
         layout.addWidget(self.filter_type_combo, 0, 1)
+        layout.addWidget(QLabel("滤波阶数"), 0, 2)
+        self.filter_order_spin = QSpinBox()
+        self.filter_order_spin.setRange(1, 10)
+        self.filter_order_spin.setValue(4)
+        layout.addWidget(self.filter_order_spin, 0, 3)
         layout.addWidget(QLabel("低频截止(Hz)"), 1, 0)
         self.low_freq_spin = QSpinBox()
         self.low_freq_spin.setRange(1, 100000)
         self.low_freq_spin.setValue(100)
         layout.addWidget(self.low_freq_spin, 1, 1)
-        layout.addWidget(QLabel("高频截止(Hz)"), 2, 0)
+        layout.addWidget(QLabel("高频截止(Hz)"), 1, 2)
         self.high_freq_spin = QSpinBox()
         self.high_freq_spin.setRange(1, 500000)
         self.high_freq_spin.setValue(10000)
-        layout.addWidget(self.high_freq_spin, 2, 1)
-        layout.addWidget(QLabel("滤波阶数"), 3, 0)
-        self.filter_order_spin = QSpinBox()
-        self.filter_order_spin.setRange(1, 10)
-        self.filter_order_spin.setValue(4)
-        layout.addWidget(self.filter_order_spin, 3, 1)
-        layout.addWidget(QLabel("降采样倍数"), 4, 0)
+        layout.addWidget(self.high_freq_spin, 1, 3)
+        layout.addWidget(QLabel("降采样倍数"), 2, 0)
         self.downsample_spin = QSpinBox()
         self.downsample_spin.setRange(1, 100)
         self.downsample_spin.setValue(5)
-        layout.addWidget(self.downsample_spin, 4, 1)
+        layout.addWidget(self.downsample_spin, 2, 1)
         return group
 
     def _create_visualization_group(self) -> QGroupBox:
         group = QGroupBox("刷新参数")
         layout = QGridLayout(group)
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(3, 1)
         layout.addWidget(QLabel("时域显示(s)"), 0, 0)
         self.time_display_duration_spin = QDoubleSpinBox()
         self.time_display_duration_spin.setRange(0.1, 60.0)
@@ -329,46 +333,52 @@ class MainWindow(QMainWindow):
         self.time_display_duration_spin.setSingleStep(0.1)
         self.time_display_duration_spin.setSuffix(" s")
         layout.addWidget(self.time_display_duration_spin, 0, 1)
-        layout.addWidget(QLabel("FIP刷新(s)"), 1, 0)
+        layout.addWidget(QLabel("FIP刷新(s)"), 0, 2)
         self.view_fip_refresh_spin = QDoubleSpinBox()
         self.view_fip_refresh_spin.setRange(0.05, 5.0)
         self.view_fip_refresh_spin.setDecimals(2)
         self.view_fip_refresh_spin.setSingleStep(0.05)
         self.view_fip_refresh_spin.setValue(self._tab3_fip_plot_min_interval_seconds)
-        layout.addWidget(self.view_fip_refresh_spin, 1, 1)
-        layout.addWidget(QLabel("eDAS刷新(s)"), 2, 0)
+        layout.addWidget(self.view_fip_refresh_spin, 0, 3)
+        layout.addWidget(QLabel("eDAS刷新(s)"), 1, 0)
         self.view_edas_refresh_spin = QDoubleSpinBox()
         self.view_edas_refresh_spin.setRange(0.05, 5.0)
         self.view_edas_refresh_spin.setDecimals(2)
         self.view_edas_refresh_spin.setSingleStep(0.05)
         self.view_edas_refresh_spin.setValue(self._tab3_das_plot_min_interval_seconds)
-        layout.addWidget(self.view_edas_refresh_spin, 2, 1)
-        layout.addWidget(QLabel("单曲线点数"), 3, 0)
+        layout.addWidget(self.view_edas_refresh_spin, 1, 1)
+        layout.addWidget(QLabel("单曲线点数"), 1, 2)
         self.view_curve_max_points_spin = QSpinBox()
         self.view_curve_max_points_spin.setRange(1000, 200000)
         self.view_curve_max_points_spin.setSingleStep(1000)
         self.view_curve_max_points_spin.setValue(self._tab3_curve_max_points)
-        layout.addWidget(self.view_curve_max_points_spin, 3, 1)
-        plot_control_layout = QHBoxLayout()
-        self.time_plot_btn = QPushButton("时域: ON")
+        layout.addWidget(self.view_curve_max_points_spin, 1, 3)
+        plot_control_layout = QGridLayout()
+        for column in range(3):
+            plot_control_layout.setColumnStretch(column, 1)
+        self.time_plot_btn = QPushButton("时域 ON")
         self.time_plot_btn.setCheckable(True)
         self.time_plot_btn.setChecked(True)
-        plot_control_layout.addWidget(self.time_plot_btn)
-        self.psd_plot_btn = QPushButton("PSD: ON")
+        plot_control_layout.addWidget(self.time_plot_btn, 0, 0)
+        self.psd_plot_btn = QPushButton("PSD ON")
         self.psd_plot_btn.setCheckable(True)
         self.psd_plot_btn.setChecked(True)
-        plot_control_layout.addWidget(self.psd_plot_btn)
+        plot_control_layout.addWidget(self.psd_plot_btn, 0, 1)
 
-        self.tab3_plot_toggle_btn = QPushButton("View更新: ON")
+        self.tab3_plot_toggle_btn = QPushButton("刷新 ON")
         self.tab3_plot_toggle_btn.setCheckable(True)
         self.tab3_plot_toggle_btn.setChecked(True)
-        plot_control_layout.addWidget(self.tab3_plot_toggle_btn)
-        layout.addLayout(plot_control_layout, 4, 0, 1, 2)
+        plot_control_layout.addWidget(self.tab3_plot_toggle_btn, 0, 2)
+        for button in (self.time_plot_btn, self.psd_plot_btn, self.tab3_plot_toggle_btn):
+            self._style_toggle_button(button, True, min_width=96)
+        layout.addLayout(plot_control_layout, 2, 0, 1, 4)
         return group
 
     def _create_view_psd_group(self) -> QGroupBox:
         group = QGroupBox("PSD设置")
         layout = QGridLayout(group)
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(3, 1)
         self.view_psd1_check = QCheckBox("PSD1")
         self.view_psd1_check.setChecked(True)
         layout.addWidget(self.view_psd1_check, 0, 0)
@@ -383,20 +393,22 @@ class MainWindow(QMainWindow):
         self.psd_window_length_spin.setDecimals(2)
         self.psd_window_length_spin.setSuffix(" s")
         layout.addWidget(self.psd_window_length_spin, 1, 1)
-        layout.addWidget(QLabel("重叠率(%)"), 2, 0)
+        layout.addWidget(QLabel("重叠率(%)"), 1, 2)
         self.psd_overlap_spin = QDoubleSpinBox()
         self.psd_overlap_spin.setRange(0.0, 95.0)
         self.psd_overlap_spin.setValue(50.0)
         self.psd_overlap_spin.setSingleStep(5.0)
         self.psd_overlap_spin.setDecimals(1)
-        layout.addWidget(self.psd_overlap_spin, 2, 1)
+        layout.addWidget(self.psd_overlap_spin, 1, 3)
         return group
 
     def _create_view_axis_group(self) -> QGroupBox:
         group = QGroupBox("坐标轴")
         layout = QGridLayout(group)
         self.view_axis_enable_check = QCheckBox("手动范围")
-        layout.addWidget(self.view_axis_enable_check, 0, 0, 1, 2)
+        layout.addWidget(self.view_axis_enable_check, 0, 0, 1, 4)
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(3, 1)
         specs = [
             ("Xmin", "view_xmin_spin", -1e9, 1e9, 0.0),
             ("Xmax", "view_xmax_spin", -1e9, 1e9, 1.0),
@@ -405,21 +417,25 @@ class MainWindow(QMainWindow):
             ("PSD Ymin", "view_psd_ymin_spin", -400.0, 400.0, -160.0),
             ("PSD Ymax", "view_psd_ymax_spin", -400.0, 400.0, 20.0),
         ]
-        for row, (label, attr, min_value, max_value, value) in enumerate(specs, start=1):
-            layout.addWidget(QLabel(label), row, 0)
+        for index, (label, attr, min_value, max_value, value) in enumerate(specs):
+            row = index // 2 + 1
+            col = (index % 2) * 2
+            layout.addWidget(QLabel(label), row, col)
             spin = QDoubleSpinBox()
             spin.setRange(min_value, max_value)
             spin.setDecimals(3 if "X" in label else 2)
             spin.setSingleStep(0.1)
             spin.setValue(value)
             setattr(self, attr, spin)
-            layout.addWidget(spin, row, 1)
+            layout.addWidget(spin, row, col + 1)
         button_layout = QHBoxLayout()
         self.view_apply_axis_btn = QPushButton("应用")
         self.view_auto_axis_btn = QPushButton("自动")
+        self._style_secondary_button(self.view_apply_axis_btn, min_width=72)
+        self._style_secondary_button(self.view_auto_axis_btn, min_width=72)
         button_layout.addWidget(self.view_apply_axis_btn)
         button_layout.addWidget(self.view_auto_axis_btn)
-        layout.addLayout(button_layout, len(specs) + 1, 0, 1, 2)
+        layout.addLayout(button_layout, len(specs) // 2 + 1, 0, 1, 4)
         return group
 
     def _create_space_time_group(self) -> QGroupBox:
@@ -513,20 +529,20 @@ class MainWindow(QMainWindow):
         upper_splitter.setSizes([700, 300])
 
         tab3_space_time_panel = QWidget()
-        tab3_space_time_layout = QVBoxLayout(tab3_space_time_panel)
+        tab3_space_time_layout = QHBoxLayout(tab3_space_time_panel)
         tab3_space_time_layout.setContentsMargins(0, 0, 0, 0)
-        tab3_space_time_layout.setSpacing(4)
+        tab3_space_time_layout.setSpacing(6)
         self.tab3_space_time_plot = pg.PlotWidget(title="DAS Space-Time")
         self.tab3_space_time_plot.setLabel("bottom", "Time", units="s")
         self.tab3_space_time_plot.setLabel("left", "Channel")
         self.tab3_space_time_image = pg.ImageItem(axisOrder="row-major")
         self.tab3_space_time_plot.addItem(self.tab3_space_time_image)
         tab3_space_time_layout.addWidget(self.tab3_space_time_plot, 1)
-        self.tab3_space_time_histogram = pg.HistogramLUTWidget()
-        self.tab3_space_time_histogram.setMinimumHeight(92)
-        self.tab3_space_time_histogram.setMaximumHeight(120)
+        self.tab3_space_time_histogram = pg.HistogramLUTWidget(orientation="vertical", gradientPosition="right")
+        self.tab3_space_time_histogram.setMinimumWidth(84)
+        self.tab3_space_time_histogram.setMaximumWidth(120)
         self.tab3_space_time_histogram.setImageItem(self.tab3_space_time_image)
-        tab3_space_time_layout.addWidget(self.tab3_space_time_histogram)
+        tab3_space_time_layout.addWidget(self.tab3_space_time_histogram, 0)
         layout.addWidget(tab3_space_time_panel, stretch=2)
         self._apply_tab3_space_time_colormap()
         self._apply_tab3_space_time_levels()
@@ -565,8 +581,10 @@ class MainWindow(QMainWindow):
         layout = QGridLayout(group)
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(3, 1)
-        layout.addWidget(QLabel("IP"), 0, 0)
+        layout.addWidget(QLabel("监听地址"), 0, 0)
         self.ip_edit = QLineEdit("0.0.0.0")
+        self.ip_edit.setPlaceholderText("0.0.0.0 或本机网卡IP")
+        self.ip_edit.setToolTip("本软件作为服务端时绑定本机地址；推荐 0.0.0.0 监听所有网卡。客户端应连接本机实际IP。")
         layout.addWidget(self.ip_edit, 0, 1)
         layout.addWidget(QLabel("端口"), 0, 2)
         self.port_spin = QSpinBox()
@@ -603,6 +621,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("丢包率"), 4, 2)
         self.loss_rate_label = QLabel("0.00%")
         layout.addWidget(self.loss_rate_label, 4, 3)
+        hint_label = QLabel("服务端监听本机地址；不确定网卡时使用 0.0.0.0")
+        hint_label.setStyleSheet("color: #5f6b7a; font-size: 11px;")
+        layout.addWidget(hint_label, 5, 0, 1, 4)
         return group
 
     def _create_das_communication_group(self) -> QGroupBox:
@@ -610,8 +631,10 @@ class MainWindow(QMainWindow):
         layout = QGridLayout(group)
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(3, 1)
-        layout.addWidget(QLabel("IP"), 0, 0)
+        layout.addWidget(QLabel("监听地址"), 0, 0)
         self.tab3_ip_edit = QLineEdit("0.0.0.0")
+        self.tab3_ip_edit.setPlaceholderText("0.0.0.0 或本机网卡IP")
+        self.tab3_ip_edit.setToolTip("本软件作为服务端时绑定本机地址；推荐 0.0.0.0 监听所有网卡。eDAS客户端应连接本机实际IP。")
         layout.addWidget(self.tab3_ip_edit, 0, 1)
         layout.addWidget(QLabel("端口"), 0, 2)
         self.tab3_port_spin = QSpinBox()
@@ -643,6 +666,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("包长"), 4, 2)
         self.tab3_packet_duration_label = QLabel("-")
         layout.addWidget(self.tab3_packet_duration_label, 4, 3)
+        hint_label = QLabel("服务端监听本机地址；不确定网卡时使用 0.0.0.0")
+        hint_label.setStyleSheet("color: #5f6b7a; font-size: 11px;")
+        layout.addWidget(hint_label, 5, 0, 1, 4)
         return group
 
     def _create_data_comm_control_group(self) -> QGroupBox:
@@ -817,6 +843,8 @@ class MainWindow(QMainWindow):
         self.save_config_btn = QPushButton("保存配置")
         self.load_config_btn = QPushButton("加载配置")
         self.reset_config_btn = QPushButton("重置配置")
+        for button in (self.save_config_btn, self.load_config_btn, self.reset_config_btn):
+            self._style_secondary_button(button, min_width=88)
         layout.addWidget(self.save_config_btn)
         layout.addWidget(self.load_config_btn)
         layout.addWidget(self.reset_config_btn)
@@ -989,6 +1017,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(alarm_group)
 
         self.clear_alarms_btn = QPushButton("Clear alarm history")
+        self._style_secondary_button(self.clear_alarms_btn, min_width=160)
         layout.addWidget(self.clear_alarms_btn)
         layout.addStretch()
         return widget
@@ -1057,6 +1086,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(self.setting_tick_font_spin, 3, 1)
         self.setting_apply_btn = QPushButton("应用全局设置")
         self.setting_apply_btn.setMinimumHeight(42)
+        self._style_action_button(self.setting_apply_btn, False, min_height=42, min_width=140, font_size=14)
         grid.addWidget(self.setting_apply_btn, 4, 0, 1, 2)
         layout.addWidget(group)
         layout.addStretch()
@@ -1883,10 +1913,8 @@ class MainWindow(QMainWindow):
         self.tab3_plot_toggle_btn.blockSignals(True)
         self.tab3_plot_toggle_btn.setChecked(enabled)
         self.tab3_plot_toggle_btn.blockSignals(False)
-        self.tab3_plot_toggle_btn.setText("View更新: ON" if enabled else "View更新: OFF")
-        self.tab3_plot_toggle_btn.setStyleSheet(
-            self._build_tab3_toggle_button_style(enabled, "#1f77b4", "#6c757d", font_size=13, padding="7px 10px")
-        )
+        self.tab3_plot_toggle_btn.setText("刷新 ON" if enabled else "刷新 OFF")
+        self._style_toggle_button(self.tab3_plot_toggle_btn, enabled, min_width=96)
 
 
     def _update_tab3_storage_button_state(self, enabled: bool):
@@ -2021,26 +2049,7 @@ class MainWindow(QMainWindow):
         self.tab2_enable_btn.setChecked(enabled)
         self.tab2_enable_btn.blockSignals(False)
         self.tab2_enable_btn.setText("Stop Tab2" if enabled else "Start Tab2")
-        background = "#1976D2" if enabled else "#4CAF50"
-        hover = "#1565C0" if enabled else "#45a049"
-        pressed = "#0D47A1" if enabled else "#3d8b40"
-        self.tab2_enable_btn.setStyleSheet(f"""
-            QPushButton {{
-                font-size: 16px;
-                font-weight: bold;
-                padding: 8px;
-                background-color: {background};
-                color: white;
-                border: none;
-                border-radius: 4px;
-            }}
-            QPushButton:hover {{
-                background-color: {hover};
-            }}
-            QPushButton:pressed {{
-                background-color: {pressed};
-            }}
-        """)
+        self._style_action_button(self.tab2_enable_btn, enabled, min_height=42, min_width=120, font_size=14)
 
     def _emit_tab2_settings_changed(self):
         """Emit a unified Tab2 settings-changed signal."""
@@ -2055,7 +2064,8 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'tab3_curve1_plot'):
             self.tab3_curve1_plot.setVisible(enabled)
             self.tab3_curve2_plot.setVisible(enabled)
-        self.time_plot_btn.setText("时域: ON" if enabled else "时域: OFF")
+        self.time_plot_btn.setText("时域 ON" if enabled else "时域 OFF")
+        self._style_toggle_button(self.time_plot_btn, enabled, min_width=96)
 
 
     def _toggle_psd_plot(self, enabled: bool):
@@ -2064,7 +2074,8 @@ class MainWindow(QMainWindow):
             self.psd_plot_toggled.emit(enabled)
         if hasattr(self, 'view_psd_plot'):
             self.view_psd_plot.setVisible(enabled)
-        self.psd_plot_btn.setText("PSD: ON" if enabled else "PSD: OFF")
+        self.psd_plot_btn.setText("PSD ON" if enabled else "PSD OFF")
+        self._style_toggle_button(self.psd_plot_btn, enabled, min_width=96)
         self._update_view_psd_curves(force=True)
 
 
@@ -2112,26 +2123,95 @@ class MainWindow(QMainWindow):
             self.filter_settings_changed.emit(filter_settings)
 
 
-    def _style_action_button(self, button: QPushButton, active: bool, active_color: str = "#c0392b", idle_color: str = "#2d7d46") -> None:
-        # Shared visual state for Data-tab command buttons.
+    def _button_hover_color(self, color: str, factor: float = 0.84) -> str:
+        """Return a slightly darker hover color for a hex button background."""
+        try:
+            value = color.lstrip("#")
+            red = max(0, min(255, int(int(value[0:2], 16) * factor)))
+            green = max(0, min(255, int(int(value[2:4], 16) * factor)))
+            blue = max(0, min(255, int(int(value[4:6], 16) * factor)))
+            return f"#{red:02x}{green:02x}{blue:02x}"
+        except Exception:
+            return color
+
+    def _set_button_metrics(self, button: QPushButton, min_height: int = 36, min_width: int = 92) -> None:
+        """Keep command buttons visually aligned across tabs."""
         if not button:
             return
+        button.setMinimumHeight(min_height)
+        button.setMinimumWidth(min_width)
+        button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+
+    def _style_action_button(
+        self,
+        button: QPushButton,
+        active: bool,
+        active_color: str = "#b23b3b",
+        idle_color: str = "#2f6fed",
+        min_height: int = 38,
+        min_width: int = 104,
+        font_size: int = 13,
+    ) -> None:
+        # Primary action buttons share size, radius, and start/stop color semantics.
+        if not button:
+            return
+        self._set_button_metrics(button, min_height=min_height, min_width=min_width)
         color = active_color if active else idle_color
-        hover_color = "#8e2f27" if active else "#245f38"
+        hover_color = self._button_hover_color(color)
         qss = "\n".join([
             "QPushButton {",
-            "    padding: 8px 12px;",
+            f"    font-size: {font_size}px;",
+            "    padding: 8px 10px;",
             "    font-weight: 600;",
             "    color: white;",
             f"    background-color: {color};",
             "    border: none;",
-            "    border-radius: 5px;",
+            "    border-radius: 6px;",
             "}",
             f"QPushButton:hover {{ background-color: {hover_color}; }}",
             f"QPushButton:checked {{ background-color: {active_color}; }}",
             "QPushButton:disabled { background-color: #9aa0a6; }",
         ])
         button.setStyleSheet(qss)
+
+    def _style_toggle_button(self, button: QPushButton, enabled: bool, min_width: int = 92) -> None:
+        # View toggles use the same geometry as command buttons but gray out when disabled.
+        self._style_action_button(
+            button,
+            enabled,
+            active_color="#2f6fed",
+            idle_color="#6f7a86",
+            min_height=34,
+            min_width=min_width,
+            font_size=12,
+        )
+
+    def _style_secondary_button(self, button: QPushButton, min_height: int = 34, min_width: int = 88) -> None:
+        # Secondary actions stay neutral so they do not compete with start/stop commands.
+        if not button:
+            return
+        self._set_button_metrics(button, min_height=min_height, min_width=min_width)
+        button.setStyleSheet("""
+            QPushButton {
+                font-size: 12px;
+                font-weight: 600;
+                padding: 7px 10px;
+                color: #1f2a37;
+                background-color: #eef2f7;
+                border: 1px solid #c9d3df;
+                border-radius: 6px;
+            }
+            QPushButton:hover {
+                background-color: #e1e8f0;
+            }
+            QPushButton:pressed {
+                background-color: #d5dee9;
+            }
+            QPushButton:disabled {
+                color: #7d8793;
+                background-color: #f2f4f7;
+            }
+        """)
 
     def _label_int_value(self, label: QLabel) -> int:
         # Status labels are intentionally human-readable; this helper keeps counters reusable.
@@ -2175,7 +2255,7 @@ class MainWindow(QMainWindow):
             self.data_comm_both_btn.setChecked(both_active)
             self.data_comm_both_btn.setText("停止同时通信" if both_active else "同时启动FIP+eDAS")
             self.data_comm_both_btn.blockSignals(False)
-            self._style_action_button(self.data_comm_both_btn, both_active, active_color="#b03a2e", idle_color="#2b6cb0")
+            self._style_action_button(self.data_comm_both_btn, both_active, min_height=40, min_width=132)
         if hasattr(self, 'start_stop_btn'):
             self.start_stop_btn.blockSignals(True)
             self.start_stop_btn.setChecked(self.monitoring_active)
@@ -2309,13 +2389,13 @@ class MainWindow(QMainWindow):
         joint_active = bool(hasattr(self, 'tab3_joint_storage_toggle_btn') and self.tab3_joint_storage_toggle_btn.isChecked())
         if hasattr(self, 'phase_storage_check'):
             self.phase_storage_check.setText("FIP存储: ON" if fip_active else "FIP存储: OFF")
-            self._style_action_button(self.phase_storage_check, fip_active, active_color="#b03a2e", idle_color="#5f6f52")
+            self._style_action_button(self.phase_storage_check, fip_active, min_height=40, min_width=120)
         if hasattr(self, 'tab3_edas_storage_toggle_btn'):
             self.tab3_edas_storage_toggle_btn.setText("eDAS存储: ON" if edas_active else "eDAS存储: OFF")
-            self._style_action_button(self.tab3_edas_storage_toggle_btn, edas_active, active_color="#b03a2e", idle_color="#5f6f52")
+            self._style_action_button(self.tab3_edas_storage_toggle_btn, edas_active, min_height=40, min_width=120)
         if hasattr(self, 'tab3_joint_storage_toggle_btn'):
             self.tab3_joint_storage_toggle_btn.setText("停止同时存储" if joint_active else "同时存储FIP+eDAS")
-            self._style_action_button(self.tab3_joint_storage_toggle_btn, joint_active, active_color="#b03a2e", idle_color="#2b6cb0")
+            self._style_action_button(self.tab3_joint_storage_toggle_btn, joint_active, min_height=40, min_width=132)
         if hasattr(self, 'data_fip_storage_count_label'):
             self.data_fip_storage_count_label.setText(self._storage_counter_text("FIP存储", self._fip_storage_success_count, self._fip_storage_failure_count))
             self.data_edas_storage_count_label.setText(self._storage_counter_text("eDAS存储", self._edas_storage_success_count, self._edas_storage_failure_count))
