@@ -50,7 +50,7 @@ from config import (
 
 
 class DailyFileHandler(logging.Handler):
-    """Write UTF-8 application logs into one local file per calendar day."""
+    """Write UTF-8 application logs into timestamped files, rolling once per day."""
 
     terminator = "\n"
 
@@ -63,8 +63,8 @@ class DailyFileHandler(logging.Handler):
         self.current_path: Path = self._dated_log_path(datetime.now())
 
     def _dated_log_path(self, stamp: datetime) -> Path:
-        """Insert YYYY-MM-DD before the configured log file extension."""
-        date_text = stamp.strftime("%Y-%m-%d")
+        """Insert YYYY-MM-DD_HH-MM-SS before the configured log file extension."""
+        date_text = stamp.strftime("%Y-%m-%d_%H-%M-%S")
         suffix = self.base_path.suffix or ".log"
         stem = self.base_path.stem if self.base_path.suffix else self.base_path.name
         return self.base_path.with_name(f"{stem}_{date_text}{suffix}")

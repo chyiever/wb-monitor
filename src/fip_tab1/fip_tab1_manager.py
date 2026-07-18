@@ -1625,6 +1625,8 @@ class OptimizedTab1ThreadManager(QObject):
         """设置绘图控件"""
         self.time_plot_widget = time_plot
         self.psd_plot_widget = psd_plot
+        self.time_plotter.set_enabled(time_plot is not None)
+        self.psd_plotter.set_enabled(psd_plot is not None)
 
         # 清空所有现有的曲线避免重复；传入 None 时表示新 View 接管绘图。
         if time_plot:
@@ -1813,8 +1815,10 @@ class OptimizedTab1ThreadManager(QObject):
         if processed_data.comm_count % 50 == 0:
             self.logger.info(f"Distributing processed packet #{processed_data.comm_count}")
 
-        self.time_plotter.add_processed_data(processed_data)
-        self.psd_plotter.add_processed_data(processed_data)
+        if self.time_plot_widget is not None:
+            self.time_plotter.add_processed_data(processed_data)
+        if self.psd_plot_widget is not None:
+            self.psd_plotter.add_processed_data(processed_data)
 
     def _update_time_plot(self, times, values):
         """更新时域绘图 - 线程安全的UI更新"""
@@ -1867,7 +1871,7 @@ class OptimizedTab1ThreadManager(QObject):
     # 控制接口
     def toggle_time_plotting(self, enabled: bool):
         """控制时域绘图"""
-        self.time_plotter.set_enabled(enabled)
+        self.time_plotter.set_enabled(bool(enabled and self.time_plot_widget is not None))
 
         # 如果禁用绘图，清空现有曲线
         if not enabled and self.time_curve and QApplication.instance():
@@ -1875,7 +1879,7 @@ class OptimizedTab1ThreadManager(QObject):
 
     def toggle_psd_plotting(self, enabled: bool):
         """控制PSD绘图"""
-        self.psd_plotter.set_enabled(enabled)
+        self.psd_plotter.set_enabled(bool(enabled and self.psd_plot_widget is not None))
 
         # 如果禁用绘图，清空现有曲线
         if not enabled and self.psd_curve and QApplication.instance():

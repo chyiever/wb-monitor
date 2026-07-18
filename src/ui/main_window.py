@@ -225,7 +225,7 @@ class MainWindow(QMainWindow):
         self._tab3_last_space_time_rect = None
         self._tab3_space_time_levels_locked = True
         self._view_curve_cache: Dict[int, Dict[str, Any]] = {1: {}, 2: {}}
-        self._view_psd_update_interval_seconds = 0.25
+        self._view_psd_update_interval_seconds = 1.0
         self._view_last_psd_update_monotonic = 0.0
         self._view_psd_eps = 1e-24
         self._tab3_colormap_options = [
@@ -528,10 +528,18 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
+        view_splitter = QSplitter(Qt.Vertical)
+        view_splitter.setChildrenCollapsible(False)
+        layout.addWidget(view_splitter)
+        self.view_vertical_splitter = view_splitter
+
         upper_stack = QSplitter(Qt.Vertical)
-        layout.addWidget(upper_stack, stretch=4)
+        upper_stack.setChildrenCollapsible(False)
+        upper_stack.setMinimumHeight(300)
+        view_splitter.addWidget(upper_stack)
 
         curve1_row = QSplitter(Qt.Horizontal)
+        curve1_row.setChildrenCollapsible(False)
         upper_stack.addWidget(curve1_row)
         self.tab3_curve1_plot = pg.PlotWidget()
         self.tab3_curve1_plot.showGrid(x=True, y=True)
@@ -558,6 +566,7 @@ class MainWindow(QMainWindow):
         curve1_row.setSizes([700, 300])
 
         curve2_row = QSplitter(Qt.Horizontal)
+        curve2_row.setChildrenCollapsible(False)
         upper_stack.addWidget(curve2_row)
         self.tab3_curve2_plot = pg.PlotWidget()
         self.tab3_curve2_plot.showGrid(x=True, y=True)
@@ -588,6 +597,7 @@ class MainWindow(QMainWindow):
         self.view_psd_plot = self.view_psd1_plot
 
         tab3_space_time_panel = QWidget()
+        tab3_space_time_panel.setMinimumHeight(280)
         tab3_space_time_layout = QHBoxLayout(tab3_space_time_panel)
         tab3_space_time_layout.setContentsMargins(0, 0, 0, 0)
         tab3_space_time_layout.setSpacing(6)
@@ -603,7 +613,8 @@ class MainWindow(QMainWindow):
         self.tab3_space_time_histogram.setMaximumWidth(120)
         self.tab3_space_time_histogram.setImageItem(self.tab3_space_time_image)
         tab3_space_time_layout.addWidget(self.tab3_space_time_histogram, 0)
-        layout.addWidget(tab3_space_time_panel, stretch=3)
+        view_splitter.addWidget(tab3_space_time_panel)
+        view_splitter.setSizes([420, 360])
         self._apply_tab3_space_time_colormap()
         self._apply_tab3_space_time_levels()
         self._update_view_psd_curves(force=True)
@@ -1212,7 +1223,7 @@ class MainWindow(QMainWindow):
         self.monitoring_active = True
         self._update_data_comm_buttons()
         self.start_monitoring.emit()
-        self.status_bar.showMessage("FIP通信启动中...", 0)
+        self.status_bar.showMessage("FIP通信启动中...", 3000)
 
 
     def _stop_monitoring(self):
@@ -3040,6 +3051,10 @@ class MainWindow(QMainWindow):
             self.view_psd1_curve.setData([], [])
             self.view_psd2_curve.setData([], [])
             return
+        now = time.monotonic()
+        if not force and now - self._view_last_psd_update_monotonic < self._view_psd_update_interval_seconds:
+            return
+        self._view_last_psd_update_monotonic = now
         for curve_index, checkbox_name, curve_name in ((1, 'view_psd1_check', 'view_psd1_curve'), (2, 'view_psd2_check', 'view_psd2_curve')):
             checkbox = getattr(self, checkbox_name, None)
             plot_curve = getattr(self, curve_name, None)
@@ -3121,6 +3136,7 @@ class MainWindow(QMainWindow):
     def _init_status_bar(self):
         """初始化状态栏，含线程健康统计面板（X-01）。"""
         self.status_bar = QStatusBar()
+        self.status_bar.setMinimumHeight(30)
         self.setStatusBar(self.status_bar)
 
         for indicator in (
@@ -3133,12 +3149,13 @@ class MainWindow(QMainWindow):
 
         # 线程健康统计标签（X-01）：展示存储队列积压、丢包数、缺口数等关键指标
         # 由 main.py 的 QTimer 每 2 s 调用 update_thread_stats() 刷新
-        self.thread_stats_label = QLabel("线程统计: 等待启动")
+        self.thread_stats_label = QLabel("线程: 等待启动")
         self.thread_stats_label.setStyleSheet("color: #444; font-size: 11px; padding: 0 8px;")
         self.status_bar.addPermanentWidget(self.thread_stats_label)
 
         # 添加软件版本信息到右侧，包含研究所名称
-        version_label = QLabel("融合型光纤PCCP断丝监测软件 v1.0 - 中国科学院半导体研究所")
+        version_label = QLabel("PCCP v1.0 | 中科院半导体所")
+        version_label.setToolTip("融合型光纤PCCP断丝监测软件 v1.0 - 中国科学院半导体研究所")
         version_label.setStyleSheet("color: #666; font-size: 12px;")
         self.status_bar.addPermanentWidget(version_label)
         self._refresh_comm_lights()
@@ -3159,16 +3176,13 @@ class MainWindow(QMainWindow):
         stor_queue = stor.get("raw_queue_current_size", stor.get("raw_queue_peak", 0))
         stor_fail = stor.get("storage_failure_count", 0)
         stor_saved = stor.get("saved_file_count", 0)
-        text = (
-            f"绘图丢帧:{proc_drop}  缺口:{proc_gap}  "
-            f"存储队列:{stor_queue}  存储失败:{stor_fail}  已存文件:{stor_saved}"
-        )
+        text = f"绘丢:{proc_drop} 缺:{proc_gap} 存队:{stor_queue} 失:{stor_fail} 文件:{stor_saved}"
         # 存储失败时用红色高亮提醒
         color = "#c00" if stor_fail > 0 or proc_drop > 50 else "#444"
         self.thread_stats_label.setStyleSheet(
             f"color: {color}; font-size: 11px; padding: 0 8px;"
         )
-        self.thread_stats_label.setText(f"线程统计: {text}")
+        self.thread_stats_label.setText(f"线程: {text}")
 
     def _setup_connections(self):
         """设置信号连接"""

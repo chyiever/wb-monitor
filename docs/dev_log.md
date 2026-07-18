@@ -365,13 +365,13 @@
 2. 默认日志路径从单一 `logs/pccp_monitor.log` 调整为每日文件：
 
 ```text
-logs/pccp_monitor_YYYY-MM-DD.log
+logs/pccp_monitor_YYYY-MM-DD_HH-MM-SS.log
 ```
 
 3. 若启动参数指定 `--log some/path/debug.log`，实际写入文件会自动变为：
 
 ```text
-some/path/debug_YYYY-MM-DD.log
+some/path/debug_YYYY-MM-DD_HH-MM-SS.log
 ```
 
 4. 软件长时间连续运行跨过午夜时，下一条日志会自动切换到新日期文件，不再一直追加到同一个文件。
@@ -381,5 +381,80 @@ some/path/debug_YYYY-MM-DD.log
 ### 验证
 
 - `python -m py_compile src\main.py` 通过。
-- `DailyFileHandler` 合成写入验证通过，确认生成 `logs\daily_handler_smoke_2026-07-19.log`，且日志内容以日期时间开头。
+- `DailyFileHandler` 合成写入验证通过，确认生成带日期、时、分、秒的日志文件，且日志内容以日期时间开头。
 - 中文自检通过：`src/main.py` 和 `docs/dev_log.md` 未发现替换字符或中文行问号乱码。
+
+## 2026-07-19 01:55:00 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/main.py`、`src/ui/main_window.py`、`src/fip_tab1/fip_tab1_manager.py`、`docs/dev_log.md`
+
+### 日志分析
+
+分析文件：`logs/pccp_monitor_2026-07-19 - 副本.log`
+
+1. 日志时间范围：`2026-07-19 01:19:17` 至 `2026-07-19 01:22:45`。
+2. 日志级别统计：`INFO=164`，`WARNING=25`。
+3. 高频节点：
+   - `TimedomainPlotThread`：`42` 条
+   - `DataProcessingThread`：`33` 条
+   - `PSDCalculator`：`12` 条
+4. `FIP_PROCESS_STATS` 显示处理线程无丢包、无缺口，但处理耗时偏高：
+   - `comm=150`
+   - `processed=151`
+   - `queue_dropped=0`
+   - `gaps=0`
+   - `avg_ms=406.53`
+   - `max_ms=9536.76`
+5. 日志中旧 Tab1 绘图线程仍在后台工作：
+   - `Updating time plot` 出现 `33` 次。
+   - `PSD input/params/output` 各出现 `4` 次。
+   - 单次 PSD 输入长度为 `200000` 点。
+6. 结论：当前卡顿主要不是通信丢包导致，而是 FIP 大包处理、旧 Tab1 后台时域/PSD 绘图计算和新 View PSD 实时计算共同抢占 CPU；其中旧 Tab1 绘图线程已经无可见图件，属于无效后台负载。
+
+### 更新摘要
+
+1. 日志文件名从 `pccp_monitor_YYYY-MM-DD.log` 改为 `pccp_monitor_YYYY-MM-DD_HH-MM-SS.log`。
+2. 若启动参数指定 `--log logs/debug.log`，实际文件名会变为 `logs/debug_YYYY-MM-DD_HH-MM-SS.log`。
+3. 日志仍按自然日滚动；长时间运行跨过午夜时，下一条日志会以新日期和当时的时分秒创建新文件。
+4. 修复状态栏指示灯看不到的问题：
+   - FIP 启动时不再使用无限期 `showMessage(..., 0)`。
+   - 状态栏高度固定为 `30 px`。
+   - 右下角版本标注改为短文本 `PCCP v1.0 | 中科院半导体所`，完整名称放入 tooltip。
+   - 线程统计文字压缩，减少挤占状态栏空间。
+5. Tab1 View 的 Time-Space 区改为可拖拽垂直 splitter：
+   - Curve/PSD 区和 Time-Space 区可手动调整高度。
+   - Time-Space 面板设置 `280 px` 最小高度。
+   - 上方 Curve/PSD 区设置 `300 px` 最小高度，防止两区互相压扁。
+6. 旧 Tab1 时域/PSD 绘图线程在 View 接管图件后自动禁用：
+   - `set_plot_widgets(None, None)` 会关闭旧 `TimedomainPlotThread` 和 `PSDPlotThread`。
+   - `_distribute_processed_data()` 只有在旧图件真实存在时才向旧绘图队列分发数据。
+   - View 的 `时域/PSD ON/OFF` 不再误启用旧绘图线程。
+7. 新 View PSD 计算节流从 `0.25 s` 调整为 `1.0 s`，减少 Welch 计算对 GUI 刷新的影响。
+
+### 验证
+
+1. 编译检查通过：
+
+```text
+python -m py_compile src\main.py src\ui\main_window.py src\fip_tab1\fip_tab1_manager.py
+```
+
+2. 日志文件名检查通过，输出示例：
+
+```text
+pccp_monitor_2026-07-19_01-30-45.log
+```
+
+3. MainWindow 离屏构造检查通过：
+
+```text
+{'splitter': True, 'space_min': 280, 'status_height': 30, 'psd_interval': 1.0}
+```
+
+4. 旧 Tab1 绘图线程休眠验证通过：
+
+```text
+{'time_enabled': False, 'psd_enabled': False, 'time_queue': 0, 'psd_queue': 0}
+```
