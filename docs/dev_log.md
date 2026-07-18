@@ -250,3 +250,27 @@
 - FIP 包形状推导与 PhaseUnwrapper 告警节流合成验证通过，输出 `SYNTHETIC_OK inferred_sample_rate 2000000.0 phase_range_warnings 3`。
 - Tab1 处理线程采样率下传验证通过，输出 `PROCESS_OK raw_rate 20.0 effective_rate 4.0 points 4`。
 - `python tools\validate_tab3_pipeline.py` 通过，输出 `VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve_points=2400`。
+
+
+## 2026-07-18 23:31:56 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/ui/main_window.py`、`src/main.py`、`src/das_tab3/das_tab3_manager.py`、`src/fip_tab1/fip_tab1_manager.py`、`docs/2026-07-18-GUI大改日志.md`、`docs/2026-07-18-FIP和eDAS时间同步与通信检验.md`、`docs/各个tab参数含义与修改说明.md`、`docs/2026-07-17-FIP-eDAS联调问题数量与修复日志.md`、`docs/dev_log.md`
+
+### 更新摘要
+
+1. 按联调需求重组 GUI：新 Tab1 为 `View`，新 Tab2 为 `Data`，旧 Tab2 移为新 Tab3，旧 Tab4 改为 `Setting`。
+2. `View` 合并 FIP/eDAS 绘图：Curve1/Curve2 时域曲线在左，PSD1/PSD2 共轴 dB 图在右，布局比例约 `7:3`。
+3. 新增 Welch PSD 计算、PSD1/PSD2 开关、legend、手动坐标轴范围、自动范围和图件字体设置。
+4. `Data` 集中 FIP/eDAS 通信参数、三种通信启动按钮、通信状态灯、成功/失败/丢包率、同步时间差、三种存储按钮、存储状态灯和存储计数。
+5. FIP/eDAS 收包时按 `comm_count` 记录主机接收时间，实时计算首次、最新和平均同序号包时间差。
+6. FIP/eDAS TCP 错误计入 Data tab 失败次数；存储完成或失败状态计入对应模块存储统计。
+7. 旧 Tab1 绘图线程从可见 View 图件解绑，修复 FIP 启停可能清空或覆盖合并图件的问题。
+8. 新增三份专题文档，并继续补充 FIP-eDAS 联调问题与修复日志。
+
+### 验证
+
+- `python -m py_compile src\ui\main_window.py src\main.py src\das_tab3\das_tab3_manager.py src\fip_tab1\fip_tab1_manager.py` 通过。
+- MainWindow 离屏 GUI 构造通过，tab 顺序为 `['View', 'Data', 'Tab3', 'Setting']`。
+- 合成 `20 Hz` 正弦信号 Welch PSD 验证通过，PSD 峰值显示在 pyqtgraph 对数横轴 `1.3` 附近。

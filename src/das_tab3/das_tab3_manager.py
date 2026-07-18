@@ -61,6 +61,8 @@ class DASTab3Manager(QObject):
         self.server.packet_received.connect(self._handle_raw_packet)
         self.server.connection_status.connect(self.main_window.update_tab3_connection_status)
         self.server.error_occurred.connect(self.main_window.show_tab3_error)
+        if hasattr(self.main_window, 'record_edas_comm_failure'):
+            self.server.error_occurred.connect(lambda _message: self.main_window.record_edas_comm_failure())
         self.server.header_updated.connect(self.main_window.update_tab3_header_status)
         self.server.statistics_updated.connect(self.main_window.update_tab3_packet_statistics)
         self.plot_worker.plot_payload_ready.connect(self.main_window.update_tab3_plot_payload)
@@ -239,6 +241,8 @@ class DASTab3Manager(QObject):
     def _handle_raw_packet(self, raw_packet: DASRawPacket) -> None:
         started = time.perf_counter()
         parsed = self._parse_packet(raw_packet)
+        if hasattr(self.main_window, 'record_edas_packet_receive'):
+            self.main_window.record_edas_packet_receive(parsed.header.comm_count, time.time())
         self.coordinator.update_online_state("das", True)
         self.coordinator.push_das_packet(
             DASSessionPacket(

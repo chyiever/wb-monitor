@@ -18,6 +18,7 @@ Date: 2026-03-11
 import sys
 import logging
 import json
+import time
 import numpy as np
 from pathlib import Path
 from typing import Dict, Any
@@ -338,11 +339,8 @@ class PCCPMonitorApp:
             processors = (self.phase_unwrapper, self.signal_filter, self.downsampler)
             self.tab1_manager = OptimizedTab1ThreadManager(processors, psd_calculator)
 
-            # Set plot widgets
-            self.tab1_manager.set_plot_widgets(
-                self.main_window.time_plot,
-                self.main_window.psd_plot
-            )
+            # View tab owns all visible plots; keep legacy Tab1 plot workers detached.
+            self.tab1_manager.set_plot_widgets(None, None)
 
             # 启动前先同步一次前面板预处理参数，确保处理链路与UI一致
             self._refresh_preprocessing_parameters(source="init")
@@ -398,6 +396,9 @@ class PCCPMonitorApp:
             packet: DataPacket from optimized TCP server
         """
         try:
+            if hasattr(self.main_window, 'record_fip_packet_receive'):
+                self.main_window.record_fip_packet_receive(packet.comm_count, time.time())
+
             # 每 50 包记录一次接收日志，避免高频 I/O 拖慢主线程
             if packet.comm_count % 50 == 0:
                 self.logger.info(
@@ -586,16 +587,11 @@ class PCCPMonitorApp:
             if hasattr(self.main_window, 'get_tab1_fip_settings'):
                 self._update_fip_sensor_settings(self.main_window.get_tab1_fip_settings())
 
-            # 清空绘图控件，确保从干净的状态开始
-            self.main_window.time_plot.clear()
-            self.main_window.psd_plot.clear()
-
-            # 重新绑定绘图曲线引用。
-            # 注意：clear() 会删除已有 PlotDataItem，线程管理器中旧引用会失效。
-            self.tab1_manager.set_plot_widgets(
-                self.main_window.time_plot,
-                self.main_window.psd_plot
-            )
+            # View tab owns Curve1/Curve2/PSD. Detach the legacy Tab1 plot workers so
+            # FIP start/stop cannot clear or overwrite the merged View plots.
+            self.tab1_manager.set_plot_widgets(None, None)
+            if hasattr(self.main_window, 'reset_tab3_views') and not self.das_monitoring_active:
+                self.main_window.reset_tab3_views()
 
             tab2_enabled = self._is_tab2_enabled()
             if self.fip_tab2_manager and tab2_enabled:
@@ -632,9 +628,17 @@ class PCCPMonitorApp:
             # 启动线程统计定时刷新（X-01）
             self._stats_timer.start()
 
+            if hasattr(self.main_window, 'set_fip_monitoring_active'):
+                self.main_window.set_fip_monitoring_active(True)
+
             self.logger.info("Monitoring system started successfully with optimized threads")
 
         except Exception as e:
+            self.fip_monitoring_active = False
+            if hasattr(self.main_window, 'set_fip_monitoring_active'):
+                self.main_window.set_fip_monitoring_active(False)
+            if hasattr(self.main_window, 'record_fip_comm_failure'):
+                self.main_window.record_fip_comm_failure()
             self.logger.error(f"Failed to start monitoring: {e}")
             self._show_error_message("启动失败", f"监测系统启动失败: {e}")
 
@@ -653,12 +657,14 @@ class PCCPMonitorApp:
             if self.tcp_server:
                 self.tcp_server.stop_server()
 
-            # 清空绘图控件
-            self.main_window.time_plot.clear()
-            self.main_window.psd_plot.clear()
+            # View plots remain owned by MainWindow; clear only when eDAS is not using them.
+            if hasattr(self.main_window, 'reset_tab3_views') and not self.das_monitoring_active:
+                self.main_window.reset_tab3_views()
             # 停止线程统计定时刷新（X-01）
             self._stats_timer.stop()
             self.fip_monitoring_active = False
+            if hasattr(self.main_window, 'set_fip_monitoring_active'):
+                self.main_window.set_fip_monitoring_active(False)
             self._maybe_stop_alignment_session()
 
             self.logger.info("Monitoring system stopped")
@@ -732,6 +738,8 @@ class PCCPMonitorApp:
 
     def _handle_tcp_error(self, error_message: str):
         """Handle TCP communication errors."""
+        if hasattr(self.main_window, 'record_fip_comm_failure'):
+            self.main_window.record_fip_comm_failure()
         self.logger.error(f"TCP Error: {error_message}")
         self._show_error_message("通信错误", f"TCP通信出现错误: {error_message}")
 
@@ -872,6 +880,8 @@ class PCCPMonitorApp:
             self.das_monitoring_active = False
             if hasattr(self.main_window, 'set_tab3_monitoring_active'):
                 self.main_window.set_tab3_monitoring_active(False)
+            if hasattr(self.main_window, 'record_edas_comm_failure'):
+                self.main_window.record_edas_comm_failure()
             if hasattr(self.main_window, 'show_tab3_error'):
                 self.main_window.show_tab3_error(f"Failed to start DAS monitoring: {e}")
 

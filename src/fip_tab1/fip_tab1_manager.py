@@ -1626,14 +1626,18 @@ class OptimizedTab1ThreadManager(QObject):
         self.time_plot_widget = time_plot
         self.psd_plot_widget = psd_plot
 
-        # 清空所有现有的曲线避免重复
+        # 清空所有现有的曲线避免重复；传入 None 时表示新 View 接管绘图。
         if time_plot:
             time_plot.clear()  # 清空所有现有项目
             self.time_curve = time_plot.plot(pen='b', name='时域信号')
+        else:
+            self.time_curve = None
 
         if psd_plot:
             psd_plot.clear()  # 清空所有现有项目
             self.psd_curve = psd_plot.plot(pen='r', name='PSD')
+        else:
+            self.psd_curve = None
 
     def _ensure_plot_curves(self):
         """确保绘图曲线对象可用（处理clear()后对象失效的情况）"""
