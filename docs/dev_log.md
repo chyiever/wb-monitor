@@ -352,3 +352,34 @@
 ```text
 {'c1_first': 3.0, 'c2_first': 10.0, 'legacy_first': 10.0, 'c1_len': 20, 'c2_len': 20}
 ```
+
+## 2026-07-19 01:45:00 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/main.py`、`docs/dev_log.md`
+
+### 更新摘要
+
+1. 新增 `DailyFileHandler`，本地运行日志按自然日写入独立 UTF-8 文件。
+2. 默认日志路径从单一 `logs/pccp_monitor.log` 调整为每日文件：
+
+```text
+logs/pccp_monitor_YYYY-MM-DD.log
+```
+
+3. 若启动参数指定 `--log some/path/debug.log`，实际写入文件会自动变为：
+
+```text
+some/path/debug_YYYY-MM-DD.log
+```
+
+4. 软件长时间连续运行跨过午夜时，下一条日志会自动切换到新日期文件，不再一直追加到同一个文件。
+5. 日志时间格式固定为 `YYYY-MM-DD HH:MM:SS`，每条日志都包含日期和时间。
+6. 日志初始化信息补充 `file` 和 `daily_base`，方便从日志头部确认实际写入文件和配置基路径。
+
+### 验证
+
+- `python -m py_compile src\main.py` 通过。
+- `DailyFileHandler` 合成写入验证通过，确认生成 `logs\daily_handler_smoke_2026-07-19.log`，且日志内容以日期时间开头。
+- 中文自检通过：`src/main.py` 和 `docs/dev_log.md` 未发现替换字符或中文行问号乱码。

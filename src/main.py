@@ -20,6 +20,7 @@ import logging
 import json
 import time
 import numpy as np
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 from PyQt5.QtWidgets import QApplication, QMessageBox
@@ -46,6 +47,61 @@ from config import (
     PERFORMANCE_LOG_INTERVAL,
     get_sample_rate_info
 )
+
+
+class DailyFileHandler(logging.Handler):
+    """Write UTF-8 application logs into one local file per calendar day."""
+
+    terminator = "\n"
+
+    def __init__(self, base_path: Path, encoding: str = "utf-8") -> None:
+        super().__init__()
+        self.base_path = Path(base_path)
+        self.encoding = encoding
+        self.stream = None
+        self.current_date = ""
+        self.current_path: Path = self._dated_log_path(datetime.now())
+
+    def _dated_log_path(self, stamp: datetime) -> Path:
+        """Insert YYYY-MM-DD before the configured log file extension."""
+        date_text = stamp.strftime("%Y-%m-%d")
+        suffix = self.base_path.suffix or ".log"
+        stem = self.base_path.stem if self.base_path.suffix else self.base_path.name
+        return self.base_path.with_name(f"{stem}_{date_text}{suffix}")
+
+    def _ensure_stream_for_today(self) -> None:
+        today = datetime.now()
+        date_text = today.strftime("%Y-%m-%d")
+        if self.stream is not None and self.current_date == date_text:
+            return
+        if self.stream is not None:
+            self.stream.close()
+        self.current_date = date_text
+        self.current_path = self._dated_log_path(today)
+        self.current_path.parent.mkdir(parents=True, exist_ok=True)
+        self.stream = open(self.current_path, "a", encoding=self.encoding)
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._ensure_stream_for_today()
+            if self.stream is None:
+                return
+            self.stream.write(self.format(record) + self.terminator)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
+    def flush(self) -> None:
+        if self.stream is not None and not self.stream.closed:
+            self.stream.flush()
+
+    def close(self) -> None:
+        try:
+            if self.stream is not None:
+                self.stream.close()
+        finally:
+            self.stream = None
+            super().close()
 
 
 class PCCPMonitorApp:
@@ -128,19 +184,22 @@ class PCCPMonitorApp:
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
         log_level = logging.DEBUG if debug_enabled else logging.INFO
+        file_handler = DailyFileHandler(log_path, encoding='utf-8')
         logging.basicConfig(
             level=log_level,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
             handlers=[
-                logging.FileHandler(log_path, encoding='utf-8'),
+                file_handler,
                 logging.StreamHandler()
             ],
             force=True,
         )
         logging.getLogger('matplotlib').setLevel(logging.WARNING)
         logging.getLogger(__name__).info(
-            "Logging initialized: level=%s, file=%s",
+            "Logging initialized: level=%s, file=%s, daily_base=%s",
             logging.getLevelName(log_level),
+            file_handler.current_path,
             log_path,
         )
 
