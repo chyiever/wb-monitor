@@ -58,16 +58,38 @@ class DASTCPServer(QObject):
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
-            self.server_socket.bind((self.ip, self.port))
+            bind_ip = self.ip
+            try:
+                self.server_socket.bind((bind_ip, self.port))
+            except OSError as bind_exc:
+                if bind_ip not in ("", "0.0.0.0"):
+                    self.logger.warning(
+                        "DAS bind failed on %s:%s (%s); falling back to 0.0.0.0:%s",
+                        bind_ip,
+                        self.port,
+                        bind_exc,
+                        self.port,
+                    )
+                    bind_ip = "0.0.0.0"
+                    self.server_socket.bind((bind_ip, self.port))
+                else:
+                    raise
             self.server_socket.listen(1)
             self._running = True
             self._server_thread = threading.Thread(target=self._server_loop, daemon=True)
             self._server_thread.start()
-            self.logger.info("DAS TCP server started on %s:%s", self.ip, self.port)
-            self.logger.debug("TAB3_NODE das_tcp.start ip=%s port=%s", self.ip, self.port)
-            self.connection_status.emit(False, f"DAS server started on {self.ip}:{self.port}")
+            self.logger.info("DAS TCP server started on %s:%s", bind_ip, self.port)
+            self.logger.debug("TAB3_NODE das_tcp.start ip=%s bind_ip=%s port=%s", self.ip, bind_ip, self.port)
+            self.connection_status.emit(False, f"DAS server started on {bind_ip}:{self.port}")
             return True
         except Exception as exc:
+            self._running = False
+            if self.server_socket:
+                try:
+                    self.server_socket.close()
+                except OSError:
+                    pass
+                self.server_socket = None
             self.error_occurred.emit(f"Failed to start DAS server: {exc}")
             self.logger.error("Failed to start DAS server: %s", exc)
             return False

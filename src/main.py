@@ -397,7 +397,14 @@ class PCCPMonitorApp:
         """
         try:
             if hasattr(self.main_window, 'record_fip_packet_receive'):
-                self.main_window.record_fip_packet_receive(packet.comm_count, time.time())
+                try:
+                    self.main_window.record_fip_packet_receive(packet.comm_count, time.time())
+                except Exception as sync_exc:
+                    self.logger.warning(
+                        "Failed to update FIP/eDAS receive-time sync UI for FIP packet #%s: %s",
+                        packet.comm_count,
+                        sync_exc,
+                    )
 
             # 每 50 包记录一次接收日志，避免高频 I/O 拖慢主线程
             if packet.comm_count % 50 == 0:

@@ -709,6 +709,9 @@ class MainWindow(QMainWindow):
             value_label.setStyleSheet("font-weight: bold;")
             setattr(self, attr, value_label)
             layout.addWidget(value_label, row, 1)
+        # Compatibility aliases used by the synchronization refresh helpers.
+        self.data_sync_average_delta_label = self.data_sync_avg_delta_label
+        self.data_sync_pair_count_label = self.data_sync_match_count_label
 
         start_row = len(labels) + 1
         layout.addWidget(QLabel("FIP Comm"), start_row, 0)

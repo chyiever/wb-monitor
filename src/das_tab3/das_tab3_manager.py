@@ -242,7 +242,14 @@ class DASTab3Manager(QObject):
         started = time.perf_counter()
         parsed = self._parse_packet(raw_packet)
         if hasattr(self.main_window, 'record_edas_packet_receive'):
-            self.main_window.record_edas_packet_receive(parsed.header.comm_count, time.time())
+            try:
+                self.main_window.record_edas_packet_receive(parsed.header.comm_count, time.time())
+            except Exception as sync_exc:
+                self.logger.warning(
+                    "Failed to update FIP/eDAS receive-time sync UI for DAS packet #%s: %s",
+                    parsed.header.comm_count,
+                    sync_exc,
+                )
         self.coordinator.update_online_state("das", True)
         self.coordinator.push_das_packet(
             DASSessionPacket(
