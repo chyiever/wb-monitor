@@ -139,7 +139,8 @@ class MainWindow(QMainWindow):
             }
             QTabBar::tab {
                 font-size: 16px;
-                padding: 8px 16px;
+                min-width: 128px;
+                padding: 8px 22px;
                 margin: 2px;
             }
             QTabBar::tab:selected {
@@ -235,8 +236,8 @@ class MainWindow(QMainWindow):
 
     def _create_parameter_panel(self) -> QWidget:
         widget = QWidget()
-        widget.setMinimumWidth(430)
-        widget.setMaximumWidth(520)
+        widget.setMinimumWidth(460)
+        widget.setMaximumWidth(560)
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
@@ -250,55 +251,82 @@ class MainWindow(QMainWindow):
         return widget
 
     def _create_view_curve_group(self) -> QGroupBox:
-        group = QGroupBox("曲线选择")
+        group = QGroupBox("曲线与DAS预处理")
         layout = QGridLayout(group)
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(3, 1)
 
         layout.addWidget(QLabel("Curve1"), 0, 0)
         self.tab3_curve1_combo = QComboBox()
-        self.tab3_curve1_combo.addItems(["Off", "DAS Channel", "FIP"])
-        self.tab3_curve1_combo.setCurrentText("DAS Channel")
+        self.tab3_curve1_combo.addItems(["Off", "DAS Channel", "FIP1", "FIP2"])
+        self.tab3_curve1_combo.setCurrentText("FIP1")
         layout.addWidget(self.tab3_curve1_combo, 0, 1)
 
         layout.addWidget(QLabel("Curve2"), 0, 2)
         self.tab3_curve2_combo = QComboBox()
-        self.tab3_curve2_combo.addItems(["Off", "DAS Channel", "FIP"])
-        self.tab3_curve2_combo.setCurrentText("FIP")
+        self.tab3_curve2_combo.addItems(["Off", "DAS Channel", "FIP1", "FIP2"])
+        self.tab3_curve2_combo.setCurrentText("DAS Channel")
         layout.addWidget(self.tab3_curve2_combo, 0, 3)
 
-        layout.addWidget(QLabel("DAS通道"), 1, 0)
-        self.tab3_das_channel_spin = QSpinBox()
-        self.tab3_das_channel_spin.setRange(0, 4000)
-        layout.addWidget(self.tab3_das_channel_spin, 1, 1)
+        layout.addWidget(QLabel("C1 DAS通道"), 1, 0)
+        self.tab3_curve1_das_channel_spin = QSpinBox()
+        self.tab3_curve1_das_channel_spin.setRange(0, 4000)
+        self.tab3_curve1_das_channel_spin.setValue(10)
+        layout.addWidget(self.tab3_curve1_das_channel_spin, 1, 1)
 
-        layout.addWidget(QLabel("显示时长(s)"), 1, 2)
+        layout.addWidget(QLabel("C2 DAS通道"), 1, 2)
+        self.tab3_curve2_das_channel_spin = QSpinBox()
+        self.tab3_curve2_das_channel_spin.setRange(0, 4000)
+        self.tab3_curve2_das_channel_spin.setValue(10)
+        layout.addWidget(self.tab3_curve2_das_channel_spin, 1, 3)
+
+        self.tab3_curve1_filter_enable_check = QCheckBox("C1 DAS带通")
+        self.tab3_curve2_filter_enable_check = QCheckBox("C2 DAS带通")
+        layout.addWidget(self.tab3_curve1_filter_enable_check, 2, 0, 1, 2)
+        layout.addWidget(self.tab3_curve2_filter_enable_check, 2, 2, 1, 2)
+
+        layout.addWidget(QLabel("C1低频(Hz)"), 3, 0)
+        self.tab3_curve1_low_freq_spin = QSpinBox()
+        self.tab3_curve1_low_freq_spin.setRange(1, 500000)
+        self.tab3_curve1_low_freq_spin.setValue(100)
+        layout.addWidget(self.tab3_curve1_low_freq_spin, 3, 1)
+
+        layout.addWidget(QLabel("C1高频(Hz)"), 3, 2)
+        self.tab3_curve1_high_freq_spin = QSpinBox()
+        self.tab3_curve1_high_freq_spin.setRange(2, 500000)
+        self.tab3_curve1_high_freq_spin.setValue(2000)
+        layout.addWidget(self.tab3_curve1_high_freq_spin, 3, 3)
+
+        layout.addWidget(QLabel("C2低频(Hz)"), 4, 0)
+        self.tab3_curve2_low_freq_spin = QSpinBox()
+        self.tab3_curve2_low_freq_spin.setRange(1, 500000)
+        self.tab3_curve2_low_freq_spin.setValue(100)
+        layout.addWidget(self.tab3_curve2_low_freq_spin, 4, 1)
+
+        layout.addWidget(QLabel("C2高频(Hz)"), 4, 2)
+        self.tab3_curve2_high_freq_spin = QSpinBox()
+        self.tab3_curve2_high_freq_spin.setRange(2, 500000)
+        self.tab3_curve2_high_freq_spin.setValue(2000)
+        layout.addWidget(self.tab3_curve2_high_freq_spin, 4, 3)
+
+        layout.addWidget(QLabel("显示时长(s)"), 5, 0)
         self.tab3_display_seconds_spin = QDoubleSpinBox()
         self.tab3_display_seconds_spin.setRange(0.2, 10.0)
         self.tab3_display_seconds_spin.setValue(1.0)
         self.tab3_display_seconds_spin.setDecimals(1)
-        layout.addWidget(self.tab3_display_seconds_spin, 1, 3)
+        layout.addWidget(self.tab3_display_seconds_spin, 5, 1)
 
-        layout.addWidget(QLabel("绘图FIP"), 2, 0)
+        layout.addWidget(QLabel("FIP处理目标"), 5, 2)
         self.fip_plot_sensor_combo = QComboBox()
         self.fip_plot_sensor_combo.addItem("FIP1", 1)
         self.fip_plot_sensor_combo.setEnabled(False)
-        layout.addWidget(self.fip_plot_sensor_combo, 2, 1)
+        layout.addWidget(self.fip_plot_sensor_combo, 5, 3)
 
-        self.tab3_filter_enable_check = QCheckBox("Curve DAS带通")
-        layout.addWidget(self.tab3_filter_enable_check, 2, 2, 1, 2)
-
-        layout.addWidget(QLabel("DAS低频(Hz)"), 3, 0)
-        self.tab3_low_freq_spin = QSpinBox()
-        self.tab3_low_freq_spin.setRange(1, 500000)
-        self.tab3_low_freq_spin.setValue(100)
-        layout.addWidget(self.tab3_low_freq_spin, 3, 1)
-
-        layout.addWidget(QLabel("DAS高频(Hz)"), 3, 2)
-        self.tab3_high_freq_spin = QSpinBox()
-        self.tab3_high_freq_spin.setRange(2, 500000)
-        self.tab3_high_freq_spin.setValue(2000)
-        layout.addWidget(self.tab3_high_freq_spin, 3, 3)
+        # Backward-compatible aliases used by older manager code and saved snapshots.
+        self.tab3_das_channel_spin = self.tab3_curve2_das_channel_spin
+        self.tab3_filter_enable_check = self.tab3_curve2_filter_enable_check
+        self.tab3_low_freq_spin = self.tab3_curve2_low_freq_spin
+        self.tab3_high_freq_spin = self.tab3_curve2_high_freq_spin
         return group
 
     def _create_processing_group(self) -> QGroupBox:
@@ -500,45 +528,64 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        upper_splitter = QSplitter(Qt.Horizontal)
-        layout.addWidget(upper_splitter, stretch=3)
-        curve_stack = QSplitter(Qt.Vertical)
-        upper_splitter.addWidget(curve_stack)
+        upper_stack = QSplitter(Qt.Vertical)
+        layout.addWidget(upper_stack, stretch=4)
 
-        self.tab3_curve1_plot = pg.PlotWidget(title="Curve1")
+        curve1_row = QSplitter(Qt.Horizontal)
+        upper_stack.addWidget(curve1_row)
+        self.tab3_curve1_plot = pg.PlotWidget()
         self.tab3_curve1_plot.showGrid(x=True, y=True)
         self.tab3_curve1_plot.setLabel("bottom", "Time", units="s")
         self.tab3_curve1_plot.setLabel("left", "Amplitude")
-        self.tab3_curve1_das_curve = self.tab3_curve1_plot.plot(pen=pg.mkPen("#1f77b4", width=2), name="Curve1 eDAS")
-        self.tab3_curve1_fip_curve = self.tab3_curve1_plot.plot(pen=pg.mkPen("#d62728", width=2), name="Curve1 FIP")
+        self.tab3_curve1_plot.addLegend(offset=(8, 8))
+        self._configure_interactive_plot(self.tab3_curve1_plot)
+        self.tab3_curve1_das_curve = self.tab3_curve1_plot.plot(pen=pg.mkPen("#1f77b4", width=2))
+        self.tab3_curve1_fip_curve = self.tab3_curve1_plot.plot(pen=pg.mkPen("#d62728", width=2))
         self._configure_tab3_curve_item(self.tab3_curve1_das_curve)
         self._configure_tab3_curve_item(self.tab3_curve1_fip_curve)
-        curve_stack.addWidget(self.tab3_curve1_plot)
+        curve1_row.addWidget(self.tab3_curve1_plot)
 
-        self.tab3_curve2_plot = pg.PlotWidget(title="Curve2")
+        self.view_psd1_plot = pg.PlotWidget()
+        self.view_psd1_plot.showGrid(x=True, y=True)
+        self.view_psd1_plot.setLabel("bottom", "Frequency", units="Hz")
+        self.view_psd1_plot.setLabel("left", "PSD", units="dB")
+        self.view_psd1_plot.setLogMode(x=True, y=False)
+        self.view_psd1_plot.getAxis("bottom").enableAutoSIPrefix(False)
+        self.view_psd1_plot.addLegend(offset=(8, 8))
+        self._configure_interactive_plot(self.view_psd1_plot)
+        self.view_psd1_curve = self.view_psd1_plot.plot(pen=pg.mkPen("#d62728", width=2), name="PSD1")
+        curve1_row.addWidget(self.view_psd1_plot)
+        curve1_row.setSizes([700, 300])
+
+        curve2_row = QSplitter(Qt.Horizontal)
+        upper_stack.addWidget(curve2_row)
+        self.tab3_curve2_plot = pg.PlotWidget()
         self.tab3_curve2_plot.showGrid(x=True, y=True)
         self.tab3_curve2_plot.setLabel("bottom", "Time", units="s")
         self.tab3_curve2_plot.setLabel("left", "Amplitude")
-        self.tab3_curve2_das_curve = self.tab3_curve2_plot.plot(pen=pg.mkPen("#2ca02c", width=2), name="Curve2 eDAS")
-        self.tab3_curve2_fip_curve = self.tab3_curve2_plot.plot(pen=pg.mkPen("#ff7f0e", width=2), name="Curve2 FIP")
+        self.tab3_curve2_plot.addLegend(offset=(8, 8))
+        self._configure_interactive_plot(self.tab3_curve2_plot)
+        self.tab3_curve2_das_curve = self.tab3_curve2_plot.plot(pen=pg.mkPen("#2ca02c", width=2))
+        self.tab3_curve2_fip_curve = self.tab3_curve2_plot.plot(pen=pg.mkPen("#ff7f0e", width=2))
         self._configure_tab3_curve_item(self.tab3_curve2_das_curve)
         self._configure_tab3_curve_item(self.tab3_curve2_fip_curve)
-        curve_stack.addWidget(self.tab3_curve2_plot)
-        curve_stack.setSizes([1, 1])
-        self.time_plot = self.tab3_curve1_plot
+        curve2_row.addWidget(self.tab3_curve2_plot)
 
-        self.psd_plot = pg.PlotWidget(title="PSD1 / PSD2")
-        self.view_psd_plot = self.psd_plot
-        self.psd_plot.showGrid(x=True, y=True)
-        self.psd_plot.setLabel("bottom", "Frequency", units="Hz")
-        self.psd_plot.setLabel("left", "PSD", units="dB")
-        self.psd_plot.setLogMode(x=True, y=False)
-        self.psd_plot.getAxis("bottom").enableAutoSIPrefix(False)
-        self.psd_plot.addLegend(offset=(10, 10))
-        self.view_psd1_curve = self.psd_plot.plot(pen=pg.mkPen("#d62728", width=2), name="PSD1")
-        self.view_psd2_curve = self.psd_plot.plot(pen=pg.mkPen("#1f77b4", width=2), name="PSD2")
-        upper_splitter.addWidget(self.psd_plot)
-        upper_splitter.setSizes([700, 300])
+        self.view_psd2_plot = pg.PlotWidget()
+        self.view_psd2_plot.showGrid(x=True, y=True)
+        self.view_psd2_plot.setLabel("bottom", "Frequency", units="Hz")
+        self.view_psd2_plot.setLabel("left", "PSD", units="dB")
+        self.view_psd2_plot.setLogMode(x=True, y=False)
+        self.view_psd2_plot.getAxis("bottom").enableAutoSIPrefix(False)
+        self.view_psd2_plot.addLegend(offset=(8, 8))
+        self._configure_interactive_plot(self.view_psd2_plot)
+        self.view_psd2_curve = self.view_psd2_plot.plot(pen=pg.mkPen("#1f77b4", width=2), name="PSD2")
+        curve2_row.addWidget(self.view_psd2_plot)
+        curve2_row.setSizes([700, 300])
+        upper_stack.setSizes([1, 1])
+        self.time_plot = self.tab3_curve1_plot
+        self.psd_plot = self.view_psd1_plot
+        self.view_psd_plot = self.view_psd1_plot
 
         tab3_space_time_panel = QWidget()
         tab3_space_time_layout = QHBoxLayout(tab3_space_time_panel)
@@ -547,6 +594,7 @@ class MainWindow(QMainWindow):
         self.tab3_space_time_plot = pg.PlotWidget(title="DAS Space-Time")
         self.tab3_space_time_plot.setLabel("bottom", "Time", units="s")
         self.tab3_space_time_plot.setLabel("left", "Channel")
+        self._configure_interactive_plot(self.tab3_space_time_plot)
         self.tab3_space_time_image = pg.ImageItem(axisOrder="row-major")
         self.tab3_space_time_plot.addItem(self.tab3_space_time_image)
         tab3_space_time_layout.addWidget(self.tab3_space_time_plot, 1)
@@ -555,7 +603,7 @@ class MainWindow(QMainWindow):
         self.tab3_space_time_histogram.setMaximumWidth(120)
         self.tab3_space_time_histogram.setImageItem(self.tab3_space_time_image)
         tab3_space_time_layout.addWidget(self.tab3_space_time_histogram, 0)
-        layout.addWidget(tab3_space_time_panel, stretch=2)
+        layout.addWidget(tab3_space_time_panel, stretch=3)
         self._apply_tab3_space_time_colormap()
         self._apply_tab3_space_time_levels()
         self._update_view_psd_curves(force=True)
@@ -574,14 +622,14 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self._create_data_comm_control_group())
         left_layout.addWidget(self._create_fip_communication_group())
         left_layout.addWidget(self._create_das_communication_group())
+        left_layout.addWidget(self._create_data_comm_status_group())
+        left_layout.addWidget(self._create_data_sync_group())
+        left_layout.addWidget(self._create_config_group())
         left_layout.addStretch()
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setSpacing(10)
-        right_layout.addWidget(self._create_data_comm_status_group())
-        right_layout.addWidget(self._create_data_sync_group())
         right_layout.addWidget(self._create_data_storage_group())
-        right_layout.addWidget(self._create_config_group())
         right_layout.addStretch()
         main_layout.addWidget(left_panel, stretch=1)
         main_layout.addWidget(right_panel, stretch=1)
@@ -690,22 +738,16 @@ class MainWindow(QMainWindow):
             layout.setColumnStretch(column, 1)
         self.data_comm_both_btn = QPushButton("同时启动")
         self.data_comm_both_btn.setCheckable(True)
-        self.data_comm_both_btn.setMinimumHeight(48)
+        self.data_comm_both_btn.setMinimumHeight(44)
         layout.addWidget(self.data_comm_both_btn, 0, 0)
         self.start_stop_btn = QPushButton("启动FIP")
         self.start_stop_btn.setCheckable(True)
-        self.start_stop_btn.setMinimumHeight(48)
+        self.start_stop_btn.setMinimumHeight(44)
         layout.addWidget(self.start_stop_btn, 0, 1)
         self.tab3_start_stop_btn = QPushButton("启动eDAS")
         self.tab3_start_stop_btn.setCheckable(True)
-        self.tab3_start_stop_btn.setMinimumHeight(48)
+        self.tab3_start_stop_btn.setMinimumHeight(44)
         layout.addWidget(self.tab3_start_stop_btn, 0, 2)
-        self.data_fip_comm_light = self._create_status_light()
-        self.data_edas_comm_light = self._create_status_light()
-        layout.addWidget(QLabel("FIP通信"), 1, 0)
-        layout.addWidget(self.data_fip_comm_light, 1, 1)
-        layout.addWidget(QLabel("eDAS通信"), 2, 0)
-        layout.addWidget(self.data_edas_comm_light, 2, 1)
         return group
 
     def _create_data_comm_status_group(self) -> QGroupBox:
@@ -780,73 +822,68 @@ class MainWindow(QMainWindow):
             layout.setColumnStretch(column, 1)
         self.tab3_joint_storage_toggle_btn = QPushButton("同时存储: OFF")
         self.tab3_joint_storage_toggle_btn.setCheckable(True)
-        self.tab3_joint_storage_toggle_btn.setMinimumHeight(42)
+        self.tab3_joint_storage_toggle_btn.setMinimumHeight(44)
         layout.addWidget(self.tab3_joint_storage_toggle_btn, 0, 0, 1, 2)
         self.phase_storage_check = QPushButton("FIP存储: OFF")
         self.phase_storage_check.setCheckable(True)
-        self.phase_storage_check.setMinimumHeight(42)
+        self.phase_storage_check.setMinimumHeight(44)
         layout.addWidget(self.phase_storage_check, 0, 2, 1, 2)
         self.tab3_edas_storage_toggle_btn = QPushButton("eDAS存储: OFF")
         self.tab3_edas_storage_toggle_btn.setCheckable(True)
-        self.tab3_edas_storage_toggle_btn.setMinimumHeight(42)
+        self.tab3_edas_storage_toggle_btn.setMinimumHeight(44)
         layout.addWidget(self.tab3_edas_storage_toggle_btn, 0, 4, 1, 2)
         self.tab3_storage_toggle_btn = self.tab3_joint_storage_toggle_btn
-        self.data_fip_storage_light = self._create_status_light()
-        self.data_edas_storage_light = self._create_status_light()
-        layout.addWidget(QLabel("FIP灯"), 1, 0)
-        layout.addWidget(self.data_fip_storage_light, 1, 1)
-        layout.addWidget(QLabel("eDAS灯"), 1, 2)
-        layout.addWidget(self.data_edas_storage_light, 1, 3)
+
+        layout.addWidget(QLabel("联合路径"), 1, 0)
+        self.tab3_storage_path_edit = QLineEdit("D:/PCCP/FIPeDASDATA")
+        layout.addWidget(self.tab3_storage_path_edit, 1, 1, 1, 5)
         layout.addWidget(QLabel("FIP路径"), 2, 0)
         self.storage_path_edit = QLineEdit("D:/PCCP/FIPdata")
         layout.addWidget(self.storage_path_edit, 2, 1, 1, 5)
-        layout.addWidget(QLabel("联合路径"), 3, 0)
-        self.tab3_storage_path_edit = QLineEdit("D:/PCCP/FIPeDASDATA")
-        layout.addWidget(self.tab3_storage_path_edit, 3, 1, 1, 5)
-        layout.addWidget(QLabel("eDAS路径"), 4, 0)
+        layout.addWidget(QLabel("eDAS路径"), 3, 0)
         self.tab3_edas_storage_path_edit = QLineEdit("D:/PCCP/eDASDATA")
-        layout.addWidget(self.tab3_edas_storage_path_edit, 4, 1, 1, 5)
-        layout.addWidget(QLabel("FIP间隔(s)"), 5, 0)
+        layout.addWidget(self.tab3_edas_storage_path_edit, 3, 1, 1, 5)
+        layout.addWidget(QLabel("FIP间隔(s)"), 4, 0)
         self.storage_interval_spin = QSpinBox()
         self.storage_interval_spin.setRange(10, 300)
         self.storage_interval_spin.setValue(10)
-        layout.addWidget(self.storage_interval_spin, 5, 1)
-        layout.addWidget(QLabel("联合间隔(s)"), 5, 2)
+        layout.addWidget(self.storage_interval_spin, 4, 1)
+        layout.addWidget(QLabel("联合间隔(s)"), 4, 2)
         self.tab3_storage_interval_spin = QDoubleSpinBox()
         self.tab3_storage_interval_spin.setRange(1.0, 60.0)
         self.tab3_storage_interval_spin.setValue(10.0)
         self.tab3_storage_interval_spin.setDecimals(1)
-        layout.addWidget(self.tab3_storage_interval_spin, 5, 3)
-        layout.addWidget(QLabel("缓存(s)"), 5, 4)
+        layout.addWidget(self.tab3_storage_interval_spin, 4, 3)
+        layout.addWidget(QLabel("缓存(s)"), 4, 4)
         self.tab3_cache_seconds_spin = QDoubleSpinBox()
         self.tab3_cache_seconds_spin.setRange(5.0, 120.0)
         self.tab3_cache_seconds_spin.setValue(10.0)
         self.tab3_cache_seconds_spin.setDecimals(1)
-        layout.addWidget(self.tab3_cache_seconds_spin, 5, 5)
-        layout.addWidget(QLabel("eDAS块/文件"), 6, 0)
+        layout.addWidget(self.tab3_cache_seconds_spin, 4, 5)
+        layout.addWidget(QLabel("eDAS块/文件"), 5, 0)
         self.tab3_edas_blocks_per_file_spin = QSpinBox()
         self.tab3_edas_blocks_per_file_spin.setRange(1, 100000)
         self.tab3_edas_blocks_per_file_spin.setValue(50)
-        layout.addWidget(self.tab3_edas_blocks_per_file_spin, 6, 1)
-        layout.addWidget(QLabel("eDAS队列"), 6, 2)
+        layout.addWidget(self.tab3_edas_blocks_per_file_spin, 5, 1)
+        layout.addWidget(QLabel("eDAS队列"), 5, 2)
         self.tab3_edas_queue_packets_spin = QSpinBox()
         self.tab3_edas_queue_packets_spin.setRange(1, 4096)
         self.tab3_edas_queue_packets_spin.setValue(200)
-        layout.addWidget(self.tab3_edas_queue_packets_spin, 6, 3)
-        layout.addWidget(QLabel("FIP成功/失败"), 7, 0)
+        layout.addWidget(self.tab3_edas_queue_packets_spin, 5, 3)
+        layout.addWidget(QLabel("FIP成功/失败"), 6, 0)
         self.data_fip_storage_count_label = QLabel("0 / 0")
-        layout.addWidget(self.data_fip_storage_count_label, 7, 1)
-        layout.addWidget(QLabel("eDAS成功/失败"), 7, 2)
+        layout.addWidget(self.data_fip_storage_count_label, 6, 1, 1, 2)
+        layout.addWidget(QLabel("eDAS成功/失败"), 6, 3)
         self.data_edas_storage_count_label = QLabel("0 / 0")
-        layout.addWidget(self.data_edas_storage_count_label, 7, 3)
-        layout.addWidget(QLabel("联合Last"), 8, 0)
+        layout.addWidget(self.data_edas_storage_count_label, 6, 4, 1, 2)
+        layout.addWidget(QLabel("联合Last"), 7, 0)
         self.tab3_last_storage_label = QLabel("-")
         self.tab3_last_storage_label.setWordWrap(False)
-        layout.addWidget(self.tab3_last_storage_label, 8, 1, 1, 5)
-        layout.addWidget(QLabel("eDAS Last"), 9, 0)
+        layout.addWidget(self.tab3_last_storage_label, 7, 1, 1, 5)
+        layout.addWidget(QLabel("eDAS Last"), 8, 0)
         self.tab3_edas_last_storage_label = QLabel("-")
         self.tab3_edas_last_storage_label.setWordWrap(False)
-        layout.addWidget(self.tab3_edas_last_storage_label, 9, 1, 1, 5)
+        layout.addWidget(self.tab3_edas_last_storage_label, 8, 1, 1, 5)
         return group
 
     def _create_config_group(self) -> QGroupBox:
@@ -872,6 +909,21 @@ class MainWindow(QMainWindow):
         colors = {"gray": "#9aa0a6", "green": "#2e8b57", "red": "#d9534f"}
         color = colors.get(color_name, colors["gray"])
         light.setStyleSheet(f"background-color: {color}; border-radius: 9px; border: 1px solid #666;")
+
+    def _create_status_bar_indicator(self, title: str, light_attr: str, label_attr: str) -> QWidget:
+        """Build one compact left-aligned module indicator for the status bar."""
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(6, 0, 6, 0)
+        layout.setSpacing(5)
+        light = self._create_status_light()
+        label = QLabel(f"{title}: 成功 0")
+        label.setStyleSheet("color: #394150; font-size: 11px;")
+        setattr(self, light_attr, light)
+        setattr(self, label_attr, label)
+        layout.addWidget(light)
+        layout.addWidget(label)
+        return widget
 
     def _create_tab3(self):
         # Old Tab2 signal detection is now the third tab and remains off by default.
@@ -1286,15 +1338,17 @@ class MainWindow(QMainWindow):
     def _update_tab3_fip_curve_options(self, sensor_count: int):
         if not hasattr(self, 'tab3_curve1_combo') or not hasattr(self, 'tab3_curve2_combo'):
             return
-        options = ["Off", "DAS Channel", "FIP"] if sensor_count == 1 else ["Off", "DAS Channel", "FIP1", "FIP2"]
-        for combo in (self.tab3_curve1_combo, self.tab3_curve2_combo):
+        options = ["Off", "DAS Channel", "FIP1"]
+        if sensor_count == 2:
+            options.append("FIP2")
+        for combo, default_value in ((self.tab3_curve1_combo, "FIP1"), (self.tab3_curve2_combo, "DAS Channel")):
             current = combo.currentText()
-            if sensor_count == 2 and current == "FIP":
+            if current == "FIP":
                 current = "FIP1"
-            elif sensor_count == 1 and current in ("FIP1", "FIP2"):
-                current = "FIP"
+            elif sensor_count == 1 and current == "FIP2":
+                current = "FIP1"
             if current not in options:
-                current = "DAS Channel"
+                current = default_value
 
             combo.blockSignals(True)
             combo.clear()
@@ -1495,6 +1549,10 @@ class MainWindow(QMainWindow):
         finally:
             combo.blockSignals(False)
 
+    def _normalize_view_curve_source(self, value: Any) -> Any:
+        """Map legacy View curve source names to the current FIP1/FIP2 labels."""
+        return "FIP1" if value == "FIP" else value
+
     def _restore_fip_settings(self, config: Dict[str, Any]) -> None:
         communication = config.get("communication", {})
         self._set_line_text(getattr(self, "ip_edit", None), communication.get("ip"))
@@ -1588,13 +1646,21 @@ class MainWindow(QMainWindow):
         self._set_line_text(getattr(self, "tab3_ip_edit", None), communication.get("ip"))
         self._set_spin_value(getattr(self, "tab3_port_spin", None), communication.get("port"))
         plot = tab3.get("plot", {})
-        self._set_combo_value(getattr(self, "tab3_curve1_combo", None), plot.get("curve1_type"))
-        self._set_combo_value(getattr(self, "tab3_curve2_combo", None), plot.get("curve2_type"))
-        self._set_spin_value(getattr(self, "tab3_das_channel_spin", None), plot.get("das_channel"))
+        self._set_combo_value(getattr(self, "tab3_curve1_combo", None), self._normalize_view_curve_source(plot.get("curve1_type")))
+        self._set_combo_value(getattr(self, "tab3_curve2_combo", None), self._normalize_view_curve_source(plot.get("curve2_type")))
+        legacy_das_channel = plot.get("das_channel")
+        self._set_spin_value(getattr(self, "tab3_curve1_das_channel_spin", None), plot.get("curve1_das_channel", legacy_das_channel))
+        self._set_spin_value(getattr(self, "tab3_curve2_das_channel_spin", None), plot.get("curve2_das_channel", legacy_das_channel))
         self._set_spin_value(getattr(self, "tab3_display_seconds_spin", None), plot.get("display_seconds"))
-        self._set_checked(getattr(self, "tab3_filter_enable_check", None), plot.get("apply_filter"))
-        self._set_spin_value(getattr(self, "tab3_low_freq_spin", None), plot.get("low_hz"))
-        self._set_spin_value(getattr(self, "tab3_high_freq_spin", None), plot.get("high_hz"))
+        legacy_apply_filter = plot.get("apply_filter")
+        legacy_low_hz = plot.get("low_hz")
+        legacy_high_hz = plot.get("high_hz")
+        self._set_checked(getattr(self, "tab3_curve1_filter_enable_check", None), plot.get("curve1_apply_filter", legacy_apply_filter))
+        self._set_spin_value(getattr(self, "tab3_curve1_low_freq_spin", None), plot.get("curve1_low_hz", legacy_low_hz))
+        self._set_spin_value(getattr(self, "tab3_curve1_high_freq_spin", None), plot.get("curve1_high_hz", legacy_high_hz))
+        self._set_checked(getattr(self, "tab3_curve2_filter_enable_check", None), plot.get("curve2_apply_filter", legacy_apply_filter))
+        self._set_spin_value(getattr(self, "tab3_curve2_low_freq_spin", None), plot.get("curve2_low_hz", legacy_low_hz))
+        self._set_spin_value(getattr(self, "tab3_curve2_high_freq_spin", None), plot.get("curve2_high_hz", legacy_high_hz))
         self._set_spin_value(getattr(self, "tab3_channel_start_spin", None), plot.get("channel_start"))
         self._set_spin_value(getattr(self, "tab3_channel_end_spin", None), plot.get("channel_end"))
         self._set_spin_value(getattr(self, "tab3_time_downsample_spin", None), plot.get("time_downsample"))
@@ -1684,8 +1750,12 @@ class MainWindow(QMainWindow):
             self.tab2_overlap_spin, self.tab2_plot_duration_spin, self.tab2_trigger_storage_check,
             self.tab2_pre_trigger_spin, self.tab2_post_trigger_spin, self.tab2_storage_path_edit,
             self.tab3_ip_edit, self.tab3_port_spin, self.tab3_curve1_combo, self.tab3_curve2_combo,
-            self.tab3_das_channel_spin, self.tab3_display_seconds_spin, self.tab3_filter_enable_check,
-            self.tab3_low_freq_spin, self.tab3_high_freq_spin, self.tab3_channel_start_spin,
+            self.tab3_curve1_das_channel_spin, self.tab3_curve2_das_channel_spin,
+            self.tab3_display_seconds_spin,
+            self.tab3_curve1_filter_enable_check, self.tab3_curve2_filter_enable_check,
+            self.tab3_curve1_low_freq_spin, self.tab3_curve1_high_freq_spin,
+            self.tab3_curve2_low_freq_spin, self.tab3_curve2_high_freq_spin,
+            self.tab3_channel_start_spin,
             self.tab3_channel_end_spin, self.tab3_time_downsample_spin, self.tab3_space_downsample_spin,
             self.tab3_colormap_combo, self.tab3_vmin_spin, self.tab3_vmax_spin,
             self.tab3_joint_storage_toggle_btn, self.tab3_storage_path_edit,
@@ -1745,9 +1815,9 @@ class MainWindow(QMainWindow):
         self.packet_count_label.setText(str(packets_received))
         self.loss_rate_label.setText(f"{loss_rate:.2f}%")
         if hasattr(self, 'data_fip_success_label'):
-            self.data_fip_success_label.setText(f"FIP成功次数: {packets_received}")
-            self.data_fip_failure_label.setText(f"FIP失败次数: {self._fip_comm_failure_count}")
-            self.data_fip_loss_rate_label.setText(f"FIP丢包率: {loss_rate:.2f}%")
+            self.data_fip_success_label.setText(str(packets_received))
+            self.data_fip_failure_label.setText(str(self._fip_comm_failure_count))
+            self.data_fip_loss_rate_label.setText(f"{loss_rate:.2f}%")
         self._refresh_comm_lights()
 
     def update_feature_displays(self, features: Dict[str, Dict[str, Any]]):
@@ -1838,6 +1908,10 @@ class MainWindow(QMainWindow):
 
     def get_tab3_settings(self) -> Dict[str, Any]:
         """Return the current Tab3 DAS settings."""
+        curve1_das_channel = self.tab3_curve1_das_channel_spin.value()
+        curve2_das_channel = self.tab3_curve2_das_channel_spin.value()
+        curve1_filter_enabled = self.tab3_curve1_filter_enable_check.isChecked()
+        curve2_filter_enabled = self.tab3_curve2_filter_enable_check.isChecked()
         return {
             "communication": {
                 "ip": self.tab3_ip_edit.text(),
@@ -1846,11 +1920,19 @@ class MainWindow(QMainWindow):
             "plot": {
                 "curve1_type": self.tab3_curve1_combo.currentText(),
                 "curve2_type": self.tab3_curve2_combo.currentText(),
-                "das_channel": self.tab3_das_channel_spin.value(),
+                "curve1_das_channel": curve1_das_channel,
+                "curve2_das_channel": curve2_das_channel,
+                "das_channel": curve2_das_channel,
                 "display_seconds": self.tab3_display_seconds_spin.value(),
-                "apply_filter": self.tab3_filter_enable_check.isChecked(),
-                "low_hz": self.tab3_low_freq_spin.value(),
-                "high_hz": self.tab3_high_freq_spin.value(),
+                "curve1_apply_filter": curve1_filter_enabled,
+                "curve1_low_hz": self.tab3_curve1_low_freq_spin.value(),
+                "curve1_high_hz": self.tab3_curve1_high_freq_spin.value(),
+                "curve2_apply_filter": curve2_filter_enabled,
+                "curve2_low_hz": self.tab3_curve2_low_freq_spin.value(),
+                "curve2_high_hz": self.tab3_curve2_high_freq_spin.value(),
+                "apply_filter": curve2_filter_enabled,
+                "low_hz": self.tab3_curve2_low_freq_spin.value(),
+                "high_hz": self.tab3_curve2_high_freq_spin.value(),
                 "channel_start": self.tab3_channel_start_spin.value(),
                 "channel_end": self.tab3_channel_end_spin.value(),
                 "time_downsample": self.tab3_time_downsample_spin.value(),
@@ -1906,9 +1988,9 @@ class MainWindow(QMainWindow):
         self.tab3_packet_count_label.setText(str(packets_received))
         self.tab3_missing_packet_label.setText(str(missing_packets))
         if hasattr(self, 'data_edas_success_label'):
-            self.data_edas_success_label.setText(f"eDAS成功次数: {packets_received}")
-            self.data_edas_failure_label.setText(f"eDAS失败次数: {self._edas_comm_failure_count}")
-            self.data_edas_loss_rate_label.setText(f"eDAS丢包率: {loss_rate:.2f}%")
+            self.data_edas_success_label.setText(str(packets_received))
+            self.data_edas_failure_label.setText(str(self._edas_comm_failure_count))
+            self.data_edas_loss_rate_label.setText(f"{loss_rate:.2f}%")
         self._refresh_comm_lights()
 
     def update_tab3_alignment_status(self, payload: Dict[str, Any]):
@@ -2056,10 +2138,12 @@ class MainWindow(QMainWindow):
         self._tab3_last_das_plot_monotonic = now
         started = time.perf_counter()
 
-        das_times = payload.get("das_curve_time", [])
-        das_values = payload.get("das_curve_values", [])
-        self._render_tab3_curve(self.tab3_curve1_das_curve, self.tab3_curve1_combo.currentText(), das_times, das_values, "DAS Channel")
-        self._render_tab3_curve(self.tab3_curve2_das_curve, self.tab3_curve2_combo.currentText(), das_times, das_values, "DAS Channel")
+        das_times1 = payload.get("curve1_das_time", payload.get("das_curve_time", []))
+        das_values1 = payload.get("curve1_das_values", payload.get("das_curve_values", []))
+        das_times2 = payload.get("curve2_das_time", payload.get("das_curve_time", []))
+        das_values2 = payload.get("curve2_das_values", payload.get("das_curve_values", []))
+        self._render_tab3_curve(self.tab3_curve1_das_curve, self.tab3_curve1_combo.currentText(), das_times1, das_values1, "DAS Channel")
+        self._render_tab3_curve(self.tab3_curve2_das_curve, self.tab3_curve2_combo.currentText(), das_times2, das_values2, "DAS Channel")
 
         matrix = payload.get("space_time_matrix")
         x_axis = payload.get("space_time_x")
@@ -2095,7 +2179,10 @@ class MainWindow(QMainWindow):
         self._tab3_logger.debug(
             "TAB3_NODE ui.das_payload comm=%s curve_points=%d matrix_shape=%s elapsed_ms=%.2f",
             comm_count,
-            len(das_values) if hasattr(das_values, "__len__") else 0,
+            max(
+                len(das_values1) if hasattr(das_values1, "__len__") else 0,
+                len(das_values2) if hasattr(das_values2, "__len__") else 0,
+            ),
             tuple(matrix.shape),
             elapsed_ms,
         )
@@ -2114,6 +2201,13 @@ class MainWindow(QMainWindow):
         self.tab3_curve1_fip_curve.setData([], [])
         self.tab3_curve2_das_curve.setData([], [])
         self.tab3_curve2_fip_curve.setData([], [])
+        for curve_item in (
+            self.tab3_curve1_das_curve,
+            self.tab3_curve1_fip_curve,
+            self.tab3_curve2_das_curve,
+            self.tab3_curve2_fip_curve,
+        ):
+            self._set_curve_legend_name(curve_item, None)
         if hasattr(self, 'view_psd1_curve'):
             self.view_psd1_curve.setData([], [])
             self.view_psd2_curve.setData([], [])
@@ -2388,6 +2482,58 @@ class MainWindow(QMainWindow):
         if hasattr(curve_item, "setSkipFiniteCheck"):
             curve_item.setSkipFiniteCheck(True)
 
+    def _configure_interactive_plot(self, plot: pg.PlotWidget) -> None:
+        """Enable pan/zoom tools and left-drag rectangle zoom on a pyqtgraph plot."""
+        if plot is None:
+            return
+        try:
+            view_box = plot.getViewBox()
+            view_box.setMouseEnabled(x=True, y=True)
+            view_box.setMouseMode(pg.ViewBox.RectMode)
+            plot.setMenuEnabled(True)
+            if hasattr(plot, "showButtons"):
+                plot.showButtons()
+        except Exception as exc:
+            self._tab3_logger.debug("TAB3_NODE ui.plot_interaction_setup_failed %s", exc)
+
+    def _plot_for_curve_item(self, curve_item) -> Optional[pg.PlotWidget]:
+        if curve_item in (getattr(self, 'tab3_curve1_das_curve', None), getattr(self, 'tab3_curve1_fip_curve', None)):
+            return getattr(self, 'tab3_curve1_plot', None)
+        if curve_item in (getattr(self, 'tab3_curve2_das_curve', None), getattr(self, 'tab3_curve2_fip_curve', None)):
+            return getattr(self, 'tab3_curve2_plot', None)
+        return None
+
+    def _legend_name_for_curve(self, curve_index: int, curve_mode: str) -> str:
+        """Return the active legend text for one View time-domain curve."""
+        if curve_mode == "DAS Channel":
+            spin = getattr(self, f"tab3_curve{curve_index}_das_channel_spin", None)
+            channel = int(spin.value()) if spin is not None else 0
+            return f"eDAS ch={channel}"
+        if curve_mode in ("FIP", "FIP1"):
+            return "FIP1"
+        if curve_mode == "FIP2":
+            return "FIP2"
+        return str(curve_mode or "")
+
+    def _set_curve_legend_name(self, curve_item, legend_name: Optional[str]) -> None:
+        """Keep only the currently visible curve item in each time-domain legend."""
+        plot = self._plot_for_curve_item(curve_item)
+        legend = plot.plotItem.legend if plot is not None else None
+        previous_name = getattr(curve_item, "_view_legend_name", None)
+        if legend is None:
+            return
+        if previous_name and previous_name != legend_name:
+            try:
+                legend.removeItem(previous_name)
+            except Exception:
+                pass
+        if legend_name and previous_name != legend_name:
+            try:
+                legend.addItem(curve_item, legend_name)
+            except Exception:
+                pass
+        setattr(curve_item, "_view_legend_name", legend_name)
+
     def _downsample_tab3_curve(self, times, values) -> Tuple[np.ndarray, np.ndarray]:
         """Bound one UI curve to a fixed point budget before setData."""
         values_arr = np.asarray(values)
@@ -2410,17 +2556,23 @@ class MainWindow(QMainWindow):
             if getattr(curve_item, "_tab3_has_data", False):
                 curve_item.setData([], [])
                 setattr(curve_item, "_tab3_has_data", False)
+            self._set_curve_legend_name(curve_item, None)
             return
         plot_times, plot_values = self._downsample_tab3_curve(times, values)
         if plot_values.size == 0:
             if getattr(curve_item, "_tab3_has_data", False):
                 curve_item.setData([], [])
                 setattr(curve_item, "_tab3_has_data", False)
+            self._set_curve_legend_name(curve_item, None)
             self._cache_view_curve_data(curve_item, curve_mode, [], [])
             self._update_view_psd_curves()
             return
         curve_item.setData(plot_times, plot_values)
         setattr(curve_item, "_tab3_has_data", True)
+        self._set_curve_legend_name(
+            curve_item,
+            self._legend_name_for_curve(self._curve_index_for_item(curve_item), curve_mode),
+        )
         self._cache_view_curve_data(curve_item, curve_mode, plot_times, plot_values)
         self._update_view_psd_curves()
 
@@ -2465,11 +2617,13 @@ class MainWindow(QMainWindow):
 
 
     def _toggle_psd_plot(self, enabled: bool):
-        # Toggle the combined PSD pane and recompute when it is re-enabled.
+        # Toggle both PSD panes and recompute when they are re-enabled.
         if hasattr(self, 'psd_plot_toggled'):
             self.psd_plot_toggled.emit(enabled)
-        if hasattr(self, 'view_psd_plot'):
-            self.view_psd_plot.setVisible(enabled)
+        for plot_name in ('view_psd1_plot', 'view_psd2_plot'):
+            plot = getattr(self, plot_name, None)
+            if plot is not None:
+                plot.setVisible(enabled)
         self.psd_plot_btn.setText("PSD ON" if enabled else "PSD OFF")
         self._style_toggle_button(self.psd_plot_btn, enabled, min_width=96)
         self._update_view_psd_curves(force=True)
@@ -2626,19 +2780,23 @@ class MainWindow(QMainWindow):
 
     def _refresh_comm_lights(self) -> None:
         # Gray means idle, red means started without confirmed data, green means a successful path exists.
+        fip_success = self._label_int_value(getattr(self, 'data_fip_success_label', None))
+        edas_success = self._label_int_value(getattr(self, 'data_edas_success_label', None))
+        if hasattr(self, 'status_fip_comm_count_label'):
+            self.status_fip_comm_count_label.setText(f"FIP通信: 成功 {fip_success}")
+        if hasattr(self, 'status_edas_comm_count_label'):
+            self.status_edas_comm_count_label.setText(f"eDAS通信: 成功 {edas_success}")
         if hasattr(self, 'data_fip_comm_light'):
-            fip_success = self._label_int_value(getattr(self, 'data_fip_success_label', None)) > 0
             if not self.monitoring_active:
                 self._set_status_light(self.data_fip_comm_light, 'gray')
-            elif fip_success or self._is_connected_text(getattr(self, 'conn_status_label', None)):
+            elif fip_success > 0 or self._is_connected_text(getattr(self, 'conn_status_label', None)):
                 self._set_status_light(self.data_fip_comm_light, 'green')
             else:
                 self._set_status_light(self.data_fip_comm_light, 'red')
         if hasattr(self, 'data_edas_comm_light'):
-            edas_success = self._label_int_value(getattr(self, 'data_edas_success_label', None)) > 0
             if not self._edas_monitoring_active:
                 self._set_status_light(self.data_edas_comm_light, 'gray')
-            elif edas_success or self._is_connected_text(getattr(self, 'tab3_conn_status_label', None)):
+            elif edas_success > 0 or self._is_connected_text(getattr(self, 'tab3_conn_status_label', None)):
                 self._set_status_light(self.data_edas_comm_light, 'green')
             else:
                 self._set_status_light(self.data_edas_comm_light, 'red')
@@ -2651,19 +2809,19 @@ class MainWindow(QMainWindow):
             self.data_comm_both_btn.setChecked(both_active)
             self.data_comm_both_btn.setText("停止同时通信" if both_active else "同时启动FIP+eDAS")
             self.data_comm_both_btn.blockSignals(False)
-            self._style_action_button(self.data_comm_both_btn, both_active, min_height=40, min_width=132)
+            self._style_action_button(self.data_comm_both_btn, both_active, min_height=44, min_width=132)
         if hasattr(self, 'start_stop_btn'):
             self.start_stop_btn.blockSignals(True)
             self.start_stop_btn.setChecked(self.monitoring_active)
             self.start_stop_btn.setText("停止FIP通信" if self.monitoring_active else "启动FIP通信")
             self.start_stop_btn.blockSignals(False)
-            self._style_action_button(self.start_stop_btn, self.monitoring_active)
+            self._style_action_button(self.start_stop_btn, self.monitoring_active, min_height=44, min_width=120)
         if hasattr(self, 'tab3_start_stop_btn'):
             self.tab3_start_stop_btn.blockSignals(True)
             self.tab3_start_stop_btn.setChecked(self._edas_monitoring_active)
             self.tab3_start_stop_btn.setText("停止eDAS通信" if self._edas_monitoring_active else "启动eDAS通信")
             self.tab3_start_stop_btn.blockSignals(False)
-            self._style_action_button(self.tab3_start_stop_btn, self._edas_monitoring_active)
+            self._style_action_button(self.tab3_start_stop_btn, self._edas_monitoring_active, min_height=44, min_width=120)
         self._refresh_comm_lights()
 
 
@@ -2702,13 +2860,13 @@ class MainWindow(QMainWindow):
     def record_fip_comm_failure(self) -> None:
         self._fip_comm_failure_count += 1
         if hasattr(self, 'data_fip_failure_label'):
-            self.data_fip_failure_label.setText(f"FIP失败次数: {self._fip_comm_failure_count}")
+            self.data_fip_failure_label.setText(str(self._fip_comm_failure_count))
         self._refresh_comm_lights()
 
     def record_edas_comm_failure(self) -> None:
         self._edas_comm_failure_count += 1
         if hasattr(self, 'data_edas_failure_label'):
-            self.data_edas_failure_label.setText(f"eDAS失败次数: {self._edas_comm_failure_count}")
+            self.data_edas_failure_label.setText(str(self._edas_comm_failure_count))
         self._refresh_comm_lights()
 
     def _reset_sync_tracking(self) -> None:
@@ -2785,16 +2943,20 @@ class MainWindow(QMainWindow):
         joint_active = bool(hasattr(self, 'tab3_joint_storage_toggle_btn') and self.tab3_joint_storage_toggle_btn.isChecked())
         if hasattr(self, 'phase_storage_check'):
             self.phase_storage_check.setText("FIP存储: ON" if fip_active else "FIP存储: OFF")
-            self._style_action_button(self.phase_storage_check, fip_active, min_height=40, min_width=120)
+            self._style_action_button(self.phase_storage_check, fip_active, min_height=44, min_width=120)
         if hasattr(self, 'tab3_edas_storage_toggle_btn'):
             self.tab3_edas_storage_toggle_btn.setText("eDAS存储: ON" if edas_active else "eDAS存储: OFF")
-            self._style_action_button(self.tab3_edas_storage_toggle_btn, edas_active, min_height=40, min_width=120)
+            self._style_action_button(self.tab3_edas_storage_toggle_btn, edas_active, min_height=44, min_width=120)
         if hasattr(self, 'tab3_joint_storage_toggle_btn'):
             self.tab3_joint_storage_toggle_btn.setText("停止同时存储" if joint_active else "同时存储FIP+eDAS")
-            self._style_action_button(self.tab3_joint_storage_toggle_btn, joint_active, min_height=40, min_width=132)
+            self._style_action_button(self.tab3_joint_storage_toggle_btn, joint_active, min_height=44, min_width=132)
         if hasattr(self, 'data_fip_storage_count_label'):
             self.data_fip_storage_count_label.setText(self._storage_counter_text("FIP存储", self._fip_storage_success_count, self._fip_storage_failure_count))
             self.data_edas_storage_count_label.setText(self._storage_counter_text("eDAS存储", self._edas_storage_success_count, self._edas_storage_failure_count))
+        if hasattr(self, 'status_fip_storage_count_label'):
+            self.status_fip_storage_count_label.setText(f"FIP存储: 成功 {self._fip_storage_success_count}")
+        if hasattr(self, 'status_edas_storage_count_label'):
+            self.status_edas_storage_count_label.setText(f"eDAS存储: 成功 {self._edas_storage_success_count}")
         if hasattr(self, 'data_fip_storage_light'):
             self._set_status_light(self.data_fip_storage_light, self._storage_light_color(fip_active or joint_active, self._fip_storage_success_count, self._fip_storage_failure_count))
         if hasattr(self, 'data_edas_storage_light'):
@@ -2902,8 +3064,10 @@ class MainWindow(QMainWindow):
             for plot in (getattr(self, 'tab3_curve1_plot', None), getattr(self, 'tab3_curve2_plot', None)):
                 if plot:
                     plot.setRange(xRange=(x_min, x_max), yRange=(y_min, y_max), padding=0.0)
-        if psd_y_max > psd_y_min and hasattr(self, 'view_psd_plot'):
-            self.view_psd_plot.setYRange(psd_y_min, psd_y_max, padding=0.0)
+        if psd_y_max > psd_y_min:
+            for plot in (getattr(self, 'view_psd1_plot', None), getattr(self, 'view_psd2_plot', None)):
+                if plot:
+                    plot.setYRange(psd_y_min, psd_y_max, padding=0.0)
 
     def _reset_view_axes(self) -> None:
         if hasattr(self, 'view_axis_enable_check'):
@@ -2913,7 +3077,10 @@ class MainWindow(QMainWindow):
             plot.autoRange()
 
     def _iter_plot_widgets(self) -> List[pg.PlotWidget]:
-        names = ('tab3_curve1_plot', 'tab3_curve2_plot', 'view_psd_plot', 'space_time_plot', 'original_plot', 'processed_plot', 'correlation_plot', 'detection_plot')
+        names = (
+            'tab3_curve1_plot', 'tab3_curve2_plot', 'view_psd1_plot', 'view_psd2_plot',
+            'tab3_space_time_plot', 'original_plot', 'processed_plot', 'correlation_plot', 'detection_plot',
+        )
         return [getattr(self, name) for name in names if hasattr(self, name) and getattr(self, name) is not None]
 
     def _apply_plot_font_settings(self) -> None:
@@ -2956,6 +3123,14 @@ class MainWindow(QMainWindow):
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
 
+        for indicator in (
+            self._create_status_bar_indicator("FIP通信", "data_fip_comm_light", "status_fip_comm_count_label"),
+            self._create_status_bar_indicator("eDAS通信", "data_edas_comm_light", "status_edas_comm_count_label"),
+            self._create_status_bar_indicator("FIP存储", "data_fip_storage_light", "status_fip_storage_count_label"),
+            self._create_status_bar_indicator("eDAS存储", "data_edas_storage_light", "status_edas_storage_count_label"),
+        ):
+            self.status_bar.addWidget(indicator)
+
         # 线程健康统计标签（X-01）：展示存储队列积压、丢包数、缺口数等关键指标
         # 由 main.py 的 QTimer 每 2 s 调用 update_thread_stats() 刷新
         self.thread_stats_label = QLabel("线程统计: 等待启动")
@@ -2966,6 +3141,8 @@ class MainWindow(QMainWindow):
         version_label = QLabel("融合型光纤PCCP断丝监测软件 v1.0 - 中国科学院半导体研究所")
         version_label.setStyleSheet("color: #666; font-size: 12px;")
         self.status_bar.addPermanentWidget(version_label)
+        self._refresh_comm_lights()
+        self._update_data_storage_buttons()
 
     def update_thread_stats(self, stats: dict) -> None:
         """更新状态栏中的线程健康统计信息（X-01）。
@@ -3127,11 +3304,15 @@ class MainWindow(QMainWindow):
                 getattr(self, 'tab3_port_spin', None),
                 getattr(self, 'tab3_curve1_combo', None),
                 getattr(self, 'tab3_curve2_combo', None),
-                getattr(self, 'tab3_das_channel_spin', None),
+                getattr(self, 'tab3_curve1_das_channel_spin', None),
+                getattr(self, 'tab3_curve2_das_channel_spin', None),
                 getattr(self, 'tab3_display_seconds_spin', None),
-                getattr(self, 'tab3_filter_enable_check', None),
-                getattr(self, 'tab3_low_freq_spin', None),
-                getattr(self, 'tab3_high_freq_spin', None),
+                getattr(self, 'tab3_curve1_filter_enable_check', None),
+                getattr(self, 'tab3_curve2_filter_enable_check', None),
+                getattr(self, 'tab3_curve1_low_freq_spin', None),
+                getattr(self, 'tab3_curve1_high_freq_spin', None),
+                getattr(self, 'tab3_curve2_low_freq_spin', None),
+                getattr(self, 'tab3_curve2_high_freq_spin', None),
                 getattr(self, 'tab3_channel_start_spin', None),
                 getattr(self, 'tab3_channel_end_spin', None),
                 getattr(self, 'tab3_time_downsample_spin', None),

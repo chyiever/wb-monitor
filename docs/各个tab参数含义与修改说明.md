@@ -196,3 +196,89 @@ config/gui_last_state.json
 9. `config/gui_last_state.json` 是本机运行态文件，已加入 `.gitignore`，不会随代码提交。
 
 更新时间：2026-07-19 01:18:00 +08:00
+
+## 2026-07-19 View/Data二次调整参数说明
+
+### View: Curve级绘图参数
+
+| 参数 | 含义 |
+|---|---|
+| Curve1 来源 | 控制 Curve1 时域图绘制 `Off`、`DAS Channel`、`FIP1` 或 `FIP2` |
+| Curve2 来源 | 控制 Curve2 时域图绘制 `Off`、`DAS Channel`、`FIP1` 或 `FIP2` |
+| C1 DAS通道 | 当 Curve1 来源为 `DAS Channel` 时，指定 Curve1 抽取的 eDAS 通道号 |
+| C2 DAS通道 | 当 Curve2 来源为 `DAS Channel` 时，指定 Curve2 抽取的 eDAS 通道号；默认 `10` |
+| C1 DAS带通 | 对 Curve1 的 DAS 曲线启用带通预处理 |
+| C2 DAS带通 | 对 Curve2 的 DAS 曲线启用带通预处理 |
+| C1低频 / C1高频 | Curve1 DAS 带通滤波频带 |
+| C2低频 / C2高频 | Curve2 DAS 带通滤波频带 |
+| 显示时长 | DAS 曲线和 Space-Time 的滚动显示时间窗口 |
+| FIP处理目标 | FIP 处理链当前选用的传感器；Curve 时域绘图自身可直接选择 `FIP1` 或 `FIP2` |
+
+默认值：
+
+1. Curve1 默认绘制 `FIP1`。
+2. Curve2 默认绘制 `DAS Channel`。
+3. Curve2 默认 eDAS 通道为 `10`。
+4. 若需要同时查看两个 eDAS 通道，将 Curve1 和 Curve2 都设为 `DAS Channel`，再分别设置 `C1 DAS通道` 和 `C2 DAS通道`。
+5. 若不需要查看 FIP 曲线，可将 Curve1/Curve2 均设为 `DAS Channel` 或 `Off`。
+
+### View: PSD图
+
+| 图件 | 含义 |
+|---|---|
+| PSD1 | Curve1 当前时域数据的 Welch PSD，位于 Curve1 右侧 |
+| PSD2 | Curve2 当前时域数据的 Welch PSD，位于 Curve2 右侧 |
+| PSD1 开关 | 仅控制 PSD1 计算和绘制 |
+| PSD2 开关 | 仅控制 PSD2 计算和绘制 |
+| Welch窗长 | Welch 计算每段窗口长度，单位秒 |
+| 重叠率 | Welch 相邻窗口重叠比例 |
+
+说明：
+
+1. PSD1 和 PSD2 是两个独立图件，不共享坐标轴。
+2. 两个 PSD 都以 dB 为纵轴单位。
+3. `PSD ON/OFF` 是总开关；单独关闭 PSD1 或 PSD2 时，只清空对应 PSD 图。
+4. 手动坐标轴中的 PSD Y 范围会同时应用到两个 PSD 图，但两个图件仍互不共享 pyqtgraph 坐标轴对象。
+
+### View: 鼠标交互
+
+| 操作 | 含义 |
+|---|---|
+| 鼠标矩形拖拽 | 对当前图件进行矩形放大 |
+| pyqtgraph 右键菜单 | 使用自动范围、坐标轴范围和导出等原生功能 |
+| 自动坐标轴 | 关闭手动范围并对所有图件执行自动范围 |
+
+Curve1、Curve2、PSD1、PSD2 和 Space-Time 图均已启用矩形放大模式。
+
+### Data: 左右布局
+
+| 区域 | 当前布局 |
+|---|---|
+| 左侧 | 通信控制、FIP 通信参数、eDAS 通信参数、通信完整性、FIP/eDAS 时间同步检验、配置按钮 |
+| 右侧 | 存储控制与日志 |
+
+存储路径顺序调整为：
+
+1. 联合路径
+2. FIP 路径
+3. eDAS 路径
+
+### Data: 底部状态栏指示灯
+
+| 指示灯 | 灰色 | 红色 | 绿色 | 灯后数字 |
+|---|---|---|---|---|
+| FIP通信 | 未启动 FIP 通信 | 已请求启动但尚未成功连接或收包 | 已连接或成功收包 | FIP 成功通信次数 |
+| eDAS通信 | 未启动 eDAS 通信 | 已请求启动但尚未成功连接或收包 | 已连接或成功收包 | eDAS 成功通信次数 |
+| FIP存储 | 未启用 FIP 或联合存储 | 已启用但尚未成功写入，或失败数高于成功数 | 已有成功写入 | FIP 成功存储次数 |
+| eDAS存储 | 未启用 eDAS 或联合存储 | 已启用但尚未成功写入，或失败数高于成功数 | 已有成功写入 | eDAS 成功存储次数 |
+
+### Data: 按钮尺寸
+
+通信控制和存储控制共六个主按钮已统一：
+
+1. 最小高度：`44 px`
+2. 蓝色：可启动或可执行
+3. 红色：正在运行，再次点击将停止
+4. 圆角、padding、字号和扩展策略一致
+
+更新时间：2026-07-19 01:30:00 +08:00

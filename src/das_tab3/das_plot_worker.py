@@ -26,6 +26,8 @@ class DASPlotWorker(QThread):
         self.running = False
         self.settings: Dict[str, object] = {
             "das_channel": 0,
+            "curve1_das_channel": 10,
+            "curve2_das_channel": 10,
             "display_seconds": 1.0,
             "time_downsample": 1,
             "space_downsample": 1,
@@ -34,6 +36,12 @@ class DASPlotWorker(QThread):
             "low_hz": 1.0,
             "high_hz": 2000.0,
             "apply_filter": False,
+            "curve1_low_hz": 1.0,
+            "curve1_high_hz": 2000.0,
+            "curve1_apply_filter": False,
+            "curve2_low_hz": 1.0,
+            "curve2_high_hz": 2000.0,
+            "curve2_apply_filter": False,
             "curve_max_points": 20000,
             "space_time_max_pixels": 300000,
         }
@@ -131,13 +139,31 @@ class DASPlotWorker(QThread):
         cutoff_time = packet.packet_end_time - duration
         self._history = [item for item in self._history if item.packet_end_time >= cutoff_time]
 
-        curve_channel = int(self.settings.get("das_channel", 0))
+        legacy_curve_channel = int(self.settings.get("das_channel", 0))
+        curve1_channel = int(self.settings.get("curve1_das_channel", legacy_curve_channel))
+        curve2_channel = int(self.settings.get("curve2_das_channel", legacy_curve_channel))
         channel_start = int(self.settings.get("channel_start", 0))
         channel_end = int(self.settings.get("channel_end", max(0, packet.header.channel_count - 1)))
         time_downsample = max(1, int(self.settings.get("time_downsample", 1)))
         space_downsample = max(1, int(self.settings.get("space_downsample", 1)))
 
-        das_times, das_curve = self._build_curve_payload(packet, curve_channel, time_downsample)
+        curve1_filter = self._curve_filter_settings(1)
+        curve2_filter = self._curve_filter_settings(2)
+        das_times1, das_curve1 = self._build_curve_payload(
+            packet,
+            curve1_channel,
+            time_downsample,
+            curve1_filter,
+        )
+        if curve2_channel == curve1_channel and curve2_filter == curve1_filter:
+            das_times2, das_curve2 = das_times1, das_curve1
+        else:
+            das_times2, das_curve2 = self._build_curve_payload(
+                packet,
+                curve2_channel,
+                time_downsample,
+                curve2_filter,
+            )
         space_time_matrix, x_axis, y_axis = self._build_space_time_payload(
             packet=packet,
             channel_start=channel_start,
@@ -147,8 +173,12 @@ class DASPlotWorker(QThread):
         )
 
         payload = {
-            "das_curve_time": das_times,
-            "das_curve_values": das_curve,
+            "curve1_das_time": das_times1,
+            "curve1_das_values": das_curve1,
+            "curve2_das_time": das_times2,
+            "curve2_das_values": das_curve2,
+            "das_curve_time": das_times2,
+            "das_curve_values": das_curve2,
             "space_time_matrix": space_time_matrix,
             "space_time_x": x_axis,
             "space_time_y": y_axis,
@@ -174,7 +204,7 @@ class DASPlotWorker(QThread):
                 "TAB3_NODE plot_worker.slow comm=%s elapsed_ms=%.2f curve_points=%d matrix_shape=%s queue_size=%d",
                 packet.header.comm_count,
                 elapsed_ms,
-                len(das_curve),
+                max(len(das_curve1), len(das_curve2)),
                 tuple(space_time_matrix.shape),
                 self.input_queue.qsize(),
             )
@@ -182,7 +212,7 @@ class DASPlotWorker(QThread):
             "TAB3_NODE plot_worker.payload comm=%s elapsed_ms=%.2f curve_points=%d matrix_shape=%s queue_size=%d processed=%d dropped=%d",
             packet.header.comm_count,
             elapsed_ms,
-            len(das_curve),
+            max(len(das_curve1), len(das_curve2)),
             tuple(space_time_matrix.shape),
             self.input_queue.qsize(),
             self.stats["packets_processed"],
@@ -195,6 +225,7 @@ class DASPlotWorker(QThread):
         packet: DASParsedPacket,
         curve_channel: int,
         time_downsample: int,
+        filter_settings: Dict[str, object],
     ) -> tuple[np.ndarray, np.ndarray]:
         samples_by_packet = []
         total_points = 0
@@ -210,9 +241,9 @@ class DASPlotWorker(QThread):
 
         sample_rate = float(packet.header.sample_rate_hz)
         curve_step = self._curve_display_step(total_points, sample_rate, time_downsample)
-        if bool(self.settings.get("apply_filter", False)):
+        if bool(filter_settings.get("apply_filter", False)):
             full_curve = np.concatenate([samples for _, samples in samples_by_packet])
-            full_curve = self._maybe_filter(full_curve, sample_rate)
+            full_curve = self._maybe_filter(full_curve, sample_rate, filter_settings)
             first_packet = samples_by_packet[0][0]
             selected_indexes = np.arange(0, len(full_curve), curve_step, dtype=np.int64)
             das_times = first_packet.packet_start_time + selected_indexes.astype(np.float64) / max(sample_rate, 1.0)
@@ -338,22 +369,53 @@ class DASPlotWorker(QThread):
     def _settings_for_log(self) -> Dict[str, object]:
         keys = [
             "das_channel",
+            "curve1_das_channel",
+            "curve2_das_channel",
             "display_seconds",
             "time_downsample",
             "space_downsample",
             "channel_start",
             "channel_end",
             "apply_filter",
+            "curve1_apply_filter",
+            "curve1_low_hz",
+            "curve1_high_hz",
+            "curve2_apply_filter",
+            "curve2_low_hz",
+            "curve2_high_hz",
             "curve_max_points",
             "space_time_max_pixels",
         ]
         return {key: self.settings.get(key) for key in keys}
 
-    def _maybe_filter(self, data: np.ndarray, sample_rate_hz: float) -> np.ndarray:
-        if len(data) == 0 or not bool(self.settings.get("apply_filter", False)):
+    def _curve_filter_settings(self, curve_index: int) -> Dict[str, object]:
+        """Resolve per-curve DAS filter controls with legacy setting fallback."""
+        return {
+            "apply_filter": bool(
+                self.settings.get(
+                    f"curve{curve_index}_apply_filter",
+                    self.settings.get("apply_filter", False),
+                )
+            ),
+            "low_hz": float(
+                self.settings.get(
+                    f"curve{curve_index}_low_hz",
+                    self.settings.get("low_hz", 1.0),
+                )
+            ),
+            "high_hz": float(
+                self.settings.get(
+                    f"curve{curve_index}_high_hz",
+                    self.settings.get("high_hz", 2000.0),
+                )
+            ),
+        }
+
+    def _maybe_filter(self, data: np.ndarray, sample_rate_hz: float, filter_settings: Dict[str, object]) -> np.ndarray:
+        if len(data) == 0 or not bool(filter_settings.get("apply_filter", False)):
             return data
-        low_hz = float(self.settings.get("low_hz", 1.0))
-        high_hz = float(self.settings.get("high_hz", sample_rate_hz * 0.45))
+        low_hz = float(filter_settings.get("low_hz", 1.0))
+        high_hz = float(filter_settings.get("high_hz", sample_rate_hz * 0.45))
         nyquist = sample_rate_hz * 0.5
         low_hz = max(0.1, min(low_hz, nyquist * 0.95))
         high_hz = max(low_hz + 0.1, min(high_hz, nyquist * 0.98))

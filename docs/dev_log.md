@@ -321,3 +321,34 @@
 - `python -m py_compile src\ui\main_window.py src\main.py` 通过。
 - 离屏持久化测试通过，输出 `PERSISTENCE_OK app_config_unchanged`。
 - 自动保存测试通过，修改端口后快照中的 `communication.port` 自动更新为新值。
+
+## 2026-07-19 01:30:00 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/ui/main_window.py`、`src/das_tab3/das_plot_worker.py`、`docs/2026-07-18-GUI大改日志.md`、`docs/各个tab参数含义与修改说明.md`、`docs/dev_log.md`
+
+### 更新摘要
+
+1. View tab 将 PSD 从单一共轴图拆分为两个独立图件：PSD1 位于 Curve1 右侧，PSD2 位于 Curve2 右侧。
+2. View 绘图区改为两行布局，每行左侧为时域图、右侧为该曲线的 PSD，单行内宽度比例约 `7:3`。
+3. Curve1/Curve2 时域图移除标题，改用动态 legend；DAS 显示为 `eDAS ch=通道号`，FIP 显示为 `FIP1` 或 `FIP2`。
+4. 曲线参数改为按 Curve 设置，Curve1/Curve2 均可独立选择来源、DAS 通道、DAS 带通开关和 DAS 带通频带。
+5. 默认 View 配置调整为 Curve1=`FIP1`、Curve2=`DAS Channel`、Curve2 DAS 通道=`10`。
+6. Curve1、Curve2、PSD1、PSD2 和 Space-Time 图均启用 pyqtgraph 矩形缩放模式。
+7. DAS 绘图 worker 新增双 DAS 曲线 payload，支持同时查看两个不同 eDAS 通道。
+8. Data tab 左侧集中通信控制、通信完整性和时间同步检验；右侧只保留存储控制与日志。
+9. 存储路径顺序调整为联合路径、FIP 路径、eDAS 路径。
+10. 通信和存储指示灯移动到底部状态栏左侧，并在灯后显示对应成功次数。
+11. 通信控制与存储控制共六个主按钮统一为 `44 px` 最小高度。
+12. 四个 tab 的标题增加最小宽度，避免标题显示不全。
+
+### 验证
+
+- `python -m py_compile src\ui\main_window.py src\das_tab3\das_plot_worker.py` 通过。
+- MainWindow 离屏构造检查通过，确认 tab 顺序、默认 Curve 设置、两个 PSD 独立图件、矩形缩放模式和按钮高度。
+- 合成 DAS 包验证通过，输出：
+
+```text
+{'c1_first': 3.0, 'c2_first': 10.0, 'legacy_first': 10.0, 'c1_len': 20, 'c2_len': 20}
+```
