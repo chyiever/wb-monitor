@@ -297,3 +297,27 @@
 - MainWindow 离屏构造通过，tab 顺序为 `['View', 'Data', 'Tab3', 'Setting']`。
 - 生成 View tab 离屏截图，确认 Space-Time 色标位于图右侧。
 - Qt 字体度量检查通过，View/Data/Storage/Setting 主按钮文本均能完整放入按钮可用宽度。
+
+## 2026-07-19 01:18:00 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/ui/main_window.py`、`src/main.py`、`.gitignore`、`docs/2026-07-18-GUI大改日志.md`、`docs/各个tab参数含义与修改说明.md`、`docs/dev_log.md`
+
+### 更新摘要
+
+1. 新增 GUI 本地参数快照 `config/gui_last_state.json`，用于保存现场最近一次参数。
+2. MainWindow 启动时自动读取本地快照，恢复 FIP/eDAS 通信参数、View 绘图参数、PSD、坐标轴、存储路径、检测参数和全局字体。
+3. GUI 参数变化后使用 `QTimer` 做 `700 ms` 防抖自动保存，关闭窗口前强制保存一次。
+4. `保存配置`、`加载配置`、`重置配置` 按钮补全实现，菜单中的保存/打开配置也接入同一逻辑。
+5. 保存使用 UTF-8 JSON，先写临时文件再替换正式快照，降低写入中断造成 JSON 损坏的风险。
+6. 启动恢复只恢复参数，不自动启动 FIP/eDAS 通信；检测页总开关也保持关闭。
+7. FIP 通信启动前会从 GUI 同步当前监听地址和端口到 `OptimizedTCPServer`，确保自动恢复后的监听参数真正生效。
+8. GUI 快照与基础系统配置 `config/app_config.json` 分离，避免将现场 UI 参数覆盖到基础配置文件。
+9. 新增 `.gitignore`，排除 `config/gui_last_state.json` 和临时写入文件，避免本机现场参数进入 Git。
+
+### 验证
+
+- `python -m py_compile src\ui\main_window.py src\main.py` 通过。
+- 离屏持久化测试通过，输出 `PERSISTENCE_OK app_config_unchanged`。
+- 自动保存测试通过，修改端口后快照中的 `communication.port` 自动更新为新值。

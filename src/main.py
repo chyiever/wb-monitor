@@ -611,6 +611,10 @@ class PCCPMonitorApp:
             self._sync_tab1_storage_settings()
 
             # Start TCP server
+            if self.tcp_server and hasattr(self.main_window, 'ip_edit') and hasattr(self.main_window, 'port_spin'):
+                self.tcp_server.ip = self.main_window.ip_edit.text().strip() or "0.0.0.0"
+                self.tcp_server.port = int(self.main_window.port_spin.value())
+                self.logger.info("FIP TCP server endpoint synced from UI: %s:%s", self.tcp_server.ip, self.tcp_server.port)
             if not self.tcp_server.start_server():
                 raise RuntimeError("Failed to start TCP server")
 

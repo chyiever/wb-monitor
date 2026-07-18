@@ -10,9 +10,11 @@ Date: 2026-03-11
 
 import sys
 import os
+import json
 import logging
 import re
 import time
+from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 import numpy as np
 from PyQt5.QtWidgets import (
@@ -77,6 +79,13 @@ class MainWindow(QMainWindow):
         self._sync_fip_receive_times: Dict[int, float] = {}
         self._sync_edas_receive_times: Dict[int, float] = {}
         self._sync_deltas: List[float] = []
+        self._persist_logger = logging.getLogger(f"{__name__}.GuiPersistence")
+        self._persist_config_path = Path(__file__).resolve().parents[2] / "config" / "gui_last_state.json"
+        self._persist_loading = False
+        self._auto_save_timer = QTimer(self)
+        self._auto_save_timer.setSingleShot(True)
+        self._auto_save_timer.setInterval(700)
+        self._auto_save_timer.timeout.connect(self._auto_save_configuration)
 
         # 初始化组件
         self._init_ui()
@@ -86,6 +95,9 @@ class MainWindow(QMainWindow):
 
         # 应用默认的PSD设置范围（解决问题3）
         self._apply_initial_psd_settings()
+        self._default_gui_config = self.get_current_config()
+        self._load_persisted_configuration()
+        self._connect_auto_persist_signals()
 
     def _apply_initial_psd_settings(self):
         """应用初始的PSD设置范围"""
@@ -1124,6 +1136,9 @@ class MainWindow(QMainWindow):
 
         help_menu.addAction(about_action)
         help_menu.addAction(help_action)
+        open_config.triggered.connect(self._load_configuration)
+        save_config.triggered.connect(self._save_configuration)
+        exit_action.triggered.connect(self.close)
 
         # 可视化参数变化
         self.psd_window_length_spin.valueChanged.connect(self._update_psd_settings)
@@ -1163,17 +1178,22 @@ class MainWindow(QMainWindow):
     def _save_configuration(self):
         """保存配置"""
         config = self.get_current_config()
-        self.config_changed.emit(config)
+        self._write_persisted_configuration(config, show_status=True)
 
     def _load_configuration(self):
-        """加载配置"""
-        # TODO: 实现配置加载对话框
-        pass
+        """加载最近一次自动保存的本地 GUI 参数。"""
+        if self._load_persisted_configuration(show_status=True):
+            self._schedule_auto_save()
 
     def _reset_configuration(self):
-        """重置配置为默认值"""
-        # TODO: 实现配置重置
-        pass
+        """重置配置为默认值，并清除本地自动保存快照。"""
+        self._apply_gui_config(getattr(self, "_default_gui_config", {}))
+        try:
+            if self._persist_config_path.exists():
+                self._persist_config_path.unlink()
+        except OSError as exc:
+            self._persist_logger.warning("Failed to remove persisted GUI state: %s", exc)
+        self._write_persisted_configuration(self.get_current_config(), show_status=True)
 
     def get_tab1_fip_settings(self) -> Dict[str, Any]:
         """Return Tab1 FIP input and selected plotting settings."""
@@ -1307,7 +1327,9 @@ class MainWindow(QMainWindow):
                     "interval": self.storage_interval_spin.value()
                 },
                 "path": self.storage_path_edit.text()
-            }
+            },
+            "view": self.get_view_settings(),
+            "setting": self.get_global_display_settings(),
         }
 
         # 如果Tab2控件存在，添加特征和检测配置
@@ -1326,6 +1348,380 @@ class MainWindow(QMainWindow):
             config["tab3"] = self.get_tab3_settings()
 
         return config
+
+    def get_view_settings(self) -> Dict[str, Any]:
+        """Return View-tab display, PSD, and axis settings for persistence."""
+        return {
+            "time_plot_enabled": self.time_plot_btn.isChecked(),
+            "psd_plot_enabled": self.psd_plot_btn.isChecked(),
+            "view_update_enabled": self.tab3_plot_toggle_btn.isChecked(),
+            "time_display_seconds": self.time_display_duration_spin.value(),
+            "fip_refresh_seconds": self.view_fip_refresh_spin.value(),
+            "edas_refresh_seconds": self.view_edas_refresh_spin.value(),
+            "curve_max_points": self.view_curve_max_points_spin.value(),
+            "psd": {
+                "psd1_enabled": self.view_psd1_check.isChecked(),
+                "psd2_enabled": self.view_psd2_check.isChecked(),
+                "window_seconds": self.psd_window_length_spin.value(),
+                "overlap_percent": self.psd_overlap_spin.value(),
+            },
+            "axis": {
+                "manual_enabled": self.view_axis_enable_check.isChecked(),
+                "x_min": self.view_xmin_spin.value(),
+                "x_max": self.view_xmax_spin.value(),
+                "y_min": self.view_ymin_spin.value(),
+                "y_max": self.view_ymax_spin.value(),
+                "psd_y_min": self.view_psd_ymin_spin.value(),
+                "psd_y_max": self.view_psd_ymax_spin.value(),
+            },
+        }
+
+    def get_global_display_settings(self) -> Dict[str, Any]:
+        """Return Setting-tab global font controls for persistence."""
+        return {
+            "gui_font_pt": self.setting_gui_font_spin.value(),
+            "plot_title_px": self.setting_plot_title_font_spin.value(),
+            "axis_label_px": self.setting_axis_label_font_spin.value(),
+            "tick_font_pt": self.setting_tick_font_spin.value(),
+        }
+
+    def _persist_payload(self, config: Dict[str, Any]) -> Dict[str, Any]:
+        """Wrap GUI parameters with metadata before writing to disk."""
+        return {
+            "schema_version": 1,
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S %z"),
+            "config": config,
+        }
+
+    def _read_persisted_configuration(self) -> Optional[Dict[str, Any]]:
+        """Read the local GUI parameter snapshot if it exists."""
+        try:
+            if not self._persist_config_path.exists():
+                return None
+            with open(self._persist_config_path, "r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+            if isinstance(payload, dict) and isinstance(payload.get("config"), dict):
+                return payload["config"]
+            return payload if isinstance(payload, dict) else None
+        except (OSError, json.JSONDecodeError) as exc:
+            self._persist_logger.warning("Failed to read persisted GUI state: %s", exc)
+            return None
+
+    def _load_persisted_configuration(self, show_status: bool = False) -> bool:
+        """Apply the latest local GUI parameter snapshot to the current controls."""
+        config = self._read_persisted_configuration()
+        if not config:
+            if show_status:
+                self.status_bar.showMessage("未找到本地参数快照", 3000)
+            return False
+        self._apply_gui_config(config)
+        if show_status:
+            self.status_bar.showMessage(f"已加载本地参数: {self._persist_config_path}", 3000)
+        return True
+
+    def _write_persisted_configuration(self, config: Dict[str, Any], show_status: bool = False) -> bool:
+        """Write GUI parameters atomically to the local UTF-8 JSON snapshot."""
+        try:
+            self._persist_config_path.parent.mkdir(parents=True, exist_ok=True)
+            temp_path = self._persist_config_path.with_suffix(self._persist_config_path.suffix + ".tmp")
+            with open(temp_path, "w", encoding="utf-8") as handle:
+                json.dump(self._persist_payload(config), handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            temp_path.replace(self._persist_config_path)
+            if show_status:
+                self.status_bar.showMessage(f"参数已保存: {self._persist_config_path}", 3000)
+            return True
+        except OSError as exc:
+            self._persist_logger.error("Failed to write persisted GUI state: %s", exc)
+            if show_status:
+                self.status_bar.showMessage(f"参数保存失败: {exc}", 5000)
+            return False
+
+    def _auto_save_configuration(self) -> None:
+        """Debounced auto-save entry point used by parameter controls."""
+        if self._persist_loading:
+            return
+        self._write_persisted_configuration(self.get_current_config())
+
+    def _schedule_auto_save(self) -> None:
+        """Schedule a local parameter save after the current burst of edits settles."""
+        if self._persist_loading or not hasattr(self, "_auto_save_timer"):
+            return
+        self._auto_save_timer.start()
+
+    def _set_spin_value(self, spin, value: Any) -> None:
+        if spin is None or value is None:
+            return
+        try:
+            spin.blockSignals(True)
+            if isinstance(spin, QDoubleSpinBox):
+                spin.setValue(float(value))
+            elif isinstance(spin, QSpinBox):
+                spin.setValue(int(round(float(value))))
+            else:
+                spin.setValue(value)
+        except (TypeError, ValueError):
+            return
+        finally:
+            try:
+                spin.blockSignals(False)
+            except RuntimeError:
+                pass
+
+    def _set_line_text(self, edit, value: Any) -> None:
+        if edit is None or value is None:
+            return
+        edit.blockSignals(True)
+        edit.setText(str(value))
+        edit.blockSignals(False)
+
+    def _set_checked(self, widget, value: Any) -> None:
+        if widget is None or value is None:
+            return
+        widget.blockSignals(True)
+        widget.setChecked(bool(value))
+        widget.blockSignals(False)
+
+    def _set_combo_value(self, combo, value: Any) -> None:
+        if combo is None or value is None:
+            return
+        combo.blockSignals(True)
+        try:
+            index = combo.findData(value)
+            if index < 0:
+                index = combo.findText(str(value))
+            if index >= 0:
+                combo.setCurrentIndex(index)
+        finally:
+            combo.blockSignals(False)
+
+    def _restore_fip_settings(self, config: Dict[str, Any]) -> None:
+        communication = config.get("communication", {})
+        self._set_line_text(getattr(self, "ip_edit", None), communication.get("ip"))
+        self._set_spin_value(getattr(self, "port_spin", None), communication.get("port"))
+        fip_settings = communication.get("fip", {})
+        self._set_combo_value(getattr(self, "fip_sensor_count_combo", None), fip_settings.get("sensor_count"))
+        self._set_spin_value(getattr(self, "fip_packet_duration_spin", None), fip_settings.get("packet_duration_seconds"))
+        sample_rate_hz = fip_settings.get("sample_rate_hz")
+        if sample_rate_hz is not None:
+            self._set_spin_value(getattr(self, "fip_sample_rate_mhz_spin", None), float(sample_rate_hz) / 1_000_000.0)
+        self._update_fip_sensor_controls(emit=False)
+        self._set_combo_value(getattr(self, "fip_plot_sensor_combo", None), fip_settings.get("selected_sensor"))
+
+    def _restore_preprocess_settings(self, config: Dict[str, Any]) -> None:
+        preprocessing = config.get("preprocessing", {})
+        filter_config = preprocessing.get("filter", {})
+        self._set_combo_value(getattr(self, "filter_type_combo", None), filter_config.get("type"))
+        self._set_spin_value(getattr(self, "low_freq_spin", None), filter_config.get("low_freq"))
+        self._set_spin_value(getattr(self, "high_freq_spin", None), filter_config.get("high_freq"))
+        self._set_spin_value(getattr(self, "filter_order_spin", None), filter_config.get("order"))
+        self._set_spin_value(getattr(self, "downsample_spin", None), preprocessing.get("downsample", {}).get("factor"))
+
+    def _restore_storage_settings(self, config: Dict[str, Any]) -> None:
+        storage = config.get("storage", {})
+        realtime = storage.get("realtime", {})
+        self._set_checked(getattr(self, "phase_storage_check", None), realtime.get("enabled"))
+        self._set_spin_value(getattr(self, "storage_interval_spin", None), realtime.get("interval"))
+        self._set_line_text(getattr(self, "storage_path_edit", None), storage.get("path"))
+
+    def _restore_view_settings(self, config: Dict[str, Any]) -> None:
+        view = config.get("view", {})
+        tab3_plot = config.get("tab3", {}).get("plot", {})
+        self._set_checked(getattr(self, "time_plot_btn", None), view.get("time_plot_enabled"))
+        self._set_checked(getattr(self, "psd_plot_btn", None), view.get("psd_plot_enabled"))
+        self._set_checked(getattr(self, "tab3_plot_toggle_btn", None), view.get("view_update_enabled", tab3_plot.get("plot_enabled")))
+        self._set_spin_value(getattr(self, "time_display_duration_spin", None), view.get("time_display_seconds"))
+        self._set_spin_value(getattr(self, "view_fip_refresh_spin", None), view.get("fip_refresh_seconds"))
+        self._set_spin_value(getattr(self, "view_edas_refresh_spin", None), view.get("edas_refresh_seconds"))
+        self._set_spin_value(getattr(self, "view_curve_max_points_spin", None), view.get("curve_max_points", tab3_plot.get("curve_max_points")))
+        psd = view.get("psd", {})
+        self._set_checked(getattr(self, "view_psd1_check", None), psd.get("psd1_enabled"))
+        self._set_checked(getattr(self, "view_psd2_check", None), psd.get("psd2_enabled"))
+        self._set_spin_value(getattr(self, "psd_window_length_spin", None), psd.get("window_seconds"))
+        self._set_spin_value(getattr(self, "psd_overlap_spin", None), psd.get("overlap_percent"))
+        axis = view.get("axis", {})
+        self._set_checked(getattr(self, "view_axis_enable_check", None), axis.get("manual_enabled"))
+        self._set_spin_value(getattr(self, "view_xmin_spin", None), axis.get("x_min"))
+        self._set_spin_value(getattr(self, "view_xmax_spin", None), axis.get("x_max"))
+        self._set_spin_value(getattr(self, "view_ymin_spin", None), axis.get("y_min"))
+        self._set_spin_value(getattr(self, "view_ymax_spin", None), axis.get("y_max"))
+        self._set_spin_value(getattr(self, "view_psd_ymin_spin", None), axis.get("psd_y_min"))
+        self._set_spin_value(getattr(self, "view_psd_ymax_spin", None), axis.get("psd_y_max"))
+
+    def _restore_tab2_settings(self, config: Dict[str, Any]) -> None:
+        tab2 = config.get("tab2", {})
+        if not tab2:
+            return
+        # Restore parameters but do not auto-enable the detection pipeline at startup.
+        self._set_checked(getattr(self, "tab2_enable_btn", None), False)
+        for key, enabled in tab2.get("compute_features", {}).items():
+            controls = self.detection_feature_checkboxes.get(key, {})
+            self._set_checked(controls.get("compute"), enabled)
+        for key, enabled in tab2.get("plot_features", {}).items():
+            controls = self.detection_feature_checkboxes.get(key, {})
+            self._set_checked(controls.get("plot"), enabled)
+        preprocess = tab2.get("preprocess", {})
+        self._set_checked(getattr(self, "tab2_filter_enable_check", None), preprocess.get("enabled"))
+        self._set_spin_value(getattr(self, "tab2_low_freq_spin", None), preprocess.get("low_hz"))
+        self._set_spin_value(getattr(self, "tab2_high_freq_spin", None), preprocess.get("high_hz"))
+        self._set_spin_value(getattr(self, "tab2_filter_order_spin", None), preprocess.get("order"))
+        window = tab2.get("window", {})
+        self._set_spin_value(getattr(self, "tab2_window_spin", None), window.get("window_seconds"))
+        overlap_ratio = window.get("overlap_ratio")
+        if overlap_ratio is not None:
+            self._set_spin_value(getattr(self, "tab2_overlap_spin", None), float(overlap_ratio) * 100.0)
+        self._set_spin_value(getattr(self, "tab2_plot_duration_spin", None), window.get("display_duration_seconds"))
+        for key, threshold in tab2.get("thresholds", {}).items():
+            controls = self.threshold_controls.get(key, {})
+            self._set_spin_value(controls.get("threshold"), threshold)
+        trigger = tab2.get("trigger_storage", {})
+        self._set_checked(getattr(self, "tab2_trigger_storage_check", None), trigger.get("enabled"))
+        self._set_spin_value(getattr(self, "tab2_pre_trigger_spin", None), trigger.get("pre_trigger_seconds"))
+        self._set_spin_value(getattr(self, "tab2_post_trigger_spin", None), trigger.get("post_trigger_seconds"))
+        self._set_line_text(getattr(self, "tab2_storage_path_edit", None), trigger.get("path"))
+
+    def _restore_tab3_settings(self, config: Dict[str, Any]) -> None:
+        tab3 = config.get("tab3", {})
+        if not tab3:
+            return
+        communication = tab3.get("communication", {})
+        self._set_line_text(getattr(self, "tab3_ip_edit", None), communication.get("ip"))
+        self._set_spin_value(getattr(self, "tab3_port_spin", None), communication.get("port"))
+        plot = tab3.get("plot", {})
+        self._set_combo_value(getattr(self, "tab3_curve1_combo", None), plot.get("curve1_type"))
+        self._set_combo_value(getattr(self, "tab3_curve2_combo", None), plot.get("curve2_type"))
+        self._set_spin_value(getattr(self, "tab3_das_channel_spin", None), plot.get("das_channel"))
+        self._set_spin_value(getattr(self, "tab3_display_seconds_spin", None), plot.get("display_seconds"))
+        self._set_checked(getattr(self, "tab3_filter_enable_check", None), plot.get("apply_filter"))
+        self._set_spin_value(getattr(self, "tab3_low_freq_spin", None), plot.get("low_hz"))
+        self._set_spin_value(getattr(self, "tab3_high_freq_spin", None), plot.get("high_hz"))
+        self._set_spin_value(getattr(self, "tab3_channel_start_spin", None), plot.get("channel_start"))
+        self._set_spin_value(getattr(self, "tab3_channel_end_spin", None), plot.get("channel_end"))
+        self._set_spin_value(getattr(self, "tab3_time_downsample_spin", None), plot.get("time_downsample"))
+        self._set_spin_value(getattr(self, "tab3_space_downsample_spin", None), plot.get("space_downsample"))
+        self._set_combo_value(getattr(self, "tab3_colormap_combo", None), plot.get("colormap"))
+        self._set_spin_value(getattr(self, "tab3_vmin_spin", None), plot.get("vmin"))
+        self._set_spin_value(getattr(self, "tab3_vmax_spin", None), plot.get("vmax"))
+        storage = tab3.get("storage", {})
+        self._set_checked(getattr(self, "tab3_joint_storage_toggle_btn", None), storage.get("joint_enabled", storage.get("enabled")))
+        self._set_line_text(getattr(self, "tab3_storage_path_edit", None), storage.get("path"))
+        self._set_spin_value(getattr(self, "tab3_storage_interval_spin", None), storage.get("interval_seconds"))
+        self._set_spin_value(getattr(self, "tab3_cache_seconds_spin", None), storage.get("cache_seconds"))
+        self._set_checked(getattr(self, "tab3_edas_storage_toggle_btn", None), storage.get("edas_enabled"))
+        self._set_line_text(getattr(self, "tab3_edas_storage_path_edit", None), storage.get("edas_path"))
+        self._set_spin_value(getattr(self, "tab3_edas_blocks_per_file_spin", None), storage.get("edas_blocks_per_file"))
+        self._set_spin_value(getattr(self, "tab3_edas_queue_packets_spin", None), storage.get("edas_queue_packets"))
+
+    def _restore_global_display_settings(self, config: Dict[str, Any]) -> None:
+        setting = config.get("setting", {})
+        self._set_spin_value(getattr(self, "setting_gui_font_spin", None), setting.get("gui_font_pt"))
+        self._set_spin_value(getattr(self, "setting_plot_title_font_spin", None), setting.get("plot_title_px"))
+        self._set_spin_value(getattr(self, "setting_axis_label_font_spin", None), setting.get("axis_label_px"))
+        self._set_spin_value(getattr(self, "setting_tick_font_spin", None), setting.get("tick_font_pt"))
+
+    def _apply_gui_config(self, config: Dict[str, Any]) -> None:
+        """Restore saved GUI parameters while keeping communication stopped."""
+        if not isinstance(config, dict):
+            return
+        self._persist_loading = True
+        try:
+            self._restore_fip_settings(config)
+            self._restore_preprocess_settings(config)
+            self._restore_storage_settings(config)
+            self._restore_view_settings(config)
+            self._restore_tab2_settings(config)
+            self._restore_tab3_settings(config)
+            self._restore_global_display_settings(config)
+        finally:
+            self._persist_loading = False
+        self.monitoring_active = False
+        self._edas_monitoring_active = False
+        self._both_comm_requested = False
+        self._apply_restored_gui_state()
+
+    def _apply_restored_gui_state(self) -> None:
+        """Refresh dependent styles, plots, and derived runtime fields after restore."""
+        self._update_fip_sensor_controls(emit=False)
+        self._apply_view_refresh_settings()
+        self._update_psd_settings()
+        self._update_filter_settings()
+        self._update_time_display_settings()
+        self._toggle_time_plot(self.time_plot_btn.isChecked())
+        self._toggle_psd_plot(self.psd_plot_btn.isChecked())
+        self._update_tab3_plot_button_state(self.tab3_plot_toggle_btn.isChecked())
+        self._update_data_comm_buttons()
+        self._update_data_storage_buttons()
+        self._update_tab2_enable_button_state(False)
+        self._apply_tab3_space_time_colormap()
+        self._apply_tab3_space_time_levels()
+        self._apply_global_settings()
+        if self.view_axis_enable_check.isChecked():
+            self._apply_view_axes()
+        if hasattr(self, 'fip_sensor_settings_changed'):
+            self.fip_sensor_settings_changed.emit(self.get_tab1_fip_settings())
+        if hasattr(self, 'tab2_settings_changed'):
+            self.tab2_settings_changed.emit()
+        if hasattr(self, 'tab3_settings_changed'):
+            self.tab3_settings_changed.emit()
+
+    def _auto_persist_widgets(self) -> List[Any]:
+        """Return user-editable parameter widgets that should trigger auto-save."""
+        widgets = [
+            self.ip_edit, self.port_spin, self.fip_packet_duration_spin,
+            self.fip_sample_rate_mhz_spin, self.fip_sensor_count_combo, self.fip_plot_sensor_combo,
+            self.filter_type_combo, self.low_freq_spin, self.high_freq_spin,
+            self.filter_order_spin, self.downsample_spin,
+            self.time_plot_btn, self.psd_plot_btn, self.tab3_plot_toggle_btn,
+            self.time_display_duration_spin, self.view_fip_refresh_spin,
+            self.view_edas_refresh_spin, self.view_curve_max_points_spin,
+            self.view_psd1_check, self.view_psd2_check,
+            self.psd_window_length_spin, self.psd_overlap_spin,
+            self.view_axis_enable_check, self.view_xmin_spin, self.view_xmax_spin,
+            self.view_ymin_spin, self.view_ymax_spin, self.view_psd_ymin_spin, self.view_psd_ymax_spin,
+            self.phase_storage_check, self.storage_path_edit, self.storage_interval_spin,
+            self.tab2_enable_btn, self.tab2_filter_enable_check, self.tab2_low_freq_spin,
+            self.tab2_high_freq_spin, self.tab2_filter_order_spin, self.tab2_window_spin,
+            self.tab2_overlap_spin, self.tab2_plot_duration_spin, self.tab2_trigger_storage_check,
+            self.tab2_pre_trigger_spin, self.tab2_post_trigger_spin, self.tab2_storage_path_edit,
+            self.tab3_ip_edit, self.tab3_port_spin, self.tab3_curve1_combo, self.tab3_curve2_combo,
+            self.tab3_das_channel_spin, self.tab3_display_seconds_spin, self.tab3_filter_enable_check,
+            self.tab3_low_freq_spin, self.tab3_high_freq_spin, self.tab3_channel_start_spin,
+            self.tab3_channel_end_spin, self.tab3_time_downsample_spin, self.tab3_space_downsample_spin,
+            self.tab3_colormap_combo, self.tab3_vmin_spin, self.tab3_vmax_spin,
+            self.tab3_joint_storage_toggle_btn, self.tab3_storage_path_edit,
+            self.tab3_storage_interval_spin, self.tab3_cache_seconds_spin,
+            self.tab3_edas_storage_toggle_btn, self.tab3_edas_storage_path_edit,
+            self.tab3_edas_blocks_per_file_spin, self.tab3_edas_queue_packets_spin,
+            self.setting_gui_font_spin, self.setting_plot_title_font_spin,
+            self.setting_axis_label_font_spin, self.setting_tick_font_spin,
+        ]
+        for controls in getattr(self, "detection_feature_checkboxes", {}).values():
+            widgets.extend([controls.get("compute"), controls.get("plot")])
+        for controls in getattr(self, "threshold_controls", {}).values():
+            widgets.append(controls.get("threshold"))
+        return [widget for widget in widgets if widget is not None]
+
+    def _connect_auto_persist_signals(self) -> None:
+        """Connect all editable parameter widgets to debounced local auto-save."""
+        if getattr(self, "_auto_persist_connected", False):
+            return
+        self._auto_persist_connected = True
+        for widget in self._auto_persist_widgets():
+            if hasattr(widget, "valueChanged"):
+                widget.valueChanged.connect(lambda *_args: self._schedule_auto_save())
+            elif hasattr(widget, "currentIndexChanged"):
+                widget.currentIndexChanged.connect(lambda *_args: self._schedule_auto_save())
+            elif hasattr(widget, "toggled"):
+                widget.toggled.connect(lambda *_args: self._schedule_auto_save())
+            elif hasattr(widget, "textChanged"):
+                widget.textChanged.connect(lambda *_args: self._schedule_auto_save())
+
+    def closeEvent(self, event):
+        """Flush the latest GUI parameters before the window closes."""
+        if hasattr(self, "_auto_save_timer") and self._auto_save_timer.isActive():
+            self._auto_save_timer.stop()
+        self._write_persisted_configuration(self.get_current_config())
+        super().closeEvent(event)
 
 
     def update_connection_status(self, connected: bool, message: str):
