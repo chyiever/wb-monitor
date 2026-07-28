@@ -98,9 +98,8 @@ def split_fip_sensor_data(
     """Split one TCP payload into per-sensor FIP arrays.
 
     In one-sensor mode the payload is left untouched for exact compatibility.
-    In two-sensor mode the expected split point is derived from
-    packet_duration_seconds * sample_rate_hz, with an even-split fallback
-    when the received packet length does not match the UI duration/rate.
+    Multi-sensor FIP packets are interleaved sample-by-sample:
+    FIP1[0], FIP2[0], FIP1[1], FIP2[1], ...
     """
     data = np.asarray(phase_data)
     count = normalize_fip_sensor_count(sensor_count)
@@ -115,7 +114,7 @@ def split_fip_sensor_data(
             if logger is not None:
                 logger.warning(
                     "FIP packet #%s expected %d points for %d sensors at %.6fs, got %d; "
-                    "sample_rate=%.1fHz; splitting evenly at %d point(s) per sensor.",
+                    "sample_rate=%.1fHz; using interleaved fallback with %d point(s) per sensor.",
                     "-" if comm_count is None else comm_count,
                     expected_points,
                     count,
@@ -124,9 +123,10 @@ def split_fip_sensor_data(
                     normalize_fip_sample_rate(sample_rate_hz),
                     fallback_points,
                 )
+            trimmed = data[:fallback_points * count]
             return {
-                1: data[:fallback_points],
-                2: data[fallback_points:fallback_points * count],
+                sensor_index + 1: trimmed[sensor_index::count]
+                for sensor_index in range(count)
             }
         if logger is not None:
             logger.warning(
@@ -153,10 +153,32 @@ def split_fip_sensor_data(
             data.size - expected_points,
         )
 
-    return {
-        1: data[:points_per_sensor],
-        2: data[points_per_sensor:expected_points],
+    trimmed = data[:expected_points]
+    result = {
+        sensor_index + 1: trimmed[sensor_index::count]
+        for sensor_index in range(count)
     }
+    if logger is not None and (comm_count is None or int(comm_count) % 50 == 0):
+        summaries = []
+        for sensor_index, values in result.items():
+            arr = np.asarray(values)
+            if arr.size:
+                summaries.append(
+                    "FIP%d:first=%.9g range=[%.9g,%.9g]" % (
+                        sensor_index,
+                        float(arr[0]),
+                        float(np.min(arr)),
+                        float(np.max(arr)),
+                    )
+                )
+        logger.info(
+            "FIP_SPLIT comm=%s layout=interleaved sensors=%d points_per_sensor=%d %s",
+            "-" if comm_count is None else comm_count,
+            count,
+            points_per_sensor,
+            "; ".join(summaries),
+        )
+    return result
 
 
 def _repair_extreme_phase_values(data: np.ndarray, invalid_mask: np.ndarray) -> np.ndarray:

@@ -52,6 +52,7 @@ class SignalFilter:
 
         # Filter state for continuous filtering
         self.filter_state = None
+        self._filter_state_initialized = False
 
         # Performance statistics
         self.total_samples_processed = 0
@@ -78,6 +79,7 @@ class SignalFilter:
                 self.filter_type = 'none'
                 self.filter_coefficients = None
                 self.filter_state = None
+                self._filter_state_initialized = False
                 self.logger.info("Filter disabled")
                 return True
 
@@ -124,6 +126,7 @@ class SignalFilter:
 
             # Initialize filter state
             self.filter_state = signal.sosfilt_zi(sos)
+            self._filter_state_initialized = False
 
             self.logger.info(
                 f"Designed {filter_type} filter: order={order}, "
@@ -168,6 +171,9 @@ class SignalFilter:
                 stats = self._get_filter_stats(start_time, len(data))
 
             else:
+                if not self._filter_state_initialized:
+                    self.filter_state = signal.sosfilt_zi(self.filter_coefficients) * float(data[0])
+                    self._filter_state_initialized = True
                 filtered_data, self.filter_state = signal.sosfilt(
                     self.filter_coefficients,
                     data,
@@ -298,7 +304,10 @@ class SignalFilter:
         """Reset the filter state for new data session."""
         if self.filter_coefficients is not None:
             self.filter_state = signal.sosfilt_zi(self.filter_coefficients)
+            self._filter_state_initialized = False
             self.logger.info("Filter state reset")
+        else:
+            self._filter_state_initialized = False
 
     def get_filter_info(self) -> Dict[str, Any]:
         """

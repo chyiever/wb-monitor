@@ -56,6 +56,7 @@ class Downsampler:
         # Anti-aliasing filter for decimation
         self._aa_filter = None
         self._filter_state = None
+        self._filter_state_initialized = False
 
         # Performance statistics
         self.total_input_samples = 0
@@ -84,6 +85,7 @@ class Downsampler:
             )
 
             self._filter_state = signal.sosfilt_zi(self._aa_filter)
+            self._filter_state_initialized = False
 
             self.logger.info(
                 f"Designed anti-aliasing filter: order={order}, "
@@ -94,6 +96,7 @@ class Downsampler:
             self.logger.error(f"Failed to design anti-aliasing filter: {e}")
             self._aa_filter = None
             self._filter_state = None
+            self._filter_state_initialized = False
 
     def downsample(self, data: np.ndarray) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
@@ -153,6 +156,9 @@ class Downsampler:
         """
         try:
             if self._aa_filter is not None:
+                if not self._filter_state_initialized:
+                    self._filter_state = signal.sosfilt_zi(self._aa_filter) * float(data[0])
+                    self._filter_state_initialized = True
                 # Apply anti-aliasing filter
                 filtered_data, self._filter_state = signal.sosfilt(
                     self._aa_filter,
@@ -270,6 +276,7 @@ class Downsampler:
             else:
                 self._aa_filter = None
                 self._filter_state = None
+                self._filter_state_initialized = False
 
             self.logger.info(f"Downsampling method changed to {method}")
             return True
@@ -282,6 +289,9 @@ class Downsampler:
         """Reset the downsampler state for new data session."""
         if self._filter_state is not None and self._aa_filter is not None:
             self._filter_state = signal.sosfilt_zi(self._aa_filter)
+            self._filter_state_initialized = False
+        else:
+            self._filter_state_initialized = False
 
         # Reset statistics
         self.total_input_samples = 0
@@ -431,4 +441,3 @@ class Downsampler:
             'factor': self.factor,
             'error': error
         }
-

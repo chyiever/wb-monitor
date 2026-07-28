@@ -23,16 +23,26 @@ from PyQt5.QtCore import QObject, pyqtSignal
 
 class DataPacket:
     """Data packet structure"""
-    def __init__(self, data_array: np.ndarray, timestamp: float, packet_count: int, raw_packet_count: Optional[int] = None):
+    def __init__(
+        self,
+        data_array: np.ndarray,
+        timestamp: float,
+        packet_count: int,
+        raw_packet_count: Optional[int] = None,
+        receive_timestamp: Optional[float] = None,
+    ):
         self.phase_data = data_array
         self.timestamp = timestamp
         self.comm_count = packet_count
         self.raw_comm_count = packet_count if raw_packet_count is None else raw_packet_count
+        self.receive_timestamp = time.time() if receive_timestamp is None else float(receive_timestamp)
         self.data_size = len(data_array) * 8
 
 
 COMM_INTERVAL = 1.0  # Default FIP packet duration; runtime value is configured in Tab1.
 MAX_DATA_LENGTH_BYTES = 128 * 1024 * 1024
+FIP_FIXED_POINT_FRACTION_BITS = 24
+FIP_FIXED_POINT_SCALE = float(2 ** FIP_FIXED_POINT_FRACTION_BITS)
 
 
 class OptimizedTCPServer(QObject):
@@ -72,6 +82,8 @@ class OptimizedTCPServer(QObject):
         # Communication counter normalization (per connection/session)
         self._comm_base_raw: Optional[int] = None
         self._last_raw_comm_count: Optional[int] = None
+        self._last_comm_count: Optional[int] = None
+        self.missing_packets = 0
 
         # Performance monitoring
         self.performance_stats = {
@@ -193,6 +205,8 @@ class OptimizedTCPServer(QObject):
                 self._last_statistics_snapshot_bytes = 0
                 self._comm_base_raw = None
                 self._last_raw_comm_count = None
+                self._last_comm_count = None
+                self.missing_packets = 0
                 self.performance_stats = {
                     'receive_times': [],
                     'tcp_queue_sizes': [],
@@ -243,10 +257,12 @@ class OptimizedTCPServer(QObject):
                 if not data_buff:
                     self.logger.warning("Failed to receive complete data packet")
                     continue
+                packet_receive_time = time.time()
 
                 # Process data - no duplicate checking, accept all valid packets
-                packet = self._process_data(data_buff, data_length, comm_count, raw_comm_count)
+                packet = self._process_data(data_buff, data_length, comm_count, raw_comm_count, packet_receive_time)
                 if packet:
+                    self._update_gap_stats(comm_count)
                     self.packets_received += 1
                     self.total_data_received += data_length
                     self.total_data_received_lifetime += data_length
@@ -343,7 +359,36 @@ class OptimizedTCPServer(QObject):
         self._last_raw_comm_count = raw_comm_count
         return raw_comm_count - self._comm_base_raw
 
-    def _process_data(self, data_buff: bytes, data_length: int, comm_count: int, raw_comm_count: int) -> Optional[DataPacket]:
+    def _update_gap_stats(self, comm_count: int) -> None:
+        if self._last_comm_count is None:
+            self._last_comm_count = comm_count
+            return
+        if comm_count > self._last_comm_count + 1:
+            gap = comm_count - self._last_comm_count - 1
+            self.missing_packets += gap
+            self.logger.warning(
+                "FIP communication gap detected: last=%s current=%s missing=%s total_missing=%s",
+                self._last_comm_count,
+                comm_count,
+                gap,
+                self.missing_packets,
+            )
+        elif comm_count <= self._last_comm_count:
+            self.logger.info(
+                "FIP communication counter reset/out-of-order: last=%s current=%s",
+                self._last_comm_count,
+                comm_count,
+            )
+        self._last_comm_count = comm_count
+
+    def _process_data(
+        self,
+        data_buff: bytes,
+        data_length: int,
+        comm_count: int,
+        raw_comm_count: int,
+        receive_timestamp: float,
+    ) -> Optional[DataPacket]:
         """Process received data"""
         try:
             # 每 50 包记录一次，避免 TCP 接收循环中高频 INFO 日志拖慢性能
@@ -352,29 +397,30 @@ class OptimizedTCPServer(QObject):
                     f"Processing data: length={data_length}, comm_count={comm_count}, raw_comm_count={raw_comm_count}"
                 )
 
-            # Check data length (must be multiple of 8 for <32,32> fixed point)
+            # Check data length (must be multiple of 8 for signed Q40.24 fixed point)
             if data_length % 8 != 0:
                 self.logger.warning(f"Invalid data length: {data_length} (not multiple of 8)")
                 return None
 
-            # Parse <32,32> fixed point format (big endian)
+            # Parse signed Q40.24 fixed point format (big endian)
             point_count = data_length // 8
             raw_values = np.frombuffer(data_buff, dtype=">i8", count=point_count)
 
-            # Convert to float (<32,32> format: divide by 2^32)
-            data_array = raw_values.astype(np.float64) / float(2**32)
+            # Convert signed Q40.24 fixed point to the FIP device engineering unit.
+            data_array = raw_values.astype(np.float64) / FIP_FIXED_POINT_SCALE
 
             # 每 50 包记录一次解析结果
             if comm_count % 50 == 0:
                 self.logger.info(
                     "FIP_TCP_PARSE comm=%s raw_comm=%s points=%d raw_first=%d "
-                    "raw_range=[%d,%d] decoded_first=%.9g decoded_range=[%.9g,%.9g]",
+                    "raw_range=[%d,%d] fixed_q=Q40.%d decoded_first=%.9g decoded_range=[%.9g,%.9g]",
                     comm_count,
                     raw_comm_count,
                     point_count,
                     int(raw_values[0]) if point_count else 0,
                     int(np.min(raw_values)) if point_count else 0,
                     int(np.max(raw_values)) if point_count else 0,
+                    FIP_FIXED_POINT_FRACTION_BITS,
                     float(data_array[0]) if point_count else float("nan"),
                     float(np.min(data_array)) if point_count else float("nan"),
                     float(np.max(data_array)) if point_count else float("nan"),
@@ -391,7 +437,13 @@ class OptimizedTCPServer(QObject):
             # timestamp 仅作为绘图缓冲区的起始提示（seconds），
             # 绘图缓冲区会以实际样本数连续延伸，此值只在首包或断连重锚时有意义。
             # 用 0.0 即可，缓冲区内部自行维护连续时间轴。
-            return DataPacket(data_array, 0.0, comm_count, raw_packet_count=raw_comm_count)
+            return DataPacket(
+                data_array,
+                0.0,
+                comm_count,
+                raw_packet_count=raw_comm_count,
+                receive_timestamp=receive_timestamp,
+            )
 
         except Exception as e:
             self.logger.error(f"Error processing data packet #{comm_count}: {e}")
@@ -505,10 +557,16 @@ class OptimizedTCPServer(QObject):
         if self.performance_stats['tcp_queue_sizes']:
             avg_queue_size = sum(self.performance_stats['tcp_queue_sizes']) / len(self.performance_stats['tcp_queue_sizes'])
             max_queue_size = max(self.performance_stats['tcp_queue_sizes'])
+        total_packet_slots = self.packets_received + self.missing_packets
+        loss_rate = (self.missing_packets / total_packet_slots * 100.0) if total_packet_slots > 0 else 0.0
 
         return {
             'connected': self._connected,
             'packets_received': self.packets_received,
+            'missing_packets': self.missing_packets,
+            'packets_lost': self.missing_packets,
+            'loss_rate': loss_rate,
+            'last_comm_count': -1 if self._last_comm_count is None else self._last_comm_count,
             'total_data_received': self.total_data_received_lifetime,
             'packet_rate': packet_rate,
             'data_rate_mbps': data_rate_mbps,
