@@ -149,8 +149,8 @@ class DASTab3Manager(QObject):
         self.server.ip = settings["communication"]["ip"]
         self.server.port = settings["communication"]["port"]
         plot_settings = dict(settings["plot"])
-        plot_settings.setdefault("curve_max_points", 20000)
-        plot_settings.setdefault("space_time_max_pixels", 300000)
+        plot_settings.setdefault("curve_max_points", 5000)
+        plot_settings.setdefault("space_time_max_pixels", 120000)
         self.plot_worker.update_settings(plot_settings)
         self._joint_storage_enabled = bool(
             storage_settings.get("joint_enabled", storage_settings.get("enabled", False))
@@ -243,7 +243,8 @@ class DASTab3Manager(QObject):
         parsed = self._parse_packet(raw_packet)
         if hasattr(self.main_window, 'record_edas_packet_receive'):
             try:
-                self.main_window.record_edas_packet_receive(parsed.header.comm_count, time.time())
+                receive_time = float(getattr(raw_packet, "receive_timestamp", time.time()))
+                self.main_window.record_edas_packet_receive(parsed.header.comm_count, receive_time)
             except Exception as sync_exc:
                 self.logger.warning(
                     "Failed to update FIP/eDAS receive-time sync UI for DAS packet #%s: %s",

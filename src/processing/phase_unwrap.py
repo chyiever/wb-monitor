@@ -41,7 +41,7 @@ class PhaseUnwrapper:
         self._range_warning_segments = 0
         self._range_warning_suppressed = 0
 
-    def unwrap_phase(self, wrapped_phase: np.ndarray) -> Tuple[np.ndarray, dict]:
+    def unwrap_phase(self, wrapped_phase: np.ndarray, force_normalized: bool = False) -> Tuple[np.ndarray, dict]:
         """
         Unwrap phase data from [-1, 1] to continuous phase values.
 
@@ -51,7 +51,9 @@ class PhaseUnwrapper:
         3. Ensures continuity with previous data segments
 
         Args:
-            wrapped_phase: Input wrapped phase data in [-1, 1] range
+            wrapped_phase: Input wrapped phase data. When force_normalized is True,
+                the values are treated as normalized FPGA phase and mapped by
+                phase * pi before unwrapping.
 
         Returns:
             Tuple of (unwrapped_phase, statistics)
@@ -68,8 +70,13 @@ class PhaseUnwrapper:
             if len(wrapped_phase) == 0:
                 return np.array([]), self._get_statistics(start_time, 0)
 
-            # Check data range
-            if np.any(np.abs(wrapped_phase) > 1.1):  # Allow small tolerance
+            finite_values = wrapped_phase[np.isfinite(wrapped_phase)]
+            range_min = float(np.min(finite_values)) if finite_values.size else float("nan")
+            range_max = float(np.max(finite_values)) if finite_values.size else float("nan")
+            max_abs = float(np.max(np.abs(finite_values))) if finite_values.size else 0.0
+            input_is_normalized = bool(force_normalized or max_abs <= 1.1)
+
+            if force_normalized and max_abs > 1.1:
                 self._range_warning_segments += 1
                 should_log_range_warning = (
                     self._range_warning_segments == 1
@@ -79,18 +86,38 @@ class PhaseUnwrapper:
                     suppressed = self._range_warning_suppressed
                     self._range_warning_suppressed = 0
                     self.logger.warning(
-                        "Input data outside expected range [-1, 1]: "
+                        "Input data outside normalized [-1, 1], but force_normalized=True; "
+                        "applying phase*pi before unwrap: min=%.3f, max=%.3f, segments=%d, suppressed=%d",
+                        range_min,
+                        range_max,
+                        self._range_warning_segments,
+                        suppressed,
+                    )
+                else:
+                    self._range_warning_suppressed += 1
+            elif not input_is_normalized:
+                self._range_warning_segments += 1
+                should_log_range_warning = (
+                    self._range_warning_segments == 1
+                    or self._range_warning_segments % self.RANGE_WARNING_INTERVAL_SEGMENTS == 0
+                )
+                if should_log_range_warning:
+                    suppressed = self._range_warning_suppressed
+                    self._range_warning_suppressed = 0
+                    self.logger.warning(
+                        "Input data outside normalized [-1, 1]; treating as engineering/radian phase: "
                         "min=%.3f, max=%.3f, segments=%d, suppressed=%d",
-                        float(np.min(wrapped_phase)),
-                        float(np.max(wrapped_phase)),
+                        range_min,
+                        range_max,
                         self._range_warning_segments,
                         suppressed,
                     )
                 else:
                     self._range_warning_suppressed += 1
 
-            # Map to [-π, π] range
-            phase_rad = wrapped_phase * np.pi
+            # Normalized FPGA phase uses [-1, 1] -> [-pi, pi]. Engineering/radian
+            # phase data is already in physical units and must not be scaled again.
+            phase_rad = wrapped_phase * np.pi if input_is_normalized else wrapped_phase.astype(np.float64, copy=False)
 
             # Apply phase unwrapping
             unwrapped = np.unwrap(phase_rad, discont=np.pi)

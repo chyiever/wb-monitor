@@ -30,7 +30,7 @@ import pyqtgraph as pg
 from scipy import signal
 
 # 设置PyQtGraph的样式
-pg.setConfigOptions(antialias=True)
+pg.setConfigOptions(antialias=False)
 pg.setConfigOption('background', 'w')
 pg.setConfigOption('foreground', 'k')
 
@@ -79,6 +79,11 @@ class MainWindow(QMainWindow):
         self._sync_fip_receive_times: Dict[int, float] = {}
         self._sync_edas_receive_times: Dict[int, float] = {}
         self._sync_deltas: List[float] = []
+        self._sync_first_pair: Optional[Tuple[int, float]] = None
+        self._sync_latest_pair: Optional[Tuple[int, float]] = None
+        self._sync_delta_sum = 0.0
+        self._sync_delta_count = 0
+        self._sync_matched_counts = set()
         self._persist_logger = logging.getLogger(f"{__name__}.GuiPersistence")
         self._persist_config_path = Path(__file__).resolve().parents[2] / "config" / "gui_last_state.json"
         self._persist_loading = False
@@ -92,6 +97,7 @@ class MainWindow(QMainWindow):
         self._init_menu()
         self._init_status_bar()
         self._setup_connections()
+        self._apply_global_display_runtime_settings()
 
         # 应用默认的PSD设置范围（解决问题3）
         self._apply_initial_psd_settings()
@@ -217,16 +223,17 @@ class MainWindow(QMainWindow):
         self._tab3_logger = logging.getLogger(f"{__name__}.ViewUI")
         self._tab3_last_fip_plot_monotonic = 0.0
         self._tab3_last_das_plot_monotonic = 0.0
-        self._tab3_fip_plot_min_interval_seconds = 0.4
-        self._tab3_das_plot_min_interval_seconds = 0.2
-        self._tab3_curve_max_points = 8000
-        self._tab3_space_time_max_pixels = 300000
+        self._tab3_fip_plot_min_interval_seconds = 0.5
+        self._tab3_das_plot_min_interval_seconds = 0.5
+        self._tab3_curve_max_points = 5000
+        self._tab3_space_time_max_pixels = 120000
         self._tab3_ui_slow_threshold_ms = 80.0
         self._tab3_last_space_time_rect = None
         self._tab3_space_time_levels_locked = True
         self._view_curve_cache: Dict[int, Dict[str, Any]] = {1: {}, 2: {}}
         self._view_psd_update_interval_seconds = 1.0
         self._view_last_psd_update_monotonic = 0.0
+        self._view_psd_update_pending = False
         self._view_psd_eps = 1e-24
         self._tab3_colormap_options = [
             ("Jet", "jet"), ("Viridis", "viridis"), ("Plasma", "plasma"),
@@ -359,6 +366,9 @@ class MainWindow(QMainWindow):
         self.downsample_spin.setRange(1, 100)
         self.downsample_spin.setValue(5)
         layout.addWidget(self.downsample_spin, 2, 1)
+        self.fip_phase_unwrap_check = QCheckBox("FIP相位展开")
+        self.fip_phase_unwrap_check.setChecked(False)
+        layout.addWidget(self.fip_phase_unwrap_check, 2, 2, 1, 2)
         return group
 
     def _create_visualization_group(self) -> QGroupBox:
@@ -375,21 +385,21 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.time_display_duration_spin, 0, 1)
         layout.addWidget(QLabel("FIP刷新(s)"), 0, 2)
         self.view_fip_refresh_spin = QDoubleSpinBox()
-        self.view_fip_refresh_spin.setRange(0.05, 5.0)
+        self.view_fip_refresh_spin.setRange(0.2, 5.0)
         self.view_fip_refresh_spin.setDecimals(2)
-        self.view_fip_refresh_spin.setSingleStep(0.05)
+        self.view_fip_refresh_spin.setSingleStep(0.1)
         self.view_fip_refresh_spin.setValue(self._tab3_fip_plot_min_interval_seconds)
         layout.addWidget(self.view_fip_refresh_spin, 0, 3)
         layout.addWidget(QLabel("eDAS刷新(s)"), 1, 0)
         self.view_edas_refresh_spin = QDoubleSpinBox()
-        self.view_edas_refresh_spin.setRange(0.05, 5.0)
+        self.view_edas_refresh_spin.setRange(0.5, 5.0)
         self.view_edas_refresh_spin.setDecimals(2)
-        self.view_edas_refresh_spin.setSingleStep(0.05)
+        self.view_edas_refresh_spin.setSingleStep(0.1)
         self.view_edas_refresh_spin.setValue(self._tab3_das_plot_min_interval_seconds)
         layout.addWidget(self.view_edas_refresh_spin, 1, 1)
         layout.addWidget(QLabel("单曲线点数"), 1, 2)
         self.view_curve_max_points_spin = QSpinBox()
-        self.view_curve_max_points_spin.setRange(1000, 200000)
+        self.view_curve_max_points_spin.setRange(1000, 50000)
         self.view_curve_max_points_spin.setSingleStep(1000)
         self.view_curve_max_points_spin.setValue(self._tab3_curve_max_points)
         layout.addWidget(self.view_curve_max_points_spin, 1, 3)
@@ -686,15 +696,11 @@ class MainWindow(QMainWindow):
         self.conn_status_label = QLabel("未连接")
         self.conn_status_label.setStyleSheet("color: #9aa0a6; font-weight: bold;")
         layout.addWidget(self.conn_status_label, 3, 1)
-        layout.addWidget(QLabel("接收包"), 3, 2)
         self.packet_count_label = QLabel("0")
-        layout.addWidget(self.packet_count_label, 3, 3)
-        layout.addWidget(QLabel("丢包率"), 4, 2)
         self.loss_rate_label = QLabel("0.00%")
-        layout.addWidget(self.loss_rate_label, 4, 3)
         hint_label = QLabel("服务端监听本机地址；不确定网卡时使用 0.0.0.0")
         hint_label.setStyleSheet("color: #5f6b7a; font-size: 11px;")
-        layout.addWidget(hint_label, 5, 0, 1, 4)
+        layout.addWidget(hint_label, 4, 0, 1, 4)
         return group
 
     def _create_das_communication_group(self) -> QGroupBox:
@@ -716,30 +722,24 @@ class MainWindow(QMainWindow):
         self.tab3_conn_status_label = QLabel("Disconnected")
         self.tab3_conn_status_label.setStyleSheet("color: #9aa0a6; font-weight: bold;")
         layout.addWidget(self.tab3_conn_status_label, 1, 1)
-        layout.addWidget(QLabel("接收包"), 1, 2)
         self.tab3_packet_count_label = QLabel("0")
-        layout.addWidget(self.tab3_packet_count_label, 1, 3)
-        layout.addWidget(QLabel("缺包"), 2, 0)
         self.tab3_missing_packet_label = QLabel("0")
-        layout.addWidget(self.tab3_missing_packet_label, 2, 1)
-        layout.addWidget(QLabel("Comm"), 2, 2)
         self.tab3_last_comm_label = QLabel("-")
-        layout.addWidget(self.tab3_last_comm_label, 2, 3)
-        layout.addWidget(QLabel("通道"), 3, 0)
+        layout.addWidget(QLabel("通道"), 2, 0)
         self.tab3_channel_count_label = QLabel("-")
-        layout.addWidget(self.tab3_channel_count_label, 3, 1)
-        layout.addWidget(QLabel("采样率"), 3, 2)
+        layout.addWidget(self.tab3_channel_count_label, 2, 1)
+        layout.addWidget(QLabel("采样率"), 2, 2)
         self.tab3_sample_rate_label = QLabel("-")
-        layout.addWidget(self.tab3_sample_rate_label, 3, 3)
-        layout.addWidget(QLabel("字节"), 4, 0)
+        layout.addWidget(self.tab3_sample_rate_label, 2, 3)
+        layout.addWidget(QLabel("字节"), 3, 0)
         self.tab3_data_bytes_label = QLabel("-")
-        layout.addWidget(self.tab3_data_bytes_label, 4, 1)
-        layout.addWidget(QLabel("包长"), 4, 2)
+        layout.addWidget(self.tab3_data_bytes_label, 3, 1)
+        layout.addWidget(QLabel("包长"), 3, 2)
         self.tab3_packet_duration_label = QLabel("-")
-        layout.addWidget(self.tab3_packet_duration_label, 4, 3)
+        layout.addWidget(self.tab3_packet_duration_label, 3, 3)
         hint_label = QLabel("服务端监听本机地址；不确定网卡时使用 0.0.0.0")
         hint_label.setStyleSheet("color: #5f6b7a; font-size: 11px;")
-        layout.addWidget(hint_label, 5, 0, 1, 4)
+        layout.addWidget(hint_label, 4, 0, 1, 4)
         return group
 
     def _create_data_comm_control_group(self) -> QGroupBox:
@@ -762,36 +762,47 @@ class MainWindow(QMainWindow):
         return group
 
     def _create_data_comm_status_group(self) -> QGroupBox:
-        group = QGroupBox("通信完整性")
+        group = QGroupBox("通信统计")
         layout = QGridLayout(group)
-        headers = ["模块", "成功", "失败", "缺包/丢包率"]
+        for column in range(6):
+            layout.setColumnStretch(column, 1 if column else 0)
+        headers = ["模块", "状态", "接收包", "缺包/失败", "丢包率", "最近Comm"]
         for column, header in enumerate(headers):
             label = QLabel(header)
             label.setStyleSheet("font-weight: bold;")
             layout.addWidget(label, 0, column)
         layout.addWidget(QLabel("FIP"), 1, 0)
+        self.data_fip_status_label = QLabel("未连接")
+        self.data_fip_status_label.setStyleSheet("color: #9aa0a6; font-weight: bold;")
         self.data_fip_success_label = QLabel("0")
         self.data_fip_failure_label = QLabel("0")
         self.data_fip_loss_rate_label = QLabel("0.00%")
-        layout.addWidget(self.data_fip_success_label, 1, 1)
-        layout.addWidget(self.data_fip_failure_label, 1, 2)
-        layout.addWidget(self.data_fip_loss_rate_label, 1, 3)
+        self.data_fip_last_comm_label = QLabel("-")
+        layout.addWidget(self.data_fip_status_label, 1, 1)
+        layout.addWidget(self.data_fip_success_label, 1, 2)
+        layout.addWidget(self.data_fip_failure_label, 1, 3)
+        layout.addWidget(self.data_fip_loss_rate_label, 1, 4)
+        layout.addWidget(self.data_fip_last_comm_label, 1, 5)
         layout.addWidget(QLabel("eDAS"), 2, 0)
+        self.data_edas_status_label = QLabel("未连接")
+        self.data_edas_status_label.setStyleSheet("color: #9aa0a6; font-weight: bold;")
         self.data_edas_success_label = QLabel("0")
         self.data_edas_failure_label = QLabel("0")
         self.data_edas_loss_rate_label = QLabel("0.00%")
-        layout.addWidget(self.data_edas_success_label, 2, 1)
-        layout.addWidget(self.data_edas_failure_label, 2, 2)
-        layout.addWidget(self.data_edas_loss_rate_label, 2, 3)
+        layout.addWidget(self.data_edas_status_label, 2, 1)
+        layout.addWidget(self.data_edas_success_label, 2, 2)
+        layout.addWidget(self.data_edas_failure_label, 2, 3)
+        layout.addWidget(self.data_edas_loss_rate_label, 2, 4)
+        layout.addWidget(self.tab3_last_comm_label, 2, 5)
         return group
 
     def _create_data_sync_group(self) -> QGroupBox:
         group = QGroupBox("FIP/eDAS时间同步检验")
         layout = QGridLayout(group)
         labels = [
-            ("首包时间差(s)", "data_sync_first_delta_label"),
-            ("最新同序号时间差(s)", "data_sync_latest_delta_label"),
-            ("平均时间差(s)", "data_sync_avg_delta_label"),
+            ("首包时间差（FIP-eDAS）(s)", "data_sync_first_delta_label"),
+            ("最新同序号时间差（FIP-eDAS）(s)", "data_sync_latest_delta_label"),
+            ("平均时间差（FIP-eDAS）(s)", "data_sync_avg_delta_label"),
             ("匹配包数", "data_sync_match_count_label"),
         ]
         for row, (label, attr) in enumerate(labels):
@@ -1159,9 +1170,9 @@ class MainWindow(QMainWindow):
         self.setting_tick_font_spin.setRange(7, 24)
         self.setting_tick_font_spin.setValue(11)
         grid.addWidget(self.setting_tick_font_spin, 3, 1)
-        self.setting_apply_btn = QPushButton("应用全局设置")
+        self.setting_apply_btn = QPushButton("应用并保存全局设置")
         self.setting_apply_btn.setMinimumHeight(42)
-        self._style_action_button(self.setting_apply_btn, False, min_height=42, min_width=140, font_size=14)
+        self._style_action_button(self.setting_apply_btn, False, min_height=42, min_width=190, font_size=14)
         grid.addWidget(self.setting_apply_btn, 4, 0, 1, 2)
         layout.addWidget(group)
         layout.addStretch()
@@ -1283,6 +1294,10 @@ class MainWindow(QMainWindow):
             "selected_sensor": selected_sensor,
             "packet_duration_seconds": max(packet_duration_seconds, 0.001),
             "sample_rate_hz": max(sample_rate_mhz, 0.001) * 1_000_000.0,
+            "phase_unwrap_enabled": bool(
+                getattr(self, 'fip_phase_unwrap_check', None)
+                and self.fip_phase_unwrap_check.isChecked()
+            ),
         }
 
     def _combo_current_data_int(self, combo, default: int) -> int:
@@ -1322,6 +1337,12 @@ class MainWindow(QMainWindow):
             self.fip_sensor_settings_changed.emit(self.get_tab1_fip_settings())
         if hasattr(self, 'tab3_settings_changed'):
             self.tab3_settings_changed.emit()
+
+    def _on_fip_phase_unwrap_changed(self, _checked: bool):
+        """Notify dependent pipelines after toggling FIP phase unwrapping."""
+        if hasattr(self, 'fip_sensor_settings_changed'):
+            self.fip_sensor_settings_changed.emit(self.get_tab1_fip_settings())
+        self._update_view_psd_curves(force=True)
 
     def _update_fip_sensor_controls(self, emit: bool = True):
         settings = self.get_tab1_fip_settings()
@@ -1574,6 +1595,7 @@ class MainWindow(QMainWindow):
         sample_rate_hz = fip_settings.get("sample_rate_hz")
         if sample_rate_hz is not None:
             self._set_spin_value(getattr(self, "fip_sample_rate_mhz_spin", None), float(sample_rate_hz) / 1_000_000.0)
+        self._set_checked(getattr(self, "fip_phase_unwrap_check", None), fip_settings.get("phase_unwrap_enabled", False))
         self._update_fip_sensor_controls(emit=False)
         self._set_combo_value(getattr(self, "fip_plot_sensor_combo", None), fip_settings.get("selected_sensor"))
 
@@ -1731,7 +1753,7 @@ class MainWindow(QMainWindow):
         self._update_tab2_enable_button_state(False)
         self._apply_tab3_space_time_colormap()
         self._apply_tab3_space_time_levels()
-        self._apply_global_settings()
+        self._apply_global_display_runtime_settings()
         if self.view_axis_enable_check.isChecked():
             self._apply_view_axes()
         if hasattr(self, 'fip_sensor_settings_changed'):
@@ -1747,7 +1769,7 @@ class MainWindow(QMainWindow):
             self.ip_edit, self.port_spin, self.fip_packet_duration_spin,
             self.fip_sample_rate_mhz_spin, self.fip_sensor_count_combo, self.fip_plot_sensor_combo,
             self.filter_type_combo, self.low_freq_spin, self.high_freq_spin,
-            self.filter_order_spin, self.downsample_spin,
+            self.filter_order_spin, self.downsample_spin, self.fip_phase_unwrap_check,
             self.time_plot_btn, self.psd_plot_btn, self.tab3_plot_toggle_btn,
             self.time_display_duration_spin, self.view_fip_refresh_spin,
             self.view_edas_refresh_spin, self.view_curve_max_points_spin,
@@ -1810,9 +1832,15 @@ class MainWindow(QMainWindow):
         if connected:
             self.conn_status_label.setText("已连接")
             self.conn_status_label.setStyleSheet("color: green; font-weight: bold;")
+            if hasattr(self, 'data_fip_status_label'):
+                self.data_fip_status_label.setText("已连接")
+                self.data_fip_status_label.setStyleSheet("color: green; font-weight: bold;")
         else:
             self.conn_status_label.setText("未连接")
             self.conn_status_label.setStyleSheet("color: red; font-weight: bold;")
+            if hasattr(self, 'data_fip_status_label'):
+                self.data_fip_status_label.setText("未连接")
+                self.data_fip_status_label.setStyleSheet("color: red; font-weight: bold;")
         self._refresh_comm_lights()
         self.status_bar.showMessage(message, 3000)
 
@@ -1829,6 +1857,11 @@ class MainWindow(QMainWindow):
             self.data_fip_success_label.setText(str(packets_received))
             self.data_fip_failure_label.setText(str(self._fip_comm_failure_count))
             self.data_fip_loss_rate_label.setText(f"{loss_rate:.2f}%")
+            try:
+                last_comm = int(stats.get('last_comm_count', -1))
+            except (TypeError, ValueError):
+                last_comm = -1
+            self.data_fip_last_comm_label.setText("-" if last_comm < 0 else str(last_comm))
         self._refresh_comm_lights()
 
     def update_feature_displays(self, features: Dict[str, Dict[str, Any]]):
@@ -1975,6 +2008,11 @@ class MainWindow(QMainWindow):
         self.tab3_conn_status_label.setStyleSheet(
             "color: green; font-weight: bold;" if connected else "color: red; font-weight: bold;"
         )
+        if hasattr(self, 'data_edas_status_label'):
+            self.data_edas_status_label.setText("已连接" if connected else "未连接")
+            self.data_edas_status_label.setStyleSheet(
+                "color: green; font-weight: bold;" if connected else "color: red; font-weight: bold;"
+            )
         self._refresh_comm_lights()
         self.status_bar.showMessage(message, 3000)
 
@@ -2067,6 +2105,8 @@ class MainWindow(QMainWindow):
             return
         if not self.is_tab3_plot_enabled():
             return
+        if hasattr(self, 'tab_widget') and self.tab_widget.currentIndex() != 0:
+            return
         now = time.monotonic()
         if now - self._tab3_last_fip_plot_monotonic < self._tab3_fip_plot_min_interval_seconds:
             values_arr = np.asarray(values)
@@ -2140,6 +2180,8 @@ class MainWindow(QMainWindow):
         header = payload.get("header", {})
         self.update_tab3_header_status(header)
         if not self.is_tab3_plot_enabled():
+            return
+        if hasattr(self, 'tab_widget') and self.tab_widget.currentIndex() != 0:
             return
         now = time.monotonic()
         comm_count = header.get("comm_count", "-")
@@ -2229,6 +2271,7 @@ class MainWindow(QMainWindow):
         self._reset_tab3_space_time_image()
         self._tab3_last_fip_plot_monotonic = 0.0
         self._tab3_last_das_plot_monotonic = 0.0
+        self._view_psd_update_pending = False
         self.tab3_last_storage_label.setText("-")
         self.tab3_edas_last_storage_label.setText("-")
         self.tab3_packet_count_label.setText("0")
@@ -2489,7 +2532,7 @@ class MainWindow(QMainWindow):
         if hasattr(curve_item, "setClipToView"):
             curve_item.setClipToView(True)
         if hasattr(curve_item, "setDownsampling"):
-            curve_item.setDownsampling(auto=True, method="peak")
+            curve_item.setDownsampling(auto=True, method="subsample")
         if hasattr(curve_item, "setSkipFiniteCheck"):
             curve_item.setSkipFiniteCheck(True)
 
@@ -2501,11 +2544,22 @@ class MainWindow(QMainWindow):
             view_box = plot.getViewBox()
             view_box.setMouseEnabled(x=True, y=True)
             view_box.setMouseMode(pg.ViewBox.RectMode)
+            if hasattr(view_box, "sigRangeChangedManually"):
+                view_box.sigRangeChangedManually.connect(
+                    lambda *_args, plot_widget=plot: self._handle_plot_manual_range_change(plot_widget)
+                )
             plot.setMenuEnabled(True)
             if hasattr(plot, "showButtons"):
                 plot.showButtons()
         except Exception as exc:
             self._tab3_logger.debug("TAB3_NODE ui.plot_interaction_setup_failed %s", exc)
+
+    def _handle_plot_manual_range_change(self, plot: pg.PlotWidget) -> None:
+        """Keep live setData calls from fighting user pan/zoom interactions."""
+        try:
+            plot.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=False)
+        except Exception:
+            pass
 
     def _plot_for_curve_item(self, curve_item) -> Optional[pg.PlotWidget]:
         if curve_item in (getattr(self, 'tab3_curve1_das_curve', None), getattr(self, 'tab3_curve1_fip_curve', None)):
@@ -2576,7 +2630,7 @@ class MainWindow(QMainWindow):
                 setattr(curve_item, "_tab3_has_data", False)
             self._set_curve_legend_name(curve_item, None)
             self._cache_view_curve_data(curve_item, curve_mode, [], [])
-            self._update_view_psd_curves()
+            self._request_view_psd_update()
             return
         curve_item.setData(plot_times, plot_values)
         setattr(curve_item, "_tab3_has_data", True)
@@ -2585,7 +2639,7 @@ class MainWindow(QMainWindow):
             self._legend_name_for_curve(self._curve_index_for_item(curve_item), curve_mode),
         )
         self._cache_view_curve_data(curve_item, curve_mode, plot_times, plot_values)
-        self._update_view_psd_curves()
+        self._request_view_psd_update()
 
     def clear_alarm_table(self):
         """Clear the alarm table and counters."""
@@ -2884,11 +2938,16 @@ class MainWindow(QMainWindow):
         self._sync_fip_receive_times.clear()
         self._sync_edas_receive_times.clear()
         self._sync_deltas.clear()
+        self._sync_first_pair = None
+        self._sync_latest_pair = None
+        self._sync_delta_sum = 0.0
+        self._sync_delta_count = 0
+        self._sync_matched_counts.clear()
         if hasattr(self, 'data_sync_first_delta_label'):
-            self.data_sync_first_delta_label.setText("首次包时间差: -- s")
-            self.data_sync_latest_delta_label.setText("最新同序号包时间差: -- s")
-            self.data_sync_average_delta_label.setText("平均时间差: -- s")
-            self.data_sync_pair_count_label.setText("已匹配包数: 0")
+            self.data_sync_first_delta_label.setText("-- s")
+            self.data_sync_latest_delta_label.setText("-- s")
+            self.data_sync_average_delta_label.setText("-- s")
+            self.data_sync_pair_count_label.setText("0")
 
     def record_fip_packet_receive(self, comm_count: int, receive_time: float) -> None:
         try:
@@ -2896,6 +2955,7 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             return
         self._sync_fip_receive_times[key] = float(receive_time)
+        self._update_sync_pair_for_key(key)
         self._trim_sync_tracking()
         self._refresh_sync_delta_labels()
         self._refresh_comm_lights()
@@ -2906,6 +2966,7 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             return
         self._sync_edas_receive_times[key] = float(receive_time)
+        self._update_sync_pair_for_key(key)
         self._trim_sync_tracking()
         self._refresh_sync_delta_labels()
         self._refresh_comm_lights()
@@ -2917,25 +2978,42 @@ class MainWindow(QMainWindow):
             for key in sorted(mapping)[:len(mapping) - limit]:
                 mapping.pop(key, None)
 
+    def _update_sync_pair_for_key(self, key: int) -> None:
+        if key in self._sync_matched_counts:
+            return
+        if key not in self._sync_fip_receive_times or key not in self._sync_edas_receive_times:
+            return
+        delta = self._sync_fip_receive_times[key] - self._sync_edas_receive_times[key]
+        if not np.isfinite(delta):
+            return
+        self._sync_matched_counts.add(key)
+        self._sync_deltas.append(delta)
+        if len(self._sync_deltas) > 2000:
+            self._sync_deltas = self._sync_deltas[-2000:]
+        self._sync_delta_sum += delta
+        self._sync_delta_count += 1
+        if self._sync_first_pair is None or key < self._sync_first_pair[0]:
+            self._sync_first_pair = (key, delta)
+        if self._sync_latest_pair is None or key >= self._sync_latest_pair[0]:
+            self._sync_latest_pair = (key, delta)
+
     def _refresh_sync_delta_labels(self) -> None:
-        # Pair packets by communication count so the display tests acquisition-time alignment directly.
+        # Pair packets by communication count; delta direction is FIP receive time minus eDAS receive time.
         if not hasattr(self, 'data_sync_first_delta_label'):
             return
-        common_counts = sorted(set(self._sync_fip_receive_times).intersection(self._sync_edas_receive_times))
-        if not common_counts:
-            self.data_sync_pair_count_label.setText("已匹配包数: 0")
+        if self._sync_delta_count <= 0:
+            self.data_sync_first_delta_label.setText("-- s")
+            self.data_sync_latest_delta_label.setText("-- s")
+            self.data_sync_average_delta_label.setText("-- s")
+            self.data_sync_pair_count_label.setText("0")
             return
-        deltas = [self._sync_edas_receive_times[index] - self._sync_fip_receive_times[index] for index in common_counts]
-        first_index = common_counts[0]
-        latest_index = common_counts[-1]
-        first_delta = deltas[0]
-        latest_delta = deltas[-1]
-        average_delta = float(np.mean(deltas)) if deltas else 0.0
-        self._sync_deltas = deltas
-        self.data_sync_first_delta_label.setText(f"首次包时间差: {first_delta:+.6f} s (序号 {first_index})")
-        self.data_sync_latest_delta_label.setText(f"最新同序号包时间差: {latest_delta:+.6f} s (序号 {latest_index})")
-        self.data_sync_average_delta_label.setText(f"平均时间差: {average_delta:+.6f} s")
-        self.data_sync_pair_count_label.setText(f"已匹配包数: {len(common_counts)}")
+        first_index, first_delta = self._sync_first_pair or (-1, 0.0)
+        latest_index, latest_delta = self._sync_latest_pair or (-1, 0.0)
+        average_delta = self._sync_delta_sum / max(1, self._sync_delta_count)
+        self.data_sync_first_delta_label.setText(f"{first_delta:+.6f} s (序号 {first_index})")
+        self.data_sync_latest_delta_label.setText(f"{latest_delta:+.6f} s (序号 {latest_index})")
+        self.data_sync_average_delta_label.setText(f"{average_delta:+.6f} s")
+        self.data_sync_pair_count_label.setText(str(self._sync_delta_count))
 
     def _storage_counter_text(self, prefix: str, success_count: int, failure_count: int) -> str:
         return f"{prefix}: 成功 {success_count} / 失败 {failure_count}"
@@ -2984,11 +3062,11 @@ class MainWindow(QMainWindow):
     def _apply_view_refresh_settings(self) -> None:
         # The visual refresh controls tune only the UI update cadence, not packet acquisition.
         if hasattr(self, 'view_fip_refresh_spin'):
-            self._tab3_fip_plot_min_interval_seconds = max(0.02, float(self.view_fip_refresh_spin.value()))
+            self._tab3_fip_plot_min_interval_seconds = max(0.2, float(self.view_fip_refresh_spin.value()))
         if hasattr(self, 'view_edas_refresh_spin'):
-            self._tab3_das_plot_min_interval_seconds = max(0.02, float(self.view_edas_refresh_spin.value()))
+            self._tab3_das_plot_min_interval_seconds = max(0.5, float(self.view_edas_refresh_spin.value()))
         if hasattr(self, 'view_curve_max_points_spin'):
-            self._tab3_curve_max_points = int(self.view_curve_max_points_spin.value())
+            self._tab3_curve_max_points = min(50000, max(1000, int(self.view_curve_max_points_spin.value())))
 
     def _curve_index_for_item(self, curve_item) -> int:
         if curve_item in (getattr(self, 'tab3_curve1_das_curve', None), getattr(self, 'tab3_curve1_fip_curve', None)):
@@ -3043,6 +3121,16 @@ class MainWindow(QMainWindow):
         freq, power = signal.welch(values, fs=sample_rate, nperseg=nperseg, noverlap=noverlap, detrend='constant')
         mask = np.isfinite(freq) & np.isfinite(power) & (freq > 0)
         return freq[mask], 10.0 * np.log10(power[mask] + np.finfo(float).eps)
+
+    def _request_view_psd_update(self) -> None:
+        if getattr(self, "_view_psd_update_pending", False):
+            return
+        self._view_psd_update_pending = True
+        QTimer.singleShot(80, self._run_deferred_view_psd_update)
+
+    def _run_deferred_view_psd_update(self) -> None:
+        self._view_psd_update_pending = False
+        self._update_view_psd_curves()
 
     def _update_view_psd_curves(self, force: bool = False) -> None:
         if not hasattr(self, 'view_psd1_curve'):
@@ -3121,7 +3209,7 @@ class MainWindow(QMainWindow):
                 except Exception:
                     pass
 
-    def _apply_global_settings(self) -> None:
+    def _apply_global_display_runtime_settings(self) -> None:
         if hasattr(self, 'setting_gui_font_spin'):
             gui_font = QFont()
             gui_font.setPointSize(int(self.setting_gui_font_spin.value()))
@@ -3129,9 +3217,63 @@ class MainWindow(QMainWindow):
             app = QApplication.instance()
             if app:
                 app.setFont(gui_font)
+        self._apply_global_control_metrics()
         self._apply_plot_font_settings()
         self._apply_view_axes()
-        self.status_bar.showMessage("全局显示设置已生效", 3000)
+
+    def _apply_global_control_metrics(self) -> None:
+        """Apply control heights and layout spacing that match the active GUI font."""
+        try:
+            font_pt = int(self.setting_gui_font_spin.value()) if hasattr(self, 'setting_gui_font_spin') else 14
+        except Exception:
+            font_pt = 14
+        control_height = max(32, int(round(font_pt * 2.35)))
+        label_height = max(24, int(round(font_pt * 1.9)))
+        button_height = max(36, int(round(font_pt * 2.55)))
+        spacing = max(6, int(round(font_pt * 0.55)))
+
+        for widget_class in (QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit):
+            for widget in self.findChildren(widget_class):
+                widget.setMinimumHeight(control_height)
+                widget.setSizePolicy(widget.sizePolicy().horizontalPolicy(), QSizePolicy.Fixed)
+        for checkbox in self.findChildren(QCheckBox):
+            checkbox.setMinimumHeight(label_height)
+        for button in self.findChildren(QPushButton):
+            if button.minimumHeight() < button_height:
+                button.setMinimumHeight(button_height)
+        for label in self.findChildren(QLabel):
+            label.setMinimumHeight(label_height)
+            label.setWordWrap(False)
+
+        self._apply_layout_spacing(getattr(self.centralWidget(), "layout", lambda: None)(), spacing)
+
+    def _apply_layout_spacing(self, layout, spacing: int) -> None:
+        if layout is None:
+            return
+        try:
+            layout.setSpacing(max(layout.spacing(), spacing))
+        except Exception:
+            pass
+        for attr in ("setVerticalSpacing", "setHorizontalSpacing"):
+            if hasattr(layout, attr):
+                try:
+                    getattr(layout, attr)(spacing)
+                except Exception:
+                    pass
+        for index in range(layout.count()):
+            item = layout.itemAt(index)
+            child_layout = item.layout()
+            if child_layout is not None:
+                self._apply_layout_spacing(child_layout, spacing)
+                continue
+            child_widget = item.widget()
+            if child_widget is not None and child_widget.layout() is not None:
+                self._apply_layout_spacing(child_widget.layout(), spacing)
+
+    def _save_global_settings_for_restart(self) -> None:
+        self._apply_global_display_runtime_settings()
+        self._write_persisted_configuration(self.get_current_config())
+        self.status_bar.showMessage("全局显示设置已应用并保存", 5000)
 
     def _init_status_bar(self):
         """初始化状态栏，含线程健康统计面板（X-01）。"""
@@ -3154,7 +3296,7 @@ class MainWindow(QMainWindow):
         self.status_bar.addPermanentWidget(self.thread_stats_label)
 
         # 添加软件版本信息到右侧，包含研究所名称
-        version_label = QLabel("PCCP v1.0 | 中科院半导体所")
+        version_label = QLabel("PCCP v1.0 | 中国科学院半导体研究所")
         version_label.setToolTip("融合型光纤PCCP断丝监测软件 v1.0 - 中国科学院半导体研究所")
         version_label.setStyleSheet("color: #666; font-size: 12px;")
         self.status_bar.addPermanentWidget(version_label)
@@ -3176,7 +3318,10 @@ class MainWindow(QMainWindow):
         stor_queue = stor.get("raw_queue_current_size", stor.get("raw_queue_peak", 0))
         stor_fail = stor.get("storage_failure_count", 0)
         stor_saved = stor.get("saved_file_count", 0)
-        text = f"绘丢:{proc_drop} 缺:{proc_gap} 存队:{stor_queue} 失:{stor_fail} 文件:{stor_saved}"
+        text = (
+            f"绘图丢包:{proc_drop} 缺包:{proc_gap} "
+            f"存储队列:{stor_queue} 存储失败:{stor_fail} 文件:{stor_saved}"
+        )
         # 存储失败时用红色高亮提醒
         color = "#c00" if stor_fail > 0 or proc_drop > 50 else "#444"
         self.thread_stats_label.setStyleSheet(
@@ -3225,7 +3370,15 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'view_auto_axis_btn'):
                 self.view_auto_axis_btn.clicked.connect(self._reset_view_axes)
             if hasattr(self, 'setting_apply_btn'):
-                self.setting_apply_btn.clicked.connect(self._apply_global_settings)
+                self.setting_apply_btn.clicked.connect(self._save_global_settings_for_restart)
+            for setting_spin in (
+                getattr(self, 'setting_gui_font_spin', None),
+                getattr(self, 'setting_plot_title_font_spin', None),
+                getattr(self, 'setting_axis_label_font_spin', None),
+                getattr(self, 'setting_tick_font_spin', None),
+            ):
+                if setting_spin is not None:
+                    setting_spin.valueChanged.connect(lambda _value: self._apply_global_display_runtime_settings())
             if hasattr(self, 'data_comm_both_btn'):
                 self.data_comm_both_btn.clicked.connect(self._toggle_both_communication)
             if hasattr(self, 'phase_storage_check'):
@@ -3248,6 +3401,8 @@ class MainWindow(QMainWindow):
             # 降采样参数变化时，也需要更新PSD设置（因为PSD计算依赖采样率）
             if hasattr(self, 'downsample_spin'):
                 self.downsample_spin.valueChanged.connect(self._update_psd_settings)
+            if hasattr(self, 'fip_phase_unwrap_check'):
+                self.fip_phase_unwrap_check.toggled.connect(self._on_fip_phase_unwrap_changed)
 
             if hasattr(self, 'fip_packet_duration_spin'):
                 self.fip_packet_duration_spin.valueChanged.connect(self._on_fip_input_settings_changed)

@@ -457,7 +457,8 @@ class PCCPMonitorApp:
         try:
             if hasattr(self.main_window, 'record_fip_packet_receive'):
                 try:
-                    self.main_window.record_fip_packet_receive(packet.comm_count, time.time())
+                    receive_time = float(getattr(packet, "receive_timestamp", time.time()))
+                    self.main_window.record_fip_packet_receive(packet.comm_count, receive_time)
                 except Exception as sync_exc:
                     self.logger.warning(
                         "Failed to update FIP/eDAS receive-time sync UI for FIP packet #%s: %s",
@@ -489,6 +490,7 @@ class PCCPMonitorApp:
                     "selected_sensor": 1,
                     "packet_duration_seconds": 1.0,
                     "sample_rate_hz": ORIGINAL_SAMPLE_RATE,
+                    "phase_unwrap_enabled": False,
                 }
             )
             sensor_count = int(fip_settings.get("sensor_count", 1))
@@ -565,6 +567,7 @@ class PCCPMonitorApp:
                         selected_sensor,
                         packet_duration_seconds=safe_duration,
                         sample_rate_hz=configured_sample_rate_hz,
+                        phase_unwrap_enabled=self._get_tab1_phase_unwrap_enabled(),
                     )
             return configured_sample_rate_hz
 
@@ -636,6 +639,7 @@ class PCCPMonitorApp:
                     selected_sensor,
                     packet_duration_seconds=safe_duration,
                     sample_rate_hz=inferred_sample_rate_hz,
+                    phase_unwrap_enabled=self._get_tab1_phase_unwrap_enabled(),
                 )
         return inferred_sample_rate_hz
 
@@ -907,6 +911,7 @@ class PCCPMonitorApp:
             selected_sensor = int(settings.get("selected_sensor", 1))
             packet_duration_seconds = max(float(settings.get("packet_duration_seconds", 1.0)), 1e-6)
             sample_rate_hz = max(float(settings.get("sample_rate_hz", ORIGINAL_SAMPLE_RATE)), 1.0)
+            phase_unwrap_enabled = bool(settings.get("phase_unwrap_enabled", False))
             self._fip_packet_sample_rate_override_hz = None
             self._last_fip_packet_shape_signature = None
             sample_rate_changed = self._sync_signal_filter_sample_rate(sample_rate_hz, source="fip_input_settings")
@@ -918,15 +923,17 @@ class PCCPMonitorApp:
                     selected_sensor,
                     packet_duration_seconds=packet_duration_seconds,
                     sample_rate_hz=sample_rate_hz,
+                    phase_unwrap_enabled=phase_unwrap_enabled,
                 )
             if self.tab3_manager:
                 self._sync_tab3_settings()
             self.logger.info(
-                "FIP input settings updated: sensor_count=%d selected=FIP%d duration=%.6fs sample_rate=%.1fHz",
+                "FIP input settings updated: sensor_count=%d selected=FIP%d duration=%.6fs sample_rate=%.1fHz unwrap=%s",
                 sensor_count,
                 selected_sensor,
                 packet_duration_seconds,
                 sample_rate_hz,
+                phase_unwrap_enabled,
             )
         except Exception as e:
             self.logger.error(f"Error updating FIP sensor settings: {e}")
@@ -1043,6 +1050,15 @@ class PCCPMonitorApp:
             except Exception:
                 return ORIGINAL_SAMPLE_RATE
         return ORIGINAL_SAMPLE_RATE
+
+    def _get_tab1_phase_unwrap_enabled(self) -> bool:
+        if hasattr(self.main_window, 'get_tab1_fip_settings'):
+            try:
+                settings = self.main_window.get_tab1_fip_settings()
+                return bool(settings.get("phase_unwrap_enabled", False))
+            except Exception:
+                return False
+        return False
 
     def _sync_signal_filter_sample_rate(self, sample_rate_hz: float, source: str = "runtime") -> bool:
         if not self.signal_filter:

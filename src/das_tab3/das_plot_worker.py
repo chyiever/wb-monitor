@@ -42,8 +42,8 @@ class DASPlotWorker(QThread):
             "curve2_low_hz": 1.0,
             "curve2_high_hz": 2000.0,
             "curve2_apply_filter": False,
-            "curve_max_points": 20000,
-            "space_time_max_pixels": 300000,
+            "curve_max_points": 5000,
+            "space_time_max_pixels": 120000,
         }
         self._history: list[DASParsedPacket] = []
         self._space_time_buffer: Optional[np.ndarray] = None
@@ -268,7 +268,7 @@ class DASPlotWorker(QThread):
         if point_count <= 0:
             return 1
         configured_step = max(1, int(time_downsample))
-        max_points = max(1000, int(self.settings.get("curve_max_points", 20000)))
+        max_points = min(50000, max(1000, int(self.settings.get("curve_max_points", 5000))))
         density_step = max(1, int(np.ceil(point_count / max_points)))
         return max(configured_step, density_step)
 
@@ -293,7 +293,7 @@ class DASPlotWorker(QThread):
 
         display_seconds = max(0.2, float(self.settings.get("display_seconds", 1.0)))
         sample_rate = max(float(packet.header.sample_rate_hz), 1.0)
-        max_pixels = max(50000, int(self.settings.get("space_time_max_pixels", 300000)))
+        max_pixels = min(300000, max(50000, int(self.settings.get("space_time_max_pixels", 120000))))
         effective_time_downsample = max(1, int(time_downsample))
         estimated_cols = max(1, int(np.ceil(display_seconds * sample_rate / effective_time_downsample)))
         if row_count * estimated_cols > max_pixels:
@@ -363,7 +363,7 @@ class DASPlotWorker(QThread):
             int(settings.get("time_downsample", 1)),
             int(settings.get("space_downsample", 1)),
             float(settings.get("display_seconds", 1.0)),
-            int(settings.get("space_time_max_pixels", 300000)),
+            int(settings.get("space_time_max_pixels", 120000)),
         )
 
     def _settings_for_log(self) -> Dict[str, object]:
