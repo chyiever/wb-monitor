@@ -576,15 +576,10 @@ class DataProcessingThread(QThread):
                         input_size,
                     )
 
-                if sensor_index == selected_sensor_for_filter:
-                    phase_unwrapper, signal_filter, downsampler = self._get_sensor_processors(sensor_index)
+                phase_unwrapper, signal_filter, downsampler = self._get_sensor_processors(sensor_index)
+                if downsampler is not None:
                     downsample_factor = max(1, downsampler.get_current_factor())
                 else:
-                    if sensor_index not in self._phase_unwrappers:
-                        self._phase_unwrappers[sensor_index] = type(self.phase_unwrapper)()
-                    phase_unwrapper = self._phase_unwrappers[sensor_index]
-                    signal_filter = None
-                    downsampler = None
                     downsample_factor = max(1, self.downsampler.get_current_factor())
                 if self.phase_unwrap_enabled:
                     unwrapped, _ = phase_unwrapper.unwrap_phase(phase_data, force_normalized=True)
@@ -603,12 +598,15 @@ class DataProcessingThread(QThread):
                 psd_data = np.asarray(unwrapped[::downsample_factor], dtype=np.float64)
                 effective_rate = raw_sample_rate / downsample_factor
 
-                if signal_filter is not None and downsampler is not None:
+                if signal_filter is not None:
                     filtered, _ = signal_filter.apply_filter(unwrapped)
-                    downsampled, _ = downsampler.downsample(filtered)
                 else:
                     filtered = unwrapped
-                    downsampled = psd_data
+
+                if downsampler is not None:
+                    downsampled, _ = downsampler.downsample(filtered)
+                else:
+                    downsampled = np.asarray(filtered[::downsample_factor], dtype=np.float64)
 
                 unwrapped_by_sensor[sensor_index] = unwrapped
                 filtered_by_sensor[sensor_index] = filtered
@@ -622,7 +620,7 @@ class DataProcessingThread(QThread):
                     filtered_size, filtered_first, filtered_min, filtered_max = _array_summary_values(filtered)
                     down_size, down_first, down_min, down_max = _array_summary_values(downsampled)
                     self.logger.info(
-                        "FIP_PROCESS_SENSOR comm=%s sensor=FIP%s selected_for_filter=%s "
+                        "FIP_PROCESS_SENSOR comm=%s sensor=FIP%s selected_for_output=%s "
                         "unwrap_enabled=%s "
                         "input=%d first=%.9g range=[%.9g,%.9g] "
                         "unwrapped=%d first=%.9g range=[%.9g,%.9g] "

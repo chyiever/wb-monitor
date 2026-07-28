@@ -192,46 +192,74 @@ class DASTab3Manager(QObject):
         selected_unfiltered = unfiltered_by_sensor.get(selected_sensor)
         if selected_unfiltered is None:
             selected_unfiltered = processed_data.psd_data
-        display_by_sensor = {
+        alignment_by_sensor = {
             sensor_index: np.asarray(values)
             for sensor_index, values in unfiltered_by_sensor.items()
         }
+        display_source_by_sensor = getattr(processed_data, "downsampled_by_sensor", {}) or {
+            selected_sensor: processed_data.downsampled_data
+        }
+        display_by_sensor = {
+            sensor_index: np.asarray(values)
+            for sensor_index, values in display_source_by_sensor.items()
+        }
+        selected_display = display_by_sensor.get(selected_sensor)
+        if selected_display is None:
+            selected_display = processed_data.downsampled_data
         selected_unfiltered = np.asarray(selected_unfiltered)
+        selected_display = np.asarray(selected_display)
         packet = FIPSessionPacket(
             comm_count=processed_data.comm_count,
             packet_duration_seconds=packet_duration_seconds,
             sample_rate_hz=processed_data.effective_rate,
             unwrapped_data=selected_unfiltered,
-            display_data=selected_unfiltered,
+            display_data=selected_display,
             sensor_count=getattr(processed_data, "sensor_count", 1),
             selected_sensor=selected_sensor,
-            unwrapped_by_sensor=display_by_sensor,
+            unwrapped_by_sensor=alignment_by_sensor,
             display_by_sensor=display_by_sensor,
         )
         self._fip_recent_packets.append(packet)
         self.coordinator.push_fip_packet(packet)
         self.logger.debug(
             "TAB3_NODE manager.fip_packet comm=%s sensors=%s selected=FIP%s display_points=%d "
-            "sample_rate=%.1f duration=%.6f recent=%d source=unfiltered_downsampled first=%.9g",
+            "sample_rate=%.1f duration=%.6f recent=%d source=display_downsampled first=%.9g",
             processed_data.comm_count,
             getattr(processed_data, "sensor_count", 1),
             selected_sensor,
-            len(selected_unfiltered),
+            len(selected_display),
             float(processed_data.effective_rate),
             packet_duration_seconds,
             len(self._fip_recent_packets),
-            float(selected_unfiltered[0]) if len(selected_unfiltered) else float("nan"),
+            float(selected_display[0]) if len(selected_display) else float("nan"),
         )
-        if len(selected_unfiltered) and abs(float(selected_unfiltered[0])) <= 1e-12:
+        if len(selected_display) and abs(float(selected_display[0])) <= 1e-12:
             self.logger.warning(
-                "TAB3_NODE manager.fip_first_zero comm=%s selected=FIP%s source=unfiltered_downsampled value=%.9g",
+                "TAB3_NODE manager.fip_first_zero comm=%s selected=FIP%s source=display_downsampled value=%.9g",
                 processed_data.comm_count,
                 selected_sensor,
-                float(selected_unfiltered[0]),
+                float(selected_display[0]),
+            )
+        if processed_data.comm_count % 50 == 0:
+            display_min = float(np.min(selected_display)) if len(selected_display) else float("nan")
+            display_max = float(np.max(selected_display)) if len(selected_display) else float("nan")
+            raw_min = float(np.min(selected_unfiltered)) if len(selected_unfiltered) else float("nan")
+            raw_max = float(np.max(selected_unfiltered)) if len(selected_unfiltered) else float("nan")
+            self.logger.info(
+                "TAB3_NODE manager.fip_display comm=%s selected=FIP%s display_source=filtered_downsampled "
+                "display_points=%d display_range=[%.9g,%.9g] raw_points=%d raw_range=[%.9g,%.9g]",
+                processed_data.comm_count,
+                selected_sensor,
+                len(selected_display),
+                display_min,
+                display_max,
+                len(selected_unfiltered),
+                raw_min,
+                raw_max,
             )
         self.main_window.update_tab3_fip_curve(
             processed_data.comm_count,
-            selected_unfiltered,
+            selected_display,
             processed_data.effective_rate,
             sensor_count=getattr(processed_data, "sensor_count", 1),
             values_by_sensor=display_by_sensor,
