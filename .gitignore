@@ -1,2 +1,4 @@
 config/gui_last_state.json
 config/gui_last_state.json.tmp
+__pycache__/
+*.pyc

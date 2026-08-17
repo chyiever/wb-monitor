@@ -67,6 +67,9 @@ class MainWindow(QMainWindow):
         font.setPointSize(8)
         self.setFont(font)
 
+        # 去除控件获得焦点时显示的虚线矩形框（tab/下拉列表/输入框等）
+        self._apply_global_focus_style()
+
         # 运行状态先于界面创建，便于按钮和指示灯在构造阶段读取。
         self.monitoring_active = False
         self._edas_monitoring_active = False
@@ -105,6 +108,30 @@ class MainWindow(QMainWindow):
         self._default_gui_config = self.get_current_config()
         self._load_persisted_configuration()
         self._connect_auto_persist_signals()
+
+    def _apply_global_focus_style(self) -> None:
+        """Remove the dashed focus rectangle that appears on tabs and dropdowns."""
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.setStyleSheet(
+            app.styleSheet()
+            + """
+            QTabBar::tab:focus,
+            QComboBox:focus,
+            QComboBox QAbstractItemView,
+            QPushButton:focus,
+            QCheckBox:focus,
+            QSpinBox:focus,
+            QDoubleSpinBox:focus,
+            QLineEdit:focus {
+                outline: none;
+            }
+            QTabBar::tab:focus {
+                border: none;
+            }
+            """
+        )
 
     def _apply_initial_psd_settings(self):
         """应用初始的PSD设置范围"""
@@ -291,13 +318,6 @@ class MainWindow(QMainWindow):
         self.tab3_curve2_das_channel_spin.setValue(10)
         layout.addWidget(self.tab3_curve2_das_channel_spin, 1, 3)
 
-        layout.addWidget(QLabel("显示时长(s)"), 2, 0)
-        self.tab3_display_seconds_spin = QDoubleSpinBox()
-        self.tab3_display_seconds_spin.setRange(0.2, 10.0)
-        self.tab3_display_seconds_spin.setValue(1.0)
-        self.tab3_display_seconds_spin.setDecimals(1)
-        layout.addWidget(self.tab3_display_seconds_spin, 2, 1)
-
         # Backward-compatible aliases used by older manager code and saved snapshots.
         self.tab3_das_channel_spin = self.tab3_curve2_das_channel_spin
         return group
@@ -342,14 +362,14 @@ class MainWindow(QMainWindow):
         self.fip_filter_range_edit.setPlaceholderText("100- / -1000 / 500-6000")
         layout.addWidget(self.fip_filter_range_edit, 0, 4)
 
-        layout.addWidget(QLabel("时域显示降采样"), 1, 0)
+        self.fip_phase_unwrap_check = QCheckBox("unwrap")
+        self.fip_phase_unwrap_check.setChecked(False)
+        layout.addWidget(self.fip_phase_unwrap_check, 1, 0)
+        layout.addWidget(QLabel("时域显示降采样"), 1, 1)
         self.downsample_spin = QSpinBox()
         self.downsample_spin.setRange(1, 100)
         self.downsample_spin.setValue(1)
-        layout.addWidget(self.downsample_spin, 1, 1)
-        self.fip_phase_unwrap_check = QCheckBox("FIP相位展开")
-        self.fip_phase_unwrap_check.setChecked(False)
-        layout.addWidget(self.fip_phase_unwrap_check, 1, 2, 1, 2)
+        layout.addWidget(self.downsample_spin, 1, 2)
         layout.addWidget(QLabel("FIP处理目标"), 1, 3)
         self.fip_plot_sensor_combo = QComboBox()
         self.fip_plot_sensor_combo.addItem("FIP1", 1)
@@ -362,8 +382,9 @@ class MainWindow(QMainWindow):
         layout = QGridLayout(group)
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(3, 1)
-        layout.addWidget(QLabel("时域显示(s)"), 0, 0)
+        layout.addWidget(QLabel("时域窗口(s)"), 0, 0)
         self.time_display_duration_spin = QDoubleSpinBox()
+        self.time_display_duration_spin.setToolTip("时域图滚动窗口长度：显示最近多少秒的数据")
         self.time_display_duration_spin.setRange(0.1, 60.0)
         self.time_display_duration_spin.setValue(1.0)
         self.time_display_duration_spin.setSingleStep(0.1)
@@ -371,6 +392,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.time_display_duration_spin, 0, 1)
         layout.addWidget(QLabel("FIP刷新(s)"), 0, 2)
         self.view_fip_refresh_spin = QDoubleSpinBox()
+        self.view_fip_refresh_spin.setToolTip("FIP时域图最小刷新间隔（实际受 1 包/秒数据速率限制）")
         self.view_fip_refresh_spin.setRange(0.2, 5.0)
         self.view_fip_refresh_spin.setDecimals(2)
         self.view_fip_refresh_spin.setSingleStep(0.1)
@@ -378,6 +400,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.view_fip_refresh_spin, 0, 3)
         layout.addWidget(QLabel("eDAS刷新(s)"), 1, 0)
         self.view_edas_refresh_spin = QDoubleSpinBox()
+        self.view_edas_refresh_spin.setToolTip("eDAS时域图最小刷新间隔")
         self.view_edas_refresh_spin.setRange(0.5, 5.0)
         self.view_edas_refresh_spin.setDecimals(2)
         self.view_edas_refresh_spin.setSingleStep(0.1)
@@ -385,6 +408,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.view_edas_refresh_spin, 1, 1)
         layout.addWidget(QLabel("单曲线点数"), 1, 2)
         self.view_curve_max_points_spin = QSpinBox()
+        self.view_curve_max_points_spin.setToolTip("每条时域曲线最多绘制的点数（超出自动降采样，用于限制绘图开销）")
         self.view_curve_max_points_spin.setRange(1000, 50000)
         self.view_curve_max_points_spin.setSingleStep(1000)
         self.view_curve_max_points_spin.setValue(self._tab3_curve_max_points)
@@ -442,73 +466,91 @@ class MainWindow(QMainWindow):
     def _create_view_axis_group(self) -> QGroupBox:
         group = QGroupBox("坐标轴")
         layout = QGridLayout(group)
+        layout.setColumnStretch(2, 1)
+        layout.setColumnStretch(4, 1)
+        layout.setColumnStretch(6, 1)
+
         self.view_axis_enable_check = QCheckBox("手动范围")
-        layout.addWidget(self.view_axis_enable_check, 0, 0, 1, 4)
-        layout.setColumnStretch(1, 1)
-        layout.setColumnStretch(3, 1)
-        layout.addWidget(QLabel("X范围"), 1, 0)
+        self.view_axis_enable_check.setToolTip("勾选后手动控制时域图 X/Y 与 PSD 图 Y 轴范围")
+        layout.addWidget(self.view_axis_enable_check, 0, 0)
+
+        layout.addWidget(QLabel("X范围"), 0, 1)
         self.view_x_range_edit = QLineEdit("0-1")
         self.view_x_range_edit.setPlaceholderText("0-1")
-        layout.addWidget(self.view_x_range_edit, 1, 1)
-        layout.addWidget(QLabel("Y范围"), 1, 2)
+        self.view_x_range_edit.setToolTip("两个时域图横轴范围")
+        layout.addWidget(self.view_x_range_edit, 0, 2)
+
+        layout.addWidget(QLabel("Y范围"), 0, 3)
         self.view_y_range_edit = QLineEdit("-1-1")
         self.view_y_range_edit.setPlaceholderText("-1-1")
-        layout.addWidget(self.view_y_range_edit, 1, 3)
-        layout.addWidget(QLabel("PSD Y范围"), 2, 0)
+        self.view_y_range_edit.setToolTip("两个时域图纵轴范围")
+        layout.addWidget(self.view_y_range_edit, 0, 4)
+
+        layout.addWidget(QLabel("PSD Y范围"), 0, 5)
         self.view_psd_y_range_edit = QLineEdit("-160-20")
         self.view_psd_y_range_edit.setPlaceholderText("-160-20")
-        layout.addWidget(self.view_psd_y_range_edit, 2, 1, 1, 3)
-        button_layout = QHBoxLayout()
+        self.view_psd_y_range_edit.setToolTip("两个PSD图纵轴范围")
+        layout.addWidget(self.view_psd_y_range_edit, 0, 6)
+
         self.view_apply_axis_btn = QPushButton("应用")
         self.view_auto_axis_btn = QPushButton("自动")
-        self._style_secondary_button(self.view_apply_axis_btn, min_width=72)
-        self._style_secondary_button(self.view_auto_axis_btn, min_width=72)
-        button_layout.addWidget(self.view_apply_axis_btn)
-        button_layout.addWidget(self.view_auto_axis_btn)
-        layout.addLayout(button_layout, 3, 0, 1, 4)
+        self._style_secondary_button(self.view_apply_axis_btn, min_width=52)
+        self._style_secondary_button(self.view_auto_axis_btn, min_width=52)
+        layout.addWidget(self.view_apply_axis_btn, 0, 7)
+        layout.addWidget(self.view_auto_axis_btn, 0, 8)
         return group
 
     def _create_space_time_group(self) -> QGroupBox:
         group = QGroupBox("Space-Time")
         layout = QGridLayout(group)
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(3, 1)
+        layout.setColumnStretch(5, 1)
+
         layout.addWidget(QLabel("通道范围"), 0, 0)
         self.tab3_channel_range_edit = QLineEdit("0-199")
         self.tab3_channel_range_edit.setPlaceholderText("0-199")
-        layout.addWidget(self.tab3_channel_range_edit, 0, 1, 1, 3)
-        layout.addWidget(QLabel("总时间长度(s)"), 1, 0)
+        layout.addWidget(self.tab3_channel_range_edit, 0, 1)
+
+        layout.addWidget(QLabel("总时间长度(s)"), 0, 2)
         self.tab3_space_time_total_seconds_spin = QDoubleSpinBox()
         self.tab3_space_time_total_seconds_spin.setRange(0.5, 120.0)
         self.tab3_space_time_total_seconds_spin.setValue(5.0)
         self.tab3_space_time_total_seconds_spin.setDecimals(1)
         self.tab3_space_time_total_seconds_spin.setSingleStep(0.5)
-        layout.addWidget(self.tab3_space_time_total_seconds_spin, 1, 1)
-        layout.addWidget(QLabel("单次平移(s)"), 1, 2)
+        layout.addWidget(self.tab3_space_time_total_seconds_spin, 0, 3)
+
+        layout.addWidget(QLabel("单次平移(s)"), 0, 4)
         self.tab3_space_time_shift_seconds_spin = QDoubleSpinBox()
         self.tab3_space_time_shift_seconds_spin.setRange(0.1, 60.0)
         self.tab3_space_time_shift_seconds_spin.setValue(1.0)
         self.tab3_space_time_shift_seconds_spin.setDecimals(1)
         self.tab3_space_time_shift_seconds_spin.setSingleStep(0.1)
-        layout.addWidget(self.tab3_space_time_shift_seconds_spin, 1, 3)
-        layout.addWidget(QLabel("时间降采样"), 2, 0)
+        layout.addWidget(self.tab3_space_time_shift_seconds_spin, 0, 5)
+
+        layout.addWidget(QLabel("时间降采样"), 1, 0)
         self.tab3_time_downsample_spin = QSpinBox()
         self.tab3_time_downsample_spin.setRange(1, 100)
         self.tab3_time_downsample_spin.setValue(1)
-        layout.addWidget(self.tab3_time_downsample_spin, 2, 1)
-        layout.addWidget(QLabel("空间降采样"), 2, 2)
+        layout.addWidget(self.tab3_time_downsample_spin, 1, 1)
+
+        layout.addWidget(QLabel("空间降采样"), 1, 2)
         self.tab3_space_downsample_spin = QSpinBox()
         self.tab3_space_downsample_spin.setRange(1, 100)
         self.tab3_space_downsample_spin.setValue(1)
-        layout.addWidget(self.tab3_space_downsample_spin, 2, 3)
-        layout.addWidget(QLabel("颜色"), 3, 0)
+        layout.addWidget(self.tab3_space_downsample_spin, 1, 3)
+
+        layout.addWidget(QLabel("颜色"), 1, 4)
         self.tab3_colormap_combo = QComboBox()
         for text, value in self._tab3_colormap_options:
             self.tab3_colormap_combo.addItem(text, value)
         self.tab3_colormap_combo.setCurrentText("Seismic")
-        layout.addWidget(self.tab3_colormap_combo, 3, 1)
-        layout.addWidget(QLabel("V范围"), 3, 2)
+        layout.addWidget(self.tab3_colormap_combo, 1, 5)
+
+        layout.addWidget(QLabel("V范围"), 2, 0)
         self.tab3_v_range_edit = QLineEdit("-0.3-0.3")
         self.tab3_v_range_edit.setPlaceholderText("-0.3-0.3")
-        layout.addWidget(self.tab3_v_range_edit, 3, 3)
+        layout.addWidget(self.tab3_v_range_edit, 2, 1, 1, 5)
         return group
 
     def _create_view_plot_panel(self) -> QWidget:
@@ -607,8 +649,63 @@ class MainWindow(QMainWindow):
         view_splitter.setSizes([1, 1])
         self._apply_tab3_space_time_colormap()
         self._apply_tab3_space_time_levels()
+        self._align_view_axis_widths()
+        self._apply_psd_axis_tick_limit()
         self._update_view_psd_curves(force=True)
         return widget
+
+    def _align_view_axis_widths(self) -> None:
+        """Give paired plots a fixed left-axis width so tick labels align vertically."""
+        for plot, width in (
+            (getattr(self, "tab3_curve1_plot", None), 88),
+            (getattr(self, "tab3_curve2_plot", None), 88),
+            (getattr(self, "view_psd1_plot", None), 64),
+            (getattr(self, "view_psd2_plot", None), 64),
+        ):
+            if plot is None:
+                continue
+            try:
+                plot.getAxis("left").setWidth(width)
+            except Exception:
+                pass
+
+    def _apply_psd_axis_tick_limit(self, max_ticks: int = 6) -> None:
+        """Cap the PSD log-frequency axis to a fixed number of tick labels."""
+        for plot in (getattr(self, "view_psd1_plot", None), getattr(self, "view_psd2_plot", None)):
+            if plot is None:
+                continue
+            try:
+                plot.getViewBox().sigRangeChanged.connect(
+                    lambda _vb, _ranges, p=plot, n=max_ticks: self._cap_psd_x_ticks(p, n)
+                )
+            except Exception:
+                pass
+
+    def _cap_psd_x_ticks(self, plot, max_ticks: int = 6) -> None:
+        try:
+            xmin, xmax = plot.getViewBox().viewRange()[0]
+        except Exception:
+            return
+        if not np.isfinite(xmin) or not np.isfinite(xmax) or xmin >= xmax:
+            return
+        try:
+            log_ticks = np.linspace(xmin, xmax, max_ticks)
+            linear_ticks = np.power(10.0, log_ticks)
+            ticks = [
+                (float(lt), self._format_freq_tick(lin))
+                for lt, lin in zip(log_ticks, linear_ticks)
+            ]
+            plot.getAxis("bottom").setTicks([ticks])
+        except Exception:
+            pass
+
+    @staticmethod
+    def _format_freq_tick(value: float) -> str:
+        if value >= 1e6:
+            return f"{value / 1e6:.3g}M"
+        if value >= 1e3:
+            return f"{value / 1e3:.3g}k"
+        return f"{value:.3g}"
 
     def _create_tab2(self):
         # Tab2 is now Data: communication, synchronization, and storage only.
@@ -1882,7 +1979,8 @@ class MainWindow(QMainWindow):
         legacy_das_channel = plot.get("das_channel")
         self._set_spin_value(getattr(self, "tab3_curve1_das_channel_spin", None), plot.get("curve1_das_channel", legacy_das_channel))
         self._set_spin_value(getattr(self, "tab3_curve2_das_channel_spin", None), plot.get("curve2_das_channel", legacy_das_channel))
-        self._set_spin_value(getattr(self, "tab3_display_seconds_spin", None), plot.get("display_seconds"))
+        if plot.get("display_seconds") is not None:
+            self._set_spin_value(getattr(self, "time_display_duration_spin", None), plot.get("display_seconds"))
         legacy_apply_filter = plot.get("apply_filter")
         legacy_low_hz = plot.get("low_hz")
         legacy_high_hz = plot.get("high_hz")
@@ -2000,7 +2098,6 @@ class MainWindow(QMainWindow):
             self.tab2_pre_trigger_spin, self.tab2_post_trigger_spin, self.tab2_storage_path_edit,
             self.tab3_ip_edit, self.tab3_port_spin, self.tab3_curve1_combo, self.tab3_curve2_combo,
             self.tab3_curve1_das_channel_spin, self.tab3_curve2_das_channel_spin,
-            self.tab3_display_seconds_spin,
             self.tab3_das_filter_enable_check, self.tab3_das_filter_range_edit, self.tab3_das_filter_order_spin,
             self.tab3_channel_range_edit, self.tab3_space_time_total_seconds_spin,
             self.tab3_space_time_shift_seconds_spin, self.tab3_time_downsample_spin, self.tab3_space_downsample_spin,
@@ -2186,7 +2283,7 @@ class MainWindow(QMainWindow):
                 "curve1_das_channel": curve1_das_channel,
                 "curve2_das_channel": curve2_das_channel,
                 "das_channel": curve2_das_channel,
-                "display_seconds": self.tab3_display_seconds_spin.value(),
+                "display_seconds": self.time_display_duration_spin.value(),
                 "das_apply_filter": das_filter_enabled,
                 "das_filter_range": das_filter["range"],
                 "das_filter_type": das_filter["type"],
@@ -2862,13 +2959,12 @@ class MainWindow(QMainWindow):
 
     def _time_window_seconds(self) -> float:
         """Return the rolling time-domain display window in seconds."""
-        for spin_name in ("tab3_display_seconds_spin", "time_display_duration_spin"):
-            spin = getattr(self, spin_name, None)
-            if spin is not None:
-                try:
-                    return max(0.2, float(spin.value()))
-                except (TypeError, ValueError):
-                    continue
+        spin = getattr(self, "time_display_duration_spin", None)
+        if spin is not None:
+            try:
+                return max(0.2, float(spin.value()))
+            except (TypeError, ValueError):
+                pass
         return 1.0
 
     def _accumulate_fip_rolling(
@@ -3555,9 +3651,9 @@ class MainWindow(QMainWindow):
             font_pt = int(self.setting_gui_font_spin.value()) if hasattr(self, 'setting_gui_font_spin') else 8
         except Exception:
             font_pt = 8
-        control_height = max(32, int(round(font_pt * 2.35)))
-        label_height = max(24, int(round(font_pt * 1.9)))
-        button_height = max(36, int(round(font_pt * 2.55)))
+        control_height = max(26, int(round(font_pt * 2.0)))
+        label_height = max(22, int(round(font_pt * 1.7)))
+        button_height = max(34, int(round(font_pt * 2.4)))
         spacing = max(6, int(round(font_pt * 0.55)))
 
         for widget_class in (QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit):
@@ -3801,7 +3897,6 @@ class MainWindow(QMainWindow):
                 getattr(self, 'tab3_curve2_combo', None),
                 getattr(self, 'tab3_curve1_das_channel_spin', None),
                 getattr(self, 'tab3_curve2_das_channel_spin', None),
-                getattr(self, 'tab3_display_seconds_spin', None),
                 getattr(self, 'tab3_das_filter_enable_check', None),
                 getattr(self, 'tab3_das_filter_range_edit', None),
                 getattr(self, 'tab3_das_filter_order_spin', None),

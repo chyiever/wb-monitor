@@ -28,17 +28,17 @@ from PyQt5.QtCore import QTimer
 
 # Import application modules
 from ui.main_window import MainWindow
-from fip_tab1 import OptimizedTCPServer
+from fip import OptimizedTCPServer
 from processing.phase_unwrap import PhaseUnwrapper
 from processing.signal_filter import SignalFilter
 from processing.downsampling import Downsampler
-from fip_tab1 import OptimizedTab1ThreadManager, PSDCalculator, RawDataPacket
-from fip_tab2 import FIPTab2Manager
+from fip import OptimizedTab1ThreadManager, PSDCalculator, RawDataPacket
+from detection import FIPTab2Manager
 from alignment import AlignedSessionCoordinator
-from das_tab3 import DASTab3Manager
+from das import DASTab3Manager
 
 # Import system configuration
-from config import (
+from constants import (
     ORIGINAL_SAMPLE_RATE,
     SYSTEM_DOWNSAMPLE_FACTOR,
     EFFECTIVE_SAMPLE_RATE,

@@ -37,7 +37,7 @@ FIP/eDAS 同步时间戳取自 TCP 接收线程“完整包体接收完成”的
 - 相位展开、数字滤波、系统降采样
 - FIP1/FIP2 曲线显示、PSD、Data 页统计和存储
 - `NPZ` 格式相位数据存储
-- 代码结构已整理到 `src/fip_tab1`
+- 代码结构已整理到 `src/fip`
 
 ### eDAS 主链路已完成
 
@@ -59,7 +59,7 @@ FIP/eDAS 同步时间戳取自 TCP 接收线程“完整包体接收完成”的
 
 ### 检测页已完成
 
-- 独立的 `src/fip_tab2` 多线程流水线
+- 独立的 `src/detection` 多线程流水线
 - 从 FIP 主链路接收处理后的下采样数据
 - 检测页自身可选带通预处理
 - 短时特征提取
@@ -88,40 +88,40 @@ wb-monitor/
 │   │   ├── __init__.py
 │   │   ├── aligned_session_coordinator.py
 │   │   └── aligned_types.py
-│   ├── config/
+│   ├── constants/
 │   │   ├── __init__.py
-│   │   └── system_config.py
-│   ├── das_tab3/
+│   │   └── constants.py
+│   ├── das/
 │   │   ├── __init__.py
-│   │   ├── das_plot_worker.py
-│   │   ├── das_tab3_manager.py
-│   │   ├── das_tcp_server.py
-│   │   └── das_types.py
-│   ├── fip_tab1/
+│   │   ├── manager.py
+│   │   ├── plot_worker.py
+│   │   ├── storage_worker.py
+│   │   ├── tcp_server.py
+│   │   └── types.py
+│   ├── detection/
 │   │   ├── __init__.py
-│   │   ├── fip_plotter.py
-│   │   ├── fip_tab1_manager.py
-│   │   └── fip_tcp_server.py
-│   ├── fip_tab2/
+│   │   ├── detection_worker.py
+│   │   ├── feature_worker.py
+│   │   ├── manager.py
+│   │   ├── plot_worker.py
+│   │   ├── trigger_storage.py
+│   │   └── types.py
+│   ├── fip/
 │   │   ├── __init__.py
-│   │   ├── fip_detection_worker.py
-│   │   ├── fip_feature_worker.py
-│   │   ├── fip_plot_worker.py
-│   │   ├── fip_tab2_manager.py
-│   │   ├── fip_trigger_storage.py
-│   │   └── fip_types.py
+│   │   ├── manager.py
+│   │   ├── plotter.py
+│   │   └── tcp_server.py
 │   ├── processing/
 │   │   ├── __init__.py
 │   │   ├── downsampling.py
 │   │   ├── phase_unwrap.py
-│   │   ├── signal_filter.py
-│   │   └── tab1_optimized_threads.py
+│   │   └── signal_filter.py
+│   ├── tools/
+│   │   ├── simulate_das_client.py
+│   │   └── validate_tab3_pipeline.py
 │   ├── ui/
 │   │   └── main_window.py
 │   └── main.py
-├── tools/
-│   ├── simulate_das_client.py
-│   └── validate_tab3_pipeline.py
 ├── requirements.txt
 ├── run.py
 └── README.md
@@ -177,9 +177,9 @@ Tab3 debug 日志节点统一使用 `TAB3_NODE` 前缀，重点节点包括：
 ### 1. FIP 主链路
 
 - 入口：`src/main.py`
-- TCP 接收：`src/fip_tab1/fip_tcp_server.py`
-- Tab1 线程管理：`src/fip_tab1/fip_tab1_manager.py`
-- PSD 计算与绘图工具：`src/fip_tab1/fip_plotter.py`
+- TCP 接收：`src/fip/tcp_server.py`
+- FIP 线程管理：`src/fip/manager.py`
+- PSD 计算与绘图工具：`src/fip/plotter.py`
 - 通用预处理组件：
   - `src/processing/phase_unwrap.py`
   - `src/processing/signal_filter.py`
@@ -187,19 +187,19 @@ Tab3 debug 日志节点统一使用 `TAB3_NODE` 前缀，重点节点包括：
 
 ### 2. 检测主链路
 
-- 管理器：`src/fip_tab2/fip_tab2_manager.py`
-- 特征提取：`src/fip_tab2/fip_feature_worker.py`
-- 阈值检测：`src/fip_tab2/fip_detection_worker.py`
-- 特征显示缓存：`src/fip_tab2/fip_plot_worker.py`
-- 触发存储：`src/fip_tab2/fip_trigger_storage.py`
-- 共享数据类型：`src/fip_tab2/fip_types.py`
+- 管理器：`src/detection/manager.py`
+- 特征提取：`src/detection/feature_worker.py`
+- 阈值检测：`src/detection/detection_worker.py`
+- 特征显示缓存：`src/detection/plot_worker.py`
+- 触发存储：`src/detection/trigger_storage.py`
+- 共享数据类型：`src/detection/types.py`
 
 ### 3. eDAS 与联合存储主链路
 
-- 管理器：`src/das_tab3/das_tab3_manager.py`
-- DAS TCP 接收：`src/das_tab3/das_tcp_server.py`
-- DAS 绘图数据准备：`src/das_tab3/das_plot_worker.py`
-- DAS 数据类型：`src/das_tab3/das_types.py`
+- 管理器：`src/das/manager.py`
+- DAS TCP 接收：`src/das/tcp_server.py`
+- DAS 绘图数据准备：`src/das/plot_worker.py`
+- DAS 数据类型：`src/das/types.py`
 - FIP / DAS 对齐协调器：`src/alignment/aligned_session_coordinator.py`
 - 对齐数据类型：`src/alignment/aligned_types.py`
 
@@ -257,13 +257,13 @@ Tab3 debug 日志节点统一使用 `TAB3_NODE` 前缀，重点节点包括：
 ### 1. DAS 模拟发送器
 
 ```bash
-python tools/simulate_das_client.py --host 127.0.0.1 --port 3678
+python src/tools/simulate_das_client.py --host 127.0.0.1 --port 3678
 ```
 
 可选参数示例：
 
 ```bash
-python tools/simulate_das_client.py --host 127.0.0.1 --port 3678 --channels 32 --sample-rate 4000 --packets 20
+python src/tools/simulate_das_client.py --host 127.0.0.1 --port 3678 --channels 32 --sample-rate 4000 --packets 20
 ```
 
 功能：
@@ -275,7 +275,7 @@ python tools/simulate_das_client.py --host 127.0.0.1 --port 3678 --channels 32 -
 ### 2. Tab3 headless 验证脚本
 
 ```bash
-python tools/validate_tab3_pipeline.py
+python src/tools/validate_tab3_pipeline.py
 ```
 
 功能：
@@ -313,7 +313,7 @@ VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve
 
 ## 文档索引
 
-- [各个tab参数含义与修改说明](E:/codes/pccpHOST/wb-monitor/docs/各个tab参数含义与修改说明.md)
+- [各个tab参数含义与修改说明](E:/codes/pccpHOST/wb-monitor/docs/2026-07-20-各个tab参数含义与修改说明.md)
 - [2026-07-18 GUI大改日志](E:/codes/pccpHOST/wb-monitor/docs/2026-07-18-GUI大改日志.md)
 - [2026-07-18 FIP和eDAS时间同步与通信检验](E:/codes/pccpHOST/wb-monitor/docs/2026-07-18-FIP和eDAS时间同步与通信检验.md)
 - [2026-07-17 FIP-eDAS联调问题数量与修复日志](E:/codes/pccpHOST/wb-monitor/docs/2026-07-17-FIP-eDAS联调问题数量与修复日志.md)

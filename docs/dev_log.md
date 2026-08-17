@@ -644,3 +644,64 @@ OFFSCREEN_OK
 - 新参数框（DAS绘图、FIP绘图、PSD设置）可正常构造。
 - FIP 曲线滚动缓存可追加、裁剪，并在 `reset_tab3_views()` 后清空。
 - 横轴跟随 `_follow_time_axis()` 与 DAS Space-Time 图构造无异常。
+
+## 2026-08-17 22:56:09 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/ui/main_window.py`、`src/main.py`、`src/das/*`、`src/fip/*`、`src/detection/*`、`src/constants/*`、`src/tools/*`、`src/processing/*`（目录重命名）、`README.md`、`docs/2026-08-17-GUI布局与架构优化日志.md`、`docs/dev_log.md`
+
+### 日志分析
+
+分析文件：`logs/pccp_monitor_2026-08-17_21-44-17.log`
+
+1. 通信实时性/连续率良好：`Rate=1.0 pkt/s`，`FIP_PROCESS_STATS` 全程 `queue_dropped=0`、`gaps=0`，约 22.5 分钟收到约 1350 包。
+2. FIP1 通道全程输出 `INT64_MIN` 垃圾数据（`FIP_SPLIT ... FIP1:first=-5.49755814e+11`），经修复后为 0；FIP2 全程有效。属 FIP1 通道异常而非通信问题。
+3. FIP1 全 0 导致 `FIRST_ZERO` 类 WARNING 每包输出、未节流，7203 行日志中占 6714 行，形成日志洪泛。
+4. 偶发 `ui.fip_curve_slow`（27 次，85~126 ms，8000 点）。
+
+### 更新摘要
+
+1. GUI 与图件：
+   - 新增全局焦点样式，去除 tab/下拉/按钮/输入框的虚线焦点框。
+   - 删除“曲线选择”中冗余“显示时长(s)”，时域滚动窗口统一由“时域窗口(s)”控制；为“时域窗口/FIP刷新/eDAS刷新/单曲线点数”加 tooltip 澄清语义。
+   - FIP绘图“FIP相位展开”改名 `unwrap` 并移位，降采样与滤波阶数上下对齐。
+   - “坐标轴”压为一行；“Space-Time”通道范围/总时间长度/单次平移合并一行等宽。
+   - 输入控件最小高度约缩小 20%。
+   - 两个时域图左轴固定 88 px、两个 PSD 左轴固定 64 px，解决 Y 轴刻度位数不同导致的左右不对齐。
+   - PSD 对数横轴固定 6 个刻度，避免放大重叠。
+2. 架构梳理：
+   - `src/config`（Python 常量）重命名为 `src/constants`，与根 `config/`（JSON）去重。
+   - `tools/` 移入 `src/tools/`。
+   - 包/文件重命名：`fip_tab1`→`fip`、`das_tab3`→`das`、`fip_tab2`→`detection`，内部文件去掉冗余前后缀；删除死代码 `processing/tab1_optimized_threads.py`。
+3. 存储优化：
+   - 联合 npz 去冗余：删除 `fip_raw_200khz/fip_display_data/fip_raw_data/fip1_raw_data/fip2_raw_data`，仅保留每路唯一字段，格式版本升级 `wb-monitor-joint-v5`，消除约 6 倍 FIP 写放大。
+
+### 自检
+
+1. 编译与链路验证通过：
+```text
+python -X utf8 -m compileall -q src
+VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve_points=2400
+```
+
+2. 离屏 GUI 自检通过：
+```text
+TAB_ORDER ['View', 'Data', 'Tab3', 'Setting']
+HAS_DISPLAY_SECONDS_SPIN False
+UNWRAP_TEXT unwrap
+PSD_TICK_LEVELS 6
+OFFSCREEN_OK
+```
+
+3. 联合存储去冗余自检通过：
+```text
+HAS_fip_raw_200khz False
+HAS_fip_raw_data False
+VER wb-monitor-joint-v5
+```
+
+验证点：
+- 新包名 `constants`、`fip`、`das`、`detection` 及 `src/tools` 均可正常导入。
+- View 页无 `tab3_display_seconds_spin`，`unwrap` 文案、PSD 6 刻度、轴宽对齐均生效。
+- joint npz 不再写入冗余 FIP 字段，版本为 v5。
