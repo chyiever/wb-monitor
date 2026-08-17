@@ -171,6 +171,7 @@ class DASTCPServer(QObject):
                 payload = self._recv_exact(data_bytes)
                 if not payload:
                     continue
+                packet_receive_time = time.time()
                 data = np.frombuffer(payload, dtype=">f8").astype(np.float64, copy=False)
                 total_points = int(data_bytes // 8)
                 if total_points % channel_count != 0:
@@ -199,7 +200,7 @@ class DASTCPServer(QObject):
                     data_bytes=data_bytes,
                     packet_duration_seconds=packet_duration_seconds,
                 )
-                packet = DASRawPacket(header=header, data_1d=data)
+                packet = DASRawPacket(header=header, data_1d=data, receive_timestamp=packet_receive_time)
                 self._update_gap_stats(comm_count)
                 self._last_comm_count = comm_count
                 self.packets_received += 1

@@ -8,9 +8,11 @@
   },
   "preprocessing": {
     "filter": {
-      "type": "bandpass",
-      "low_freq": 100,
-      "high_freq": 10000,
+      "enabled": false,
+      "type": "none",
+      "low_freq": 500,
+      "high_freq": 6000,
+      "range": "500-6000",
       "order": 4
     },
     "downsample": {
@@ -37,7 +39,7 @@
     "realtime": {
       "enabled": false,
       "interval": 30,
-      "downsample_factor": 5,
+      "downsample_factor": 1,
       "path": "D:/PCCP/FIPdata"
     },
     "trigger": {

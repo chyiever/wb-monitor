@@ -14,6 +14,7 @@ import json
 import logging
 import re
 import time
+from collections import deque
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 import numpy as np
@@ -63,7 +64,7 @@ class MainWindow(QMainWindow):
 
         # 设置全局字体大小（调大2号）
         font = QFont()
-        font.setPointSize(14)  # 从12号调整为14号
+        font.setPointSize(8)
         self.setFont(font)
 
         # 运行状态先于界面创建，便于按钮和指示灯在构造阶段读取。
@@ -144,7 +145,7 @@ class MainWindow(QMainWindow):
                 border: 1px solid #cccccc;
             }
             QTabBar::tab {
-                font-size: 16px;
+                font-size: 18px;
                 min-width: 128px;
                 padding: 8px 22px;
                 margin: 2px;
@@ -231,6 +232,8 @@ class MainWindow(QMainWindow):
         self._tab3_last_space_time_rect = None
         self._tab3_space_time_levels_locked = True
         self._view_curve_cache: Dict[int, Dict[str, Any]] = {1: {}, 2: {}}
+        self._fip_curve_rolling: Dict[Tuple[int, int], Dict[str, Any]] = {}
+        self._view_user_range_active = False
         self._view_psd_update_interval_seconds = 1.0
         self._view_last_psd_update_monotonic = 0.0
         self._view_psd_update_pending = False
@@ -249,6 +252,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
         layout.addWidget(self._create_view_curve_group())
+        layout.addWidget(self._create_das_plot_group())
         layout.addWidget(self._create_processing_group())
         layout.addWidget(self._create_visualization_group())
         layout.addWidget(self._create_view_psd_group())
@@ -258,7 +262,7 @@ class MainWindow(QMainWindow):
         return widget
 
     def _create_view_curve_group(self) -> QGroupBox:
-        group = QGroupBox("曲线与DAS预处理")
+        group = QGroupBox("曲线选择")
         layout = QGridLayout(group)
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(3, 1)
@@ -287,88 +291,70 @@ class MainWindow(QMainWindow):
         self.tab3_curve2_das_channel_spin.setValue(10)
         layout.addWidget(self.tab3_curve2_das_channel_spin, 1, 3)
 
-        self.tab3_curve1_filter_enable_check = QCheckBox("C1 DAS带通")
-        self.tab3_curve2_filter_enable_check = QCheckBox("C2 DAS带通")
-        layout.addWidget(self.tab3_curve1_filter_enable_check, 2, 0, 1, 2)
-        layout.addWidget(self.tab3_curve2_filter_enable_check, 2, 2, 1, 2)
-
-        layout.addWidget(QLabel("C1低频(Hz)"), 3, 0)
-        self.tab3_curve1_low_freq_spin = QSpinBox()
-        self.tab3_curve1_low_freq_spin.setRange(1, 500000)
-        self.tab3_curve1_low_freq_spin.setValue(100)
-        layout.addWidget(self.tab3_curve1_low_freq_spin, 3, 1)
-
-        layout.addWidget(QLabel("C1高频(Hz)"), 3, 2)
-        self.tab3_curve1_high_freq_spin = QSpinBox()
-        self.tab3_curve1_high_freq_spin.setRange(2, 500000)
-        self.tab3_curve1_high_freq_spin.setValue(2000)
-        layout.addWidget(self.tab3_curve1_high_freq_spin, 3, 3)
-
-        layout.addWidget(QLabel("C2低频(Hz)"), 4, 0)
-        self.tab3_curve2_low_freq_spin = QSpinBox()
-        self.tab3_curve2_low_freq_spin.setRange(1, 500000)
-        self.tab3_curve2_low_freq_spin.setValue(100)
-        layout.addWidget(self.tab3_curve2_low_freq_spin, 4, 1)
-
-        layout.addWidget(QLabel("C2高频(Hz)"), 4, 2)
-        self.tab3_curve2_high_freq_spin = QSpinBox()
-        self.tab3_curve2_high_freq_spin.setRange(2, 500000)
-        self.tab3_curve2_high_freq_spin.setValue(2000)
-        layout.addWidget(self.tab3_curve2_high_freq_spin, 4, 3)
-
-        layout.addWidget(QLabel("显示时长(s)"), 5, 0)
+        layout.addWidget(QLabel("显示时长(s)"), 2, 0)
         self.tab3_display_seconds_spin = QDoubleSpinBox()
         self.tab3_display_seconds_spin.setRange(0.2, 10.0)
         self.tab3_display_seconds_spin.setValue(1.0)
         self.tab3_display_seconds_spin.setDecimals(1)
-        layout.addWidget(self.tab3_display_seconds_spin, 5, 1)
-
-        layout.addWidget(QLabel("FIP处理目标"), 5, 2)
-        self.fip_plot_sensor_combo = QComboBox()
-        self.fip_plot_sensor_combo.addItem("FIP1", 1)
-        self.fip_plot_sensor_combo.setEnabled(False)
-        layout.addWidget(self.fip_plot_sensor_combo, 5, 3)
+        layout.addWidget(self.tab3_display_seconds_spin, 2, 1)
 
         # Backward-compatible aliases used by older manager code and saved snapshots.
         self.tab3_das_channel_spin = self.tab3_curve2_das_channel_spin
-        self.tab3_filter_enable_check = self.tab3_curve2_filter_enable_check
-        self.tab3_low_freq_spin = self.tab3_curve2_low_freq_spin
-        self.tab3_high_freq_spin = self.tab3_curve2_high_freq_spin
+        return group
+
+    def _create_das_plot_group(self) -> QGroupBox:
+        group = QGroupBox("DAS绘图")
+        layout = QGridLayout(group)
+        layout.setColumnStretch(2, 1)
+
+        self.tab3_das_filter_enable_check = QCheckBox("滤波")
+        layout.addWidget(self.tab3_das_filter_enable_check, 0, 0)
+
+        layout.addWidget(QLabel("滤波参数(Hz)"), 0, 1)
+        self.tab3_das_filter_range_edit = QLineEdit("500-6000")
+        self.tab3_das_filter_range_edit.setPlaceholderText("100- / -1000 / 500-6000")
+        layout.addWidget(self.tab3_das_filter_range_edit, 0, 2)
+
+        layout.addWidget(QLabel("滤波阶数"), 0, 3)
+        self.tab3_das_filter_order_spin = QSpinBox()
+        self.tab3_das_filter_order_spin.setRange(1, 10)
+        self.tab3_das_filter_order_spin.setValue(4)
+        layout.addWidget(self.tab3_das_filter_order_spin, 0, 4)
+
+        self.tab3_filter_enable_check = self.tab3_das_filter_enable_check
         return group
 
     def _create_processing_group(self) -> QGroupBox:
-        group = QGroupBox("FIP预处理")
+        group = QGroupBox("FIP绘图")
         layout = QGridLayout(group)
-        layout.setColumnStretch(1, 1)
-        layout.setColumnStretch(3, 1)
-        layout.addWidget(QLabel("滤波类型"), 0, 0)
-        self.filter_type_combo = QComboBox()
-        self.filter_type_combo.addItems(["无滤波", "低通", "高通", "带通", "带阻"])
-        self.filter_type_combo.setCurrentText("带通")
-        layout.addWidget(self.filter_type_combo, 0, 1)
-        layout.addWidget(QLabel("滤波阶数"), 0, 2)
+        layout.setColumnStretch(4, 1)
+
+        self.fip_filter_enable_check = QCheckBox("滤波")
+        self.fip_filter_enable_check.setChecked(False)
+        layout.addWidget(self.fip_filter_enable_check, 0, 0)
+        layout.addWidget(QLabel("滤波阶数"), 0, 1)
         self.filter_order_spin = QSpinBox()
         self.filter_order_spin.setRange(1, 10)
         self.filter_order_spin.setValue(4)
-        layout.addWidget(self.filter_order_spin, 0, 3)
-        layout.addWidget(QLabel("低频截止(Hz)"), 1, 0)
-        self.low_freq_spin = QSpinBox()
-        self.low_freq_spin.setRange(1, 100000)
-        self.low_freq_spin.setValue(100)
-        layout.addWidget(self.low_freq_spin, 1, 1)
-        layout.addWidget(QLabel("高频截止(Hz)"), 1, 2)
-        self.high_freq_spin = QSpinBox()
-        self.high_freq_spin.setRange(1, 500000)
-        self.high_freq_spin.setValue(10000)
-        layout.addWidget(self.high_freq_spin, 1, 3)
-        layout.addWidget(QLabel("降采样倍数"), 2, 0)
+        layout.addWidget(self.filter_order_spin, 0, 2)
+        layout.addWidget(QLabel("滤波参数(Hz)"), 0, 3)
+        self.fip_filter_range_edit = QLineEdit("500-6000")
+        self.fip_filter_range_edit.setPlaceholderText("100- / -1000 / 500-6000")
+        layout.addWidget(self.fip_filter_range_edit, 0, 4)
+
+        layout.addWidget(QLabel("时域显示降采样"), 1, 0)
         self.downsample_spin = QSpinBox()
         self.downsample_spin.setRange(1, 100)
-        self.downsample_spin.setValue(5)
-        layout.addWidget(self.downsample_spin, 2, 1)
+        self.downsample_spin.setValue(1)
+        layout.addWidget(self.downsample_spin, 1, 1)
         self.fip_phase_unwrap_check = QCheckBox("FIP相位展开")
         self.fip_phase_unwrap_check.setChecked(False)
-        layout.addWidget(self.fip_phase_unwrap_check, 2, 2, 1, 2)
+        layout.addWidget(self.fip_phase_unwrap_check, 1, 2, 1, 2)
+        layout.addWidget(QLabel("FIP处理目标"), 1, 3)
+        self.fip_plot_sensor_combo = QComboBox()
+        self.fip_plot_sensor_combo.addItem("FIP1", 1)
+        self.fip_plot_sensor_combo.setEnabled(False)
+        layout.addWidget(self.fip_plot_sensor_combo, 1, 4)
         return group
 
     def _create_visualization_group(self) -> QGroupBox:
@@ -427,29 +413,30 @@ class MainWindow(QMainWindow):
     def _create_view_psd_group(self) -> QGroupBox:
         group = QGroupBox("PSD设置")
         layout = QGridLayout(group)
-        layout.setColumnStretch(1, 1)
-        layout.setColumnStretch(3, 1)
+
         self.view_psd1_check = QCheckBox("PSD1")
         self.view_psd1_check.setChecked(True)
         layout.addWidget(self.view_psd1_check, 0, 0)
         self.view_psd2_check = QCheckBox("PSD2")
         self.view_psd2_check.setChecked(True)
         layout.addWidget(self.view_psd2_check, 0, 1)
-        layout.addWidget(QLabel("Welch窗长(s)"), 1, 0)
+
+        layout.addWidget(QLabel("Welch窗长(s)"), 0, 2)
         self.psd_window_length_spin = QDoubleSpinBox()
         self.psd_window_length_spin.setRange(0.05, 10.0)
         self.psd_window_length_spin.setValue(0.4)
         self.psd_window_length_spin.setSingleStep(0.05)
         self.psd_window_length_spin.setDecimals(2)
         self.psd_window_length_spin.setSuffix(" s")
-        layout.addWidget(self.psd_window_length_spin, 1, 1)
-        layout.addWidget(QLabel("重叠率(%)"), 1, 2)
+        layout.addWidget(self.psd_window_length_spin, 0, 3)
+
+        layout.addWidget(QLabel("重叠率(%)"), 0, 4)
         self.psd_overlap_spin = QDoubleSpinBox()
         self.psd_overlap_spin.setRange(0.0, 95.0)
         self.psd_overlap_spin.setValue(50.0)
         self.psd_overlap_spin.setSingleStep(5.0)
         self.psd_overlap_spin.setDecimals(1)
-        layout.addWidget(self.psd_overlap_spin, 1, 3)
+        layout.addWidget(self.psd_overlap_spin, 0, 5)
         return group
 
     def _create_view_axis_group(self) -> QGroupBox:
@@ -459,25 +446,18 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.view_axis_enable_check, 0, 0, 1, 4)
         layout.setColumnStretch(1, 1)
         layout.setColumnStretch(3, 1)
-        specs = [
-            ("Xmin", "view_xmin_spin", -1e9, 1e9, 0.0),
-            ("Xmax", "view_xmax_spin", -1e9, 1e9, 1.0),
-            ("Ymin", "view_ymin_spin", -1e9, 1e9, -1.0),
-            ("Ymax", "view_ymax_spin", -1e9, 1e9, 1.0),
-            ("PSD Ymin", "view_psd_ymin_spin", -400.0, 400.0, -160.0),
-            ("PSD Ymax", "view_psd_ymax_spin", -400.0, 400.0, 20.0),
-        ]
-        for index, (label, attr, min_value, max_value, value) in enumerate(specs):
-            row = index // 2 + 1
-            col = (index % 2) * 2
-            layout.addWidget(QLabel(label), row, col)
-            spin = QDoubleSpinBox()
-            spin.setRange(min_value, max_value)
-            spin.setDecimals(3 if "X" in label else 2)
-            spin.setSingleStep(0.1)
-            spin.setValue(value)
-            setattr(self, attr, spin)
-            layout.addWidget(spin, row, col + 1)
+        layout.addWidget(QLabel("X范围"), 1, 0)
+        self.view_x_range_edit = QLineEdit("0-1")
+        self.view_x_range_edit.setPlaceholderText("0-1")
+        layout.addWidget(self.view_x_range_edit, 1, 1)
+        layout.addWidget(QLabel("Y范围"), 1, 2)
+        self.view_y_range_edit = QLineEdit("-1-1")
+        self.view_y_range_edit.setPlaceholderText("-1-1")
+        layout.addWidget(self.view_y_range_edit, 1, 3)
+        layout.addWidget(QLabel("PSD Y范围"), 2, 0)
+        self.view_psd_y_range_edit = QLineEdit("-160-20")
+        self.view_psd_y_range_edit.setPlaceholderText("-160-20")
+        layout.addWidget(self.view_psd_y_range_edit, 2, 1, 1, 3)
         button_layout = QHBoxLayout()
         self.view_apply_axis_btn = QPushButton("应用")
         self.view_auto_axis_btn = QPushButton("自动")
@@ -485,52 +465,50 @@ class MainWindow(QMainWindow):
         self._style_secondary_button(self.view_auto_axis_btn, min_width=72)
         button_layout.addWidget(self.view_apply_axis_btn)
         button_layout.addWidget(self.view_auto_axis_btn)
-        layout.addLayout(button_layout, len(specs) // 2 + 1, 0, 1, 4)
+        layout.addLayout(button_layout, 3, 0, 1, 4)
         return group
 
     def _create_space_time_group(self) -> QGroupBox:
         group = QGroupBox("Space-Time")
         layout = QGridLayout(group)
-        layout.addWidget(QLabel("起始通道"), 0, 0)
-        self.tab3_channel_start_spin = QSpinBox()
-        self.tab3_channel_start_spin.setRange(0, 4000)
-        self.tab3_channel_start_spin.setValue(0)
-        layout.addWidget(self.tab3_channel_start_spin, 0, 1)
-        layout.addWidget(QLabel("结束通道"), 0, 2)
-        self.tab3_channel_end_spin = QSpinBox()
-        self.tab3_channel_end_spin.setRange(0, 4000)
-        self.tab3_channel_end_spin.setValue(199)
-        layout.addWidget(self.tab3_channel_end_spin, 0, 3)
-        layout.addWidget(QLabel("时间降采样"), 1, 0)
+        layout.addWidget(QLabel("通道范围"), 0, 0)
+        self.tab3_channel_range_edit = QLineEdit("0-199")
+        self.tab3_channel_range_edit.setPlaceholderText("0-199")
+        layout.addWidget(self.tab3_channel_range_edit, 0, 1, 1, 3)
+        layout.addWidget(QLabel("总时间长度(s)"), 1, 0)
+        self.tab3_space_time_total_seconds_spin = QDoubleSpinBox()
+        self.tab3_space_time_total_seconds_spin.setRange(0.5, 120.0)
+        self.tab3_space_time_total_seconds_spin.setValue(5.0)
+        self.tab3_space_time_total_seconds_spin.setDecimals(1)
+        self.tab3_space_time_total_seconds_spin.setSingleStep(0.5)
+        layout.addWidget(self.tab3_space_time_total_seconds_spin, 1, 1)
+        layout.addWidget(QLabel("单次平移(s)"), 1, 2)
+        self.tab3_space_time_shift_seconds_spin = QDoubleSpinBox()
+        self.tab3_space_time_shift_seconds_spin.setRange(0.1, 60.0)
+        self.tab3_space_time_shift_seconds_spin.setValue(1.0)
+        self.tab3_space_time_shift_seconds_spin.setDecimals(1)
+        self.tab3_space_time_shift_seconds_spin.setSingleStep(0.1)
+        layout.addWidget(self.tab3_space_time_shift_seconds_spin, 1, 3)
+        layout.addWidget(QLabel("时间降采样"), 2, 0)
         self.tab3_time_downsample_spin = QSpinBox()
         self.tab3_time_downsample_spin.setRange(1, 100)
         self.tab3_time_downsample_spin.setValue(1)
-        layout.addWidget(self.tab3_time_downsample_spin, 1, 1)
-        layout.addWidget(QLabel("空间降采样"), 1, 2)
+        layout.addWidget(self.tab3_time_downsample_spin, 2, 1)
+        layout.addWidget(QLabel("空间降采样"), 2, 2)
         self.tab3_space_downsample_spin = QSpinBox()
         self.tab3_space_downsample_spin.setRange(1, 100)
         self.tab3_space_downsample_spin.setValue(1)
-        layout.addWidget(self.tab3_space_downsample_spin, 1, 3)
-        layout.addWidget(QLabel("颜色"), 2, 0)
+        layout.addWidget(self.tab3_space_downsample_spin, 2, 3)
+        layout.addWidget(QLabel("颜色"), 3, 0)
         self.tab3_colormap_combo = QComboBox()
         for text, value in self._tab3_colormap_options:
             self.tab3_colormap_combo.addItem(text, value)
         self.tab3_colormap_combo.setCurrentText("Seismic")
-        layout.addWidget(self.tab3_colormap_combo, 2, 1)
-        layout.addWidget(QLabel("Vmin"), 2, 2)
-        self.tab3_vmin_spin = QDoubleSpinBox()
-        self.tab3_vmin_spin.setRange(-1e9, 1e9)
-        self.tab3_vmin_spin.setDecimals(6)
-        self.tab3_vmin_spin.setSingleStep(0.01)
-        self.tab3_vmin_spin.setValue(-0.3)
-        layout.addWidget(self.tab3_vmin_spin, 2, 3)
-        layout.addWidget(QLabel("Vmax"), 3, 2)
-        self.tab3_vmax_spin = QDoubleSpinBox()
-        self.tab3_vmax_spin.setRange(-1e9, 1e9)
-        self.tab3_vmax_spin.setDecimals(6)
-        self.tab3_vmax_spin.setSingleStep(0.01)
-        self.tab3_vmax_spin.setValue(0.3)
-        layout.addWidget(self.tab3_vmax_spin, 3, 3)
+        layout.addWidget(self.tab3_colormap_combo, 3, 1)
+        layout.addWidget(QLabel("V范围"), 3, 2)
+        self.tab3_v_range_edit = QLineEdit("-0.3-0.3")
+        self.tab3_v_range_edit.setPlaceholderText("-0.3-0.3")
+        layout.addWidget(self.tab3_v_range_edit, 3, 3)
         return group
 
     def _create_view_plot_panel(self) -> QWidget:
@@ -543,14 +521,19 @@ class MainWindow(QMainWindow):
         layout.addWidget(view_splitter)
         self.view_vertical_splitter = view_splitter
 
-        upper_stack = QSplitter(Qt.Vertical)
-        upper_stack.setChildrenCollapsible(False)
-        upper_stack.setMinimumHeight(300)
-        view_splitter.addWidget(upper_stack)
+        # 用单一 QGridLayout 承载 Curve1/PSD1 与 Curve2/PSD2：
+        # 左右时域图与 PSD 图列对齐，两行时域图等高，且两行高度之和与下方 Space-Time 等高。
+        upper_widget = QWidget()
+        upper_layout = QGridLayout(upper_widget)
+        upper_layout.setContentsMargins(0, 0, 0, 0)
+        upper_layout.setSpacing(6)
+        upper_layout.setColumnStretch(0, 7)
+        upper_layout.setColumnStretch(1, 3)
+        upper_layout.setRowStretch(0, 1)
+        upper_layout.setRowStretch(1, 1)
+        upper_widget.setMinimumHeight(300)
+        view_splitter.addWidget(upper_widget)
 
-        curve1_row = QSplitter(Qt.Horizontal)
-        curve1_row.setChildrenCollapsible(False)
-        upper_stack.addWidget(curve1_row)
         self.tab3_curve1_plot = pg.PlotWidget()
         self.tab3_curve1_plot.showGrid(x=True, y=True)
         self.tab3_curve1_plot.setLabel("bottom", "Time", units="s")
@@ -561,7 +544,7 @@ class MainWindow(QMainWindow):
         self.tab3_curve1_fip_curve = self.tab3_curve1_plot.plot(pen=pg.mkPen("#d62728", width=2))
         self._configure_tab3_curve_item(self.tab3_curve1_das_curve)
         self._configure_tab3_curve_item(self.tab3_curve1_fip_curve)
-        curve1_row.addWidget(self.tab3_curve1_plot)
+        upper_layout.addWidget(self.tab3_curve1_plot, 0, 0)
 
         self.view_psd1_plot = pg.PlotWidget()
         self.view_psd1_plot.showGrid(x=True, y=True)
@@ -572,12 +555,8 @@ class MainWindow(QMainWindow):
         self.view_psd1_plot.addLegend(offset=(8, 8))
         self._configure_interactive_plot(self.view_psd1_plot)
         self.view_psd1_curve = self.view_psd1_plot.plot(pen=pg.mkPen("#d62728", width=2), name="PSD1")
-        curve1_row.addWidget(self.view_psd1_plot)
-        curve1_row.setSizes([700, 300])
+        upper_layout.addWidget(self.view_psd1_plot, 0, 1)
 
-        curve2_row = QSplitter(Qt.Horizontal)
-        curve2_row.setChildrenCollapsible(False)
-        upper_stack.addWidget(curve2_row)
         self.tab3_curve2_plot = pg.PlotWidget()
         self.tab3_curve2_plot.showGrid(x=True, y=True)
         self.tab3_curve2_plot.setLabel("bottom", "Time", units="s")
@@ -588,7 +567,7 @@ class MainWindow(QMainWindow):
         self.tab3_curve2_fip_curve = self.tab3_curve2_plot.plot(pen=pg.mkPen("#ff7f0e", width=2))
         self._configure_tab3_curve_item(self.tab3_curve2_das_curve)
         self._configure_tab3_curve_item(self.tab3_curve2_fip_curve)
-        curve2_row.addWidget(self.tab3_curve2_plot)
+        upper_layout.addWidget(self.tab3_curve2_plot, 1, 0)
 
         self.view_psd2_plot = pg.PlotWidget()
         self.view_psd2_plot.showGrid(x=True, y=True)
@@ -599,9 +578,8 @@ class MainWindow(QMainWindow):
         self.view_psd2_plot.addLegend(offset=(8, 8))
         self._configure_interactive_plot(self.view_psd2_plot)
         self.view_psd2_curve = self.view_psd2_plot.plot(pen=pg.mkPen("#1f77b4", width=2), name="PSD2")
-        curve2_row.addWidget(self.view_psd2_plot)
-        curve2_row.setSizes([700, 300])
-        upper_stack.setSizes([1, 1])
+        upper_layout.addWidget(self.view_psd2_plot, 1, 1)
+
         self.time_plot = self.tab3_curve1_plot
         self.psd_plot = self.view_psd1_plot
         self.view_psd_plot = self.view_psd1_plot
@@ -624,7 +602,9 @@ class MainWindow(QMainWindow):
         self.tab3_space_time_histogram.setImageItem(self.tab3_space_time_image)
         tab3_space_time_layout.addWidget(self.tab3_space_time_histogram, 0)
         view_splitter.addWidget(tab3_space_time_panel)
-        view_splitter.setSizes([420, 360])
+        view_splitter.setStretchFactor(0, 1)
+        view_splitter.setStretchFactor(1, 1)
+        view_splitter.setSizes([1, 1])
         self._apply_tab3_space_time_colormap()
         self._apply_tab3_space_time_levels()
         self._update_view_psd_curves(force=True)
@@ -661,53 +641,62 @@ class MainWindow(QMainWindow):
         group = QGroupBox("FIP通信参数")
         layout = QGridLayout(group)
         layout.setColumnStretch(1, 1)
-        layout.setColumnStretch(3, 1)
+
         layout.addWidget(QLabel("监听地址"), 0, 0)
         self.ip_edit = QLineEdit("0.0.0.0")
         self.ip_edit.setPlaceholderText("0.0.0.0 或本机网卡IP")
         self.ip_edit.setToolTip("本软件作为服务端时绑定本机地址；推荐 0.0.0.0 监听所有网卡。客户端应连接本机实际IP。")
         layout.addWidget(self.ip_edit, 0, 1)
+
         layout.addWidget(QLabel("端口"), 0, 2)
         self.port_spin = QSpinBox()
         self.port_spin.setRange(1024, 65535)
         self.port_spin.setValue(3677)
         layout.addWidget(self.port_spin, 0, 3)
-        layout.addWidget(QLabel("单包时长(s)"), 1, 0)
+
+        layout.addWidget(QLabel("单包时长(s)"), 0, 4)
         self.fip_packet_duration_spin = QDoubleSpinBox()
         self.fip_packet_duration_spin.setRange(0.001, 60.0)
         self.fip_packet_duration_spin.setDecimals(3)
         self.fip_packet_duration_spin.setSingleStep(0.1)
         self.fip_packet_duration_spin.setValue(1.0)
-        layout.addWidget(self.fip_packet_duration_spin, 1, 1)
-        layout.addWidget(QLabel("采样率(MHz)"), 1, 2)
+        layout.addWidget(self.fip_packet_duration_spin, 0, 5)
+
+        layout.addWidget(QLabel("采样率(MHz)"), 0, 6)
         self.fip_sample_rate_mhz_spin = QDoubleSpinBox()
         self.fip_sample_rate_mhz_spin.setRange(0.001, 100.0)
         self.fip_sample_rate_mhz_spin.setDecimals(3)
         self.fip_sample_rate_mhz_spin.setSingleStep(0.1)
         self.fip_sample_rate_mhz_spin.setValue(1.0)
-        layout.addWidget(self.fip_sample_rate_mhz_spin, 1, 3)
-        layout.addWidget(QLabel("FIP数量"), 2, 0)
+        layout.addWidget(self.fip_sample_rate_mhz_spin, 0, 7)
+
+        layout.addWidget(QLabel("FIP数量"), 0, 8)
         self.fip_sensor_count_combo = QComboBox()
         self.fip_sensor_count_combo.addItem("1个", 1)
         self.fip_sensor_count_combo.addItem("2个", 2)
-        self.fip_sensor_count_combo.setCurrentIndex(0)
-        layout.addWidget(self.fip_sensor_count_combo, 2, 1)
-        layout.addWidget(QLabel("连接状态"), 3, 0)
+        self.fip_sensor_count_combo.setCurrentIndex(1)
+        layout.addWidget(self.fip_sensor_count_combo, 0, 9)
+
+        layout.addWidget(QLabel("连接状态"), 1, 0)
         self.conn_status_label = QLabel("未连接")
         self.conn_status_label.setStyleSheet("color: #9aa0a6; font-weight: bold;")
-        layout.addWidget(self.conn_status_label, 3, 1)
+        layout.addWidget(self.conn_status_label, 1, 1)
+        layout.addWidget(QLabel("接收包"), 1, 2)
         self.packet_count_label = QLabel("0")
+        layout.addWidget(self.packet_count_label, 1, 3)
+        layout.addWidget(QLabel("丢包率"), 1, 4)
         self.loss_rate_label = QLabel("0.00%")
+        layout.addWidget(self.loss_rate_label, 1, 5)
         hint_label = QLabel("服务端监听本机地址；不确定网卡时使用 0.0.0.0")
         hint_label.setStyleSheet("color: #5f6b7a; font-size: 11px;")
-        layout.addWidget(hint_label, 4, 0, 1, 4)
+        layout.addWidget(hint_label, 1, 6, 1, 4)
         return group
 
     def _create_das_communication_group(self) -> QGroupBox:
         group = QGroupBox("eDAS通信参数")
         layout = QGridLayout(group)
         layout.setColumnStretch(1, 1)
-        layout.setColumnStretch(3, 1)
+
         layout.addWidget(QLabel("监听地址"), 0, 0)
         self.tab3_ip_edit = QLineEdit("0.0.0.0")
         self.tab3_ip_edit.setPlaceholderText("0.0.0.0 或本机网卡IP")
@@ -718,28 +707,37 @@ class MainWindow(QMainWindow):
         self.tab3_port_spin.setRange(1024, 65535)
         self.tab3_port_spin.setValue(3678)
         layout.addWidget(self.tab3_port_spin, 0, 3)
+
         layout.addWidget(QLabel("连接状态"), 1, 0)
         self.tab3_conn_status_label = QLabel("Disconnected")
         self.tab3_conn_status_label.setStyleSheet("color: #9aa0a6; font-weight: bold;")
         layout.addWidget(self.tab3_conn_status_label, 1, 1)
+        layout.addWidget(QLabel("接收包"), 1, 2)
         self.tab3_packet_count_label = QLabel("0")
+        layout.addWidget(self.tab3_packet_count_label, 1, 3)
+        layout.addWidget(QLabel("缺包"), 1, 4)
         self.tab3_missing_packet_label = QLabel("0")
-        self.tab3_last_comm_label = QLabel("-")
+        layout.addWidget(self.tab3_missing_packet_label, 1, 5)
+
         layout.addWidget(QLabel("通道"), 2, 0)
         self.tab3_channel_count_label = QLabel("-")
         layout.addWidget(self.tab3_channel_count_label, 2, 1)
         layout.addWidget(QLabel("采样率"), 2, 2)
         self.tab3_sample_rate_label = QLabel("-")
         layout.addWidget(self.tab3_sample_rate_label, 2, 3)
-        layout.addWidget(QLabel("字节"), 3, 0)
+        layout.addWidget(QLabel("字节"), 2, 4)
         self.tab3_data_bytes_label = QLabel("-")
-        layout.addWidget(self.tab3_data_bytes_label, 3, 1)
-        layout.addWidget(QLabel("包长"), 3, 2)
+        layout.addWidget(self.tab3_data_bytes_label, 2, 5)
+        layout.addWidget(QLabel("包长"), 3, 0)
         self.tab3_packet_duration_label = QLabel("-")
-        layout.addWidget(self.tab3_packet_duration_label, 3, 3)
+        layout.addWidget(self.tab3_packet_duration_label, 3, 1)
+        self.tab3_last_comm_label = QLabel("-")
+        layout.addWidget(QLabel("最近Comm"), 3, 2)
+        layout.addWidget(self.tab3_last_comm_label, 3, 3)
+
         hint_label = QLabel("服务端监听本机地址；不确定网卡时使用 0.0.0.0")
         hint_label.setStyleSheet("color: #5f6b7a; font-size: 11px;")
-        layout.addWidget(hint_label, 4, 0, 1, 4)
+        layout.addWidget(hint_label, 4, 0, 1, 6)
         return group
 
     def _create_data_comm_control_group(self) -> QGroupBox:
@@ -799,42 +797,39 @@ class MainWindow(QMainWindow):
     def _create_data_sync_group(self) -> QGroupBox:
         group = QGroupBox("FIP/eDAS时间同步检验")
         layout = QGridLayout(group)
-        labels = [
-            ("首包时间差（FIP-eDAS）(s)", "data_sync_first_delta_label"),
-            ("最新同序号时间差（FIP-eDAS）(s)", "data_sync_latest_delta_label"),
-            ("平均时间差（FIP-eDAS）(s)", "data_sync_avg_delta_label"),
-            ("匹配包数", "data_sync_match_count_label"),
-        ]
-        for row, (label, attr) in enumerate(labels):
-            layout.addWidget(QLabel(label), row, 0)
+        layout.setColumnStretch(1, 1)
+        layout.setColumnStretch(3, 1)
+        layout.setColumnStretch(5, 1)
+
+        def add_pair(label_text, attr, row, col):
+            layout.addWidget(QLabel(label_text), row, col)
             value_label = QLabel("-")
             value_label.setStyleSheet("font-weight: bold;")
             setattr(self, attr, value_label)
-            layout.addWidget(value_label, row, 1)
+            layout.addWidget(value_label, row, col + 1)
+            return value_label
+
+        add_pair("首包时间差（FIP-eDAS）(s)", "data_sync_first_delta_label", 0, 0)
+        add_pair("最新同序号时间差（FIP-eDAS）(s)", "data_sync_latest_delta_label", 0, 2)
+        add_pair("平均时间差（FIP-eDAS）(s)", "data_sync_avg_delta_label", 0, 4)
+        add_pair("匹配包数", "data_sync_match_count_label", 1, 0)
         # Compatibility aliases used by the synchronization refresh helpers.
         self.data_sync_average_delta_label = self.data_sync_avg_delta_label
         self.data_sync_pair_count_label = self.data_sync_match_count_label
 
-        start_row = len(labels) + 1
-        layout.addWidget(QLabel("FIP Comm"), start_row, 0)
-        self.tab3_align_fip_comm_label = QLabel("-")
-        layout.addWidget(self.tab3_align_fip_comm_label, start_row, 1)
-        layout.addWidget(QLabel("eDAS Comm"), start_row + 1, 0)
-        self.tab3_align_das_comm_label = QLabel("-")
-        layout.addWidget(self.tab3_align_das_comm_label, start_row + 1, 1)
-        layout.addWidget(QLabel("对齐状态"), start_row + 2, 0)
-        self.tab3_alignment_status_label = QLabel("waiting")
-        layout.addWidget(self.tab3_alignment_status_label, start_row + 2, 1)
-        layout.addWidget(QLabel("FIP缺包"), start_row + 3, 0)
-        self.tab3_fip_missing_label = QLabel("0")
-        layout.addWidget(self.tab3_fip_missing_label, start_row + 3, 1)
-        layout.addWidget(QLabel("eDAS缺包"), start_row + 4, 0)
-        self.tab3_das_missing_label = QLabel("0")
-        layout.addWidget(self.tab3_das_missing_label, start_row + 4, 1)
-        layout.addWidget(QLabel("缺口范围"), start_row + 5, 0)
+        self.tab3_align_fip_comm_label = add_pair("FIP Comm", "tab3_align_fip_comm_label", 1, 2)
+        self.tab3_align_das_comm_label = add_pair("eDAS Comm", "tab3_align_das_comm_label", 1, 4)
+        self.tab3_alignment_status_label = add_pair("对齐状态", "tab3_alignment_status_label", 2, 0)
+        self.tab3_fip_missing_label = add_pair("FIP缺包", "tab3_fip_missing_label", 2, 2)
+        self.tab3_das_missing_label = add_pair("eDAS缺包", "tab3_das_missing_label", 2, 4)
+        self.tab3_alignment_status_label.setText("waiting")
+        self.tab3_fip_missing_label.setText("0")
+        self.tab3_das_missing_label.setText("0")
+
+        layout.addWidget(QLabel("缺口范围"), 3, 0)
         self.tab3_missing_ranges_label = QLabel("-")
         self.tab3_missing_ranges_label.setWordWrap(False)
-        layout.addWidget(self.tab3_missing_ranges_label, start_row + 5, 1)
+        layout.addWidget(self.tab3_missing_ranges_label, 3, 1, 1, 5)
         return group
 
     def _create_data_storage_group(self) -> QGroupBox:
@@ -892,6 +887,11 @@ class MainWindow(QMainWindow):
         self.tab3_edas_queue_packets_spin.setRange(1, 4096)
         self.tab3_edas_queue_packets_spin.setValue(200)
         layout.addWidget(self.tab3_edas_queue_packets_spin, 5, 3)
+        layout.addWidget(QLabel("FIP降采样"), 5, 4)
+        self.storage_downsample_spin = QSpinBox()
+        self.storage_downsample_spin.setRange(1, 100)
+        self.storage_downsample_spin.setValue(1)
+        layout.addWidget(self.storage_downsample_spin, 5, 5)
         layout.addWidget(QLabel("FIP成功/失败"), 6, 0)
         self.data_fip_storage_count_label = QLabel("0 / 0")
         layout.addWidget(self.data_fip_storage_count_label, 6, 1, 1, 2)
@@ -940,7 +940,7 @@ class MainWindow(QMainWindow):
         layout.setSpacing(5)
         light = self._create_status_light()
         label = QLabel(f"{title}: 成功 0")
-        label.setStyleSheet("color: #394150; font-size: 11px;")
+        label.setStyleSheet("color: #394150; font-size: 8pt;")
         setattr(self, light_attr, light)
         setattr(self, label_attr, label)
         layout.addWidget(light)
@@ -1153,7 +1153,7 @@ class MainWindow(QMainWindow):
         grid.addWidget(QLabel("GUI字体(pt)"), 0, 0)
         self.setting_gui_font_spin = QSpinBox()
         self.setting_gui_font_spin.setRange(8, 28)
-        self.setting_gui_font_spin.setValue(14)
+        self.setting_gui_font_spin.setValue(8)
         grid.addWidget(self.setting_gui_font_spin, 0, 1)
         grid.addWidget(QLabel("图标题字体(px)"), 1, 0)
         self.setting_plot_title_font_spin = QSpinBox()
@@ -1163,17 +1163,22 @@ class MainWindow(QMainWindow):
         grid.addWidget(QLabel("坐标标签字体(px)"), 2, 0)
         self.setting_axis_label_font_spin = QSpinBox()
         self.setting_axis_label_font_spin.setRange(8, 28)
-        self.setting_axis_label_font_spin.setValue(16)
+        self.setting_axis_label_font_spin.setValue(12)
         grid.addWidget(self.setting_axis_label_font_spin, 2, 1)
         grid.addWidget(QLabel("刻度字体(pt)"), 3, 0)
         self.setting_tick_font_spin = QSpinBox()
         self.setting_tick_font_spin.setRange(7, 24)
         self.setting_tick_font_spin.setValue(11)
         grid.addWidget(self.setting_tick_font_spin, 3, 1)
+        grid.addWidget(QLabel("PSD降采样"), 4, 0)
+        self.setting_psd_downsample_spin = QSpinBox()
+        self.setting_psd_downsample_spin.setRange(1, 100)
+        self.setting_psd_downsample_spin.setValue(1)
+        grid.addWidget(self.setting_psd_downsample_spin, 4, 1)
         self.setting_apply_btn = QPushButton("应用并保存全局设置")
         self.setting_apply_btn.setMinimumHeight(42)
-        self._style_action_button(self.setting_apply_btn, False, min_height=42, min_width=190, font_size=14)
-        grid.addWidget(self.setting_apply_btn, 4, 0, 1, 2)
+        self._style_action_button(self.setting_apply_btn, False, min_height=42, min_width=190, font_size=15)
+        grid.addWidget(self.setting_apply_btn, 5, 0, 1, 2)
         layout.addWidget(group)
         layout.addStretch()
 
@@ -1215,9 +1220,6 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
 
         # 可视化参数变化
-        self.psd_window_length_spin.valueChanged.connect(self._update_psd_settings)
-        self.time_display_duration_spin.valueChanged.connect(self._update_time_display_settings)
-
     def _toggle_monitoring(self):
         """切换监测状态"""
         if self.monitoring_active:
@@ -1276,11 +1278,16 @@ class MainWindow(QMainWindow):
             1,
         )
         sensor_count = min(max(sensor_count, 1), 2)
-        selected_sensor = self._combo_current_data_int(
-            getattr(self, 'fip_plot_sensor_combo', None),
-            1,
-        )
-        selected_sensor = min(max(selected_sensor, 1), sensor_count)
+        target_combo = getattr(self, 'fip_plot_sensor_combo', None)
+        target_data = target_combo.currentData() if target_combo is not None else 1
+        plot_target = "both" if str(target_data) == "both" else str(target_data)
+        if plot_target == "both" and sensor_count == 2:
+            selected_sensor = 1
+            selected_sensors = [1, 2]
+        else:
+            selected_sensor = self._combo_current_data_int(target_combo, 1)
+            selected_sensor = min(max(selected_sensor, 1), sensor_count)
+            selected_sensors = [selected_sensor]
         packet_duration_seconds = self._spin_float_value(
             getattr(self, 'fip_packet_duration_spin', None),
             1.0,
@@ -1292,6 +1299,8 @@ class MainWindow(QMainWindow):
         return {
             "sensor_count": sensor_count,
             "selected_sensor": selected_sensor,
+            "selected_sensors": selected_sensors,
+            "plot_target": plot_target if plot_target == "both" else f"FIP{selected_sensor}",
             "packet_duration_seconds": max(packet_duration_seconds, 0.001),
             "sample_rate_hz": max(sample_rate_mhz, 0.001) * 1_000_000.0,
             "phase_unwrap_enabled": bool(
@@ -1320,6 +1329,146 @@ class MainWindow(QMainWindow):
             return float(spin.value())
         except (TypeError, ValueError):
             return default
+
+    def _parse_range_text(
+        self,
+        edit,
+        default_min: float,
+        default_max: float,
+        *,
+        integer: bool = False,
+    ) -> Tuple[float, float]:
+        text = str(edit.text()).strip() if edit is not None else ""
+        pattern = (
+            r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"
+            r"\s*-\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*$"
+        )
+        match = re.match(pattern, text)
+        if not match:
+            return (default_min, default_max)
+        try:
+            low = float(match.group(1))
+            high = float(match.group(2))
+        except (TypeError, ValueError):
+            return (default_min, default_max)
+        if integer:
+            return (int(round(low)), int(round(high)))
+        return (low, high)
+
+    def _set_range_text(self, edit, low: Any, high: Any) -> None:
+        if edit is None or low is None or high is None:
+            return
+        edit.blockSignals(True)
+        try:
+            edit.setText(f"{low:g}-{high:g}")
+        except (TypeError, ValueError):
+            edit.setText(f"{low}-{high}")
+        finally:
+            edit.blockSignals(False)
+
+    def get_fip_filter_range(self) -> Tuple[float, float]:
+        return self._parse_range_text(getattr(self, "fip_filter_range_edit", None), 500.0, 6000.0)
+
+    def _parse_filter_spec_text(
+        self,
+        edit,
+        default_low: float,
+        default_high: float,
+    ) -> Dict[str, Any]:
+        text = str(edit.text()).strip() if edit is not None else ""
+        number = r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?"
+        bandpass_match = re.match(rf"^\s*({number})\s*-\s*({number})\s*$", text)
+        highpass_match = re.match(rf"^\s*({number})\s*-\s*$", text)
+        lowpass_match = re.match(rf"^\s*-\s*({number})\s*$", text)
+        try:
+            if bandpass_match:
+                low = float(bandpass_match.group(1))
+                high = float(bandpass_match.group(2))
+                if high <= low:
+                    low, high = default_low, default_high
+                return {
+                    "type": "bandpass",
+                    "low_freq": low,
+                    "high_freq": high,
+                    "cutoff_freq": (low, high),
+                    "range": text,
+                }
+            if highpass_match:
+                cutoff = max(0.0, float(highpass_match.group(1)))
+                return {
+                    "type": "highpass",
+                    "low_freq": cutoff,
+                    "high_freq": default_high,
+                    "cutoff_freq": cutoff,
+                    "range": text,
+                }
+            if lowpass_match:
+                cutoff = max(0.0, float(lowpass_match.group(1)))
+                return {
+                    "type": "lowpass",
+                    "low_freq": default_low,
+                    "high_freq": cutoff,
+                    "cutoff_freq": cutoff,
+                    "range": text,
+                }
+        except (TypeError, ValueError):
+            pass
+        return {
+            "type": "bandpass",
+            "low_freq": default_low,
+            "high_freq": default_high,
+            "cutoff_freq": (default_low, default_high),
+            "range": text or f"{default_low:g}-{default_high:g}",
+        }
+
+    def get_fip_filter_settings(self) -> Dict[str, Any]:
+        spec = self._parse_filter_spec_text(getattr(self, "fip_filter_range_edit", None), 500.0, 6000.0)
+        enabled = bool(getattr(self, "fip_filter_enable_check", None) and self.fip_filter_enable_check.isChecked())
+        spec.update({
+            "enabled": enabled,
+            "type": spec["type"] if enabled else "none",
+            "order": self.filter_order_spin.value() if hasattr(self, "filter_order_spin") else 4,
+        })
+        return spec
+
+    def get_view_x_range(self) -> Tuple[float, float]:
+        return self._parse_range_text(getattr(self, "view_x_range_edit", None), 0.0, 1.0)
+
+    def get_view_y_range(self) -> Tuple[float, float]:
+        return self._parse_range_text(getattr(self, "view_y_range_edit", None), -1.0, 1.0)
+
+    def get_view_psd_y_range(self) -> Tuple[float, float]:
+        return self._parse_range_text(getattr(self, "view_psd_y_range_edit", None), -160.0, 20.0)
+
+    def get_tab3_channel_range(self) -> Tuple[int, int]:
+        low, high = self._parse_range_text(getattr(self, "tab3_channel_range_edit", None), 0, 199, integer=True)
+        return int(low), int(high)
+
+    def get_tab3_das_filter_range(self) -> Tuple[float, float]:
+        spec = self.get_tab3_das_filter_settings()
+        return float(spec.get("low_freq", 500.0)), float(spec.get("high_freq", 6000.0))
+
+    def get_tab3_das_filter_settings(self) -> Dict[str, Any]:
+        spec = self._parse_filter_spec_text(getattr(self, "tab3_das_filter_range_edit", None), 500.0, 6000.0)
+        enabled = bool(
+            getattr(self, "tab3_das_filter_enable_check", None)
+            and self.tab3_das_filter_enable_check.isChecked()
+        )
+        spec.update({
+            "enabled": enabled,
+            "type": spec["type"] if enabled else "none",
+            "order": self.tab3_das_filter_order_spin.value()
+            if hasattr(self, "tab3_das_filter_order_spin")
+            else 4,
+        })
+        return spec
+
+    def get_tab3_v_range(self) -> Tuple[float, float]:
+        return self._parse_range_text(getattr(self, "tab3_v_range_edit", None), -0.3, 0.3)
+
+    def get_psd_downsample_factor(self) -> int:
+        spin = getattr(self, "setting_psd_downsample_spin", None)
+        return max(1, int(spin.value())) if spin is not None else 1
 
     def _on_fip_sensor_count_changed(self):
         """Refresh dependent controls after switching between one/two FIP sensors."""
@@ -1351,12 +1500,20 @@ class MainWindow(QMainWindow):
 
         if hasattr(self, 'fip_plot_sensor_combo'):
             combo = self.fip_plot_sensor_combo
+            previous_data = combo.currentData()
+            previous_was_initial = combo.count() <= 1
             combo.blockSignals(True)
             combo.clear()
             combo.addItem("FIP1", 1)
             if sensor_count == 2:
                 combo.addItem("FIP2", 2)
-            combo.setCurrentIndex(max(0, selected_sensor - 1))
+                combo.addItem("1和2", "both")
+            target_index = combo.findData(previous_data)
+            if sensor_count == 2 and (previous_was_initial or previous_data is None or target_index < 0):
+                target_index = combo.findData("both")
+            if target_index < 0:
+                target_index = max(0, selected_sensor - 1)
+            combo.setCurrentIndex(target_index)
             combo.setEnabled(sensor_count == 2)
             combo.blockSignals(False)
 
@@ -1390,6 +1547,7 @@ class MainWindow(QMainWindow):
 
     def get_current_config(self) -> Dict[str, Any]:
         """获取当前配置 - Tab1简化版本"""
+        fip_filter_settings = self.get_fip_filter_settings()
         config = {
             "communication": {
                 "ip": self.ip_edit.text(),
@@ -1398,10 +1556,13 @@ class MainWindow(QMainWindow):
             },
             "preprocessing": {
                 "filter": {
-                    "type": self.filter_type_combo.currentText(),
-                    "low_freq": self.low_freq_spin.value(),
-                    "high_freq": self.high_freq_spin.value(),
-                    "order": self.filter_order_spin.value()
+                    "enabled": fip_filter_settings["enabled"],
+                    "type": fip_filter_settings["type"],
+                    "low_freq": fip_filter_settings["low_freq"],
+                    "high_freq": fip_filter_settings["high_freq"],
+                    "cutoff_freq": fip_filter_settings["cutoff_freq"],
+                    "range": fip_filter_settings["range"],
+                    "order": fip_filter_settings["order"]
                 },
                 "downsample": {
                     "factor": self.downsample_spin.value()
@@ -1410,7 +1571,8 @@ class MainWindow(QMainWindow):
             "storage": {
                 "realtime": {
                     "enabled": self.phase_storage_check.isChecked(),
-                    "interval": self.storage_interval_spin.value()
+                    "interval": self.storage_interval_spin.value(),
+                    "downsample_factor": self.storage_downsample_spin.value(),
                 },
                 "path": self.storage_path_edit.text()
             },
@@ -1437,6 +1599,9 @@ class MainWindow(QMainWindow):
 
     def get_view_settings(self) -> Dict[str, Any]:
         """Return View-tab display, PSD, and axis settings for persistence."""
+        x_min, x_max = self.get_view_x_range()
+        y_min, y_max = self.get_view_y_range()
+        psd_y_min, psd_y_max = self.get_view_psd_y_range()
         return {
             "time_plot_enabled": self.time_plot_btn.isChecked(),
             "psd_plot_enabled": self.psd_plot_btn.isChecked(),
@@ -1453,12 +1618,15 @@ class MainWindow(QMainWindow):
             },
             "axis": {
                 "manual_enabled": self.view_axis_enable_check.isChecked(),
-                "x_min": self.view_xmin_spin.value(),
-                "x_max": self.view_xmax_spin.value(),
-                "y_min": self.view_ymin_spin.value(),
-                "y_max": self.view_ymax_spin.value(),
-                "psd_y_min": self.view_psd_ymin_spin.value(),
-                "psd_y_max": self.view_psd_ymax_spin.value(),
+                "x_range": self.view_x_range_edit.text(),
+                "x_min": x_min,
+                "x_max": x_max,
+                "y_range": self.view_y_range_edit.text(),
+                "y_min": y_min,
+                "y_max": y_max,
+                "psd_y_range": self.view_psd_y_range_edit.text(),
+                "psd_y_min": psd_y_min,
+                "psd_y_max": psd_y_max,
             },
         }
 
@@ -1469,6 +1637,7 @@ class MainWindow(QMainWindow):
             "plot_title_px": self.setting_plot_title_font_spin.value(),
             "axis_label_px": self.setting_axis_label_font_spin.value(),
             "tick_font_pt": self.setting_tick_font_spin.value(),
+            "psd_downsample_factor": self.get_psd_downsample_factor(),
         }
 
     def _persist_payload(self, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -1576,6 +1745,16 @@ class MainWindow(QMainWindow):
             index = combo.findData(value)
             if index < 0:
                 index = combo.findText(str(value))
+            if index < 0:
+                alias = {
+                    "none": "无滤波",
+                    "lowpass": "低通",
+                    "highpass": "高通",
+                    "bandpass": "带通",
+                    "bandstop": "带阻",
+                }.get(str(value).strip().lower())
+                if alias:
+                    index = combo.findText(alias)
             if index >= 0:
                 combo.setCurrentIndex(index)
         finally:
@@ -1597,14 +1776,29 @@ class MainWindow(QMainWindow):
             self._set_spin_value(getattr(self, "fip_sample_rate_mhz_spin", None), float(sample_rate_hz) / 1_000_000.0)
         self._set_checked(getattr(self, "fip_phase_unwrap_check", None), fip_settings.get("phase_unwrap_enabled", False))
         self._update_fip_sensor_controls(emit=False)
-        self._set_combo_value(getattr(self, "fip_plot_sensor_combo", None), fip_settings.get("selected_sensor"))
+        plot_target = fip_settings.get("plot_target")
+        if plot_target is None and fip_settings.get("sensor_count", 1) == 2:
+            plot_target = "both"
+        self._set_combo_value(
+            getattr(self, "fip_plot_sensor_combo", None),
+            plot_target if plot_target is not None else fip_settings.get("selected_sensor"),
+        )
 
     def _restore_preprocess_settings(self, config: Dict[str, Any]) -> None:
         preprocessing = config.get("preprocessing", {})
         filter_config = preprocessing.get("filter", {})
-        self._set_combo_value(getattr(self, "filter_type_combo", None), filter_config.get("type"))
-        self._set_spin_value(getattr(self, "low_freq_spin", None), filter_config.get("low_freq"))
-        self._set_spin_value(getattr(self, "high_freq_spin", None), filter_config.get("high_freq"))
+        filter_enabled = filter_config.get("enabled")
+        if filter_enabled is None:
+            filter_enabled = str(filter_config.get("type", "none")).lower() not in ("none", "无滤波")
+        self._set_checked(getattr(self, "fip_filter_enable_check", None), filter_enabled)
+        if filter_config.get("range"):
+            self._set_line_text(getattr(self, "fip_filter_range_edit", None), filter_config.get("range"))
+        else:
+            self._set_range_text(
+                getattr(self, "fip_filter_range_edit", None),
+                filter_config.get("low_freq", 500),
+                filter_config.get("high_freq", 6000),
+            )
         self._set_spin_value(getattr(self, "filter_order_spin", None), filter_config.get("order"))
         self._set_spin_value(getattr(self, "downsample_spin", None), preprocessing.get("downsample", {}).get("factor"))
 
@@ -1613,6 +1807,7 @@ class MainWindow(QMainWindow):
         realtime = storage.get("realtime", {})
         self._set_checked(getattr(self, "phase_storage_check", None), realtime.get("enabled"))
         self._set_spin_value(getattr(self, "storage_interval_spin", None), realtime.get("interval"))
+        self._set_spin_value(getattr(self, "storage_downsample_spin", None), realtime.get("downsample_factor"))
         self._set_line_text(getattr(self, "storage_path_edit", None), storage.get("path"))
 
     def _restore_view_settings(self, config: Dict[str, Any]) -> None:
@@ -1632,12 +1827,15 @@ class MainWindow(QMainWindow):
         self._set_spin_value(getattr(self, "psd_overlap_spin", None), psd.get("overlap_percent"))
         axis = view.get("axis", {})
         self._set_checked(getattr(self, "view_axis_enable_check", None), axis.get("manual_enabled"))
-        self._set_spin_value(getattr(self, "view_xmin_spin", None), axis.get("x_min"))
-        self._set_spin_value(getattr(self, "view_xmax_spin", None), axis.get("x_max"))
-        self._set_spin_value(getattr(self, "view_ymin_spin", None), axis.get("y_min"))
-        self._set_spin_value(getattr(self, "view_ymax_spin", None), axis.get("y_max"))
-        self._set_spin_value(getattr(self, "view_psd_ymin_spin", None), axis.get("psd_y_min"))
-        self._set_spin_value(getattr(self, "view_psd_ymax_spin", None), axis.get("psd_y_max"))
+        self._set_line_text(getattr(self, "view_x_range_edit", None), axis.get("x_range"))
+        if not axis.get("x_range"):
+            self._set_range_text(getattr(self, "view_x_range_edit", None), axis.get("x_min", 0.0), axis.get("x_max", 1.0))
+        self._set_line_text(getattr(self, "view_y_range_edit", None), axis.get("y_range"))
+        if not axis.get("y_range"):
+            self._set_range_text(getattr(self, "view_y_range_edit", None), axis.get("y_min", -1.0), axis.get("y_max", 1.0))
+        self._set_line_text(getattr(self, "view_psd_y_range_edit", None), axis.get("psd_y_range"))
+        if not axis.get("psd_y_range"):
+            self._set_range_text(getattr(self, "view_psd_y_range_edit", None), axis.get("psd_y_min", -160.0), axis.get("psd_y_max", 20.0))
 
     def _restore_tab2_settings(self, config: Dict[str, Any]) -> None:
         tab2 = config.get("tab2", {})
@@ -1688,19 +1886,36 @@ class MainWindow(QMainWindow):
         legacy_apply_filter = plot.get("apply_filter")
         legacy_low_hz = plot.get("low_hz")
         legacy_high_hz = plot.get("high_hz")
-        self._set_checked(getattr(self, "tab3_curve1_filter_enable_check", None), plot.get("curve1_apply_filter", legacy_apply_filter))
-        self._set_spin_value(getattr(self, "tab3_curve1_low_freq_spin", None), plot.get("curve1_low_hz", legacy_low_hz))
-        self._set_spin_value(getattr(self, "tab3_curve1_high_freq_spin", None), plot.get("curve1_high_hz", legacy_high_hz))
-        self._set_checked(getattr(self, "tab3_curve2_filter_enable_check", None), plot.get("curve2_apply_filter", legacy_apply_filter))
-        self._set_spin_value(getattr(self, "tab3_curve2_low_freq_spin", None), plot.get("curve2_low_hz", legacy_low_hz))
-        self._set_spin_value(getattr(self, "tab3_curve2_high_freq_spin", None), plot.get("curve2_high_hz", legacy_high_hz))
-        self._set_spin_value(getattr(self, "tab3_channel_start_spin", None), plot.get("channel_start"))
-        self._set_spin_value(getattr(self, "tab3_channel_end_spin", None), plot.get("channel_end"))
+        self._set_checked(getattr(self, "tab3_das_filter_enable_check", None), plot.get("das_apply_filter", plot.get("curve2_apply_filter", legacy_apply_filter)))
+        if plot.get("das_filter_range"):
+            self._set_line_text(getattr(self, "tab3_das_filter_range_edit", None), plot.get("das_filter_range"))
+        else:
+            self._set_range_text(
+                getattr(self, "tab3_das_filter_range_edit", None),
+                plot.get("low_hz", plot.get("curve2_low_hz", legacy_low_hz if legacy_low_hz is not None else 500)),
+                plot.get("high_hz", plot.get("curve2_high_hz", legacy_high_hz if legacy_high_hz is not None else 6000)),
+            )
+        self._set_spin_value(
+            getattr(self, "tab3_das_filter_order_spin", None),
+            plot.get("das_filter_order", plot.get("filter_order", 4)),
+        )
+        if plot.get("channel_range"):
+            self._set_line_text(getattr(self, "tab3_channel_range_edit", None), plot.get("channel_range"))
+        else:
+            self._set_range_text(
+                getattr(self, "tab3_channel_range_edit", None),
+                plot.get("channel_start", 0),
+                plot.get("channel_end", 199),
+            )
         self._set_spin_value(getattr(self, "tab3_time_downsample_spin", None), plot.get("time_downsample"))
         self._set_spin_value(getattr(self, "tab3_space_downsample_spin", None), plot.get("space_downsample"))
+        self._set_spin_value(getattr(self, "tab3_space_time_total_seconds_spin", None), plot.get("space_time_total_seconds"))
+        self._set_spin_value(getattr(self, "tab3_space_time_shift_seconds_spin", None), plot.get("space_time_shift_seconds"))
         self._set_combo_value(getattr(self, "tab3_colormap_combo", None), plot.get("colormap"))
-        self._set_spin_value(getattr(self, "tab3_vmin_spin", None), plot.get("vmin"))
-        self._set_spin_value(getattr(self, "tab3_vmax_spin", None), plot.get("vmax"))
+        if plot.get("v_range"):
+            self._set_line_text(getattr(self, "tab3_v_range_edit", None), plot.get("v_range"))
+        else:
+            self._set_range_text(getattr(self, "tab3_v_range_edit", None), plot.get("vmin", -0.3), plot.get("vmax", 0.3))
         storage = tab3.get("storage", {})
         self._set_checked(getattr(self, "tab3_joint_storage_toggle_btn", None), storage.get("joint_enabled", storage.get("enabled")))
         self._set_line_text(getattr(self, "tab3_storage_path_edit", None), storage.get("path"))
@@ -1717,6 +1932,7 @@ class MainWindow(QMainWindow):
         self._set_spin_value(getattr(self, "setting_plot_title_font_spin", None), setting.get("plot_title_px"))
         self._set_spin_value(getattr(self, "setting_axis_label_font_spin", None), setting.get("axis_label_px"))
         self._set_spin_value(getattr(self, "setting_tick_font_spin", None), setting.get("tick_font_pt"))
+        self._set_spin_value(getattr(self, "setting_psd_downsample_spin", None), setting.get("psd_downsample_factor"))
 
     def _apply_gui_config(self, config: Dict[str, Any]) -> None:
         """Restore saved GUI parameters while keeping communication stopped."""
@@ -1768,16 +1984,16 @@ class MainWindow(QMainWindow):
         widgets = [
             self.ip_edit, self.port_spin, self.fip_packet_duration_spin,
             self.fip_sample_rate_mhz_spin, self.fip_sensor_count_combo, self.fip_plot_sensor_combo,
-            self.filter_type_combo, self.low_freq_spin, self.high_freq_spin,
+            self.fip_filter_enable_check, self.fip_filter_range_edit,
             self.filter_order_spin, self.downsample_spin, self.fip_phase_unwrap_check,
             self.time_plot_btn, self.psd_plot_btn, self.tab3_plot_toggle_btn,
             self.time_display_duration_spin, self.view_fip_refresh_spin,
             self.view_edas_refresh_spin, self.view_curve_max_points_spin,
             self.view_psd1_check, self.view_psd2_check,
             self.psd_window_length_spin, self.psd_overlap_spin,
-            self.view_axis_enable_check, self.view_xmin_spin, self.view_xmax_spin,
-            self.view_ymin_spin, self.view_ymax_spin, self.view_psd_ymin_spin, self.view_psd_ymax_spin,
-            self.phase_storage_check, self.storage_path_edit, self.storage_interval_spin,
+            self.view_axis_enable_check, self.view_x_range_edit,
+            self.view_y_range_edit, self.view_psd_y_range_edit,
+            self.phase_storage_check, self.storage_path_edit, self.storage_interval_spin, self.storage_downsample_spin,
             self.tab2_enable_btn, self.tab2_filter_enable_check, self.tab2_low_freq_spin,
             self.tab2_high_freq_spin, self.tab2_filter_order_spin, self.tab2_window_spin,
             self.tab2_overlap_spin, self.tab2_plot_duration_spin, self.tab2_trigger_storage_check,
@@ -1785,18 +2001,17 @@ class MainWindow(QMainWindow):
             self.tab3_ip_edit, self.tab3_port_spin, self.tab3_curve1_combo, self.tab3_curve2_combo,
             self.tab3_curve1_das_channel_spin, self.tab3_curve2_das_channel_spin,
             self.tab3_display_seconds_spin,
-            self.tab3_curve1_filter_enable_check, self.tab3_curve2_filter_enable_check,
-            self.tab3_curve1_low_freq_spin, self.tab3_curve1_high_freq_spin,
-            self.tab3_curve2_low_freq_spin, self.tab3_curve2_high_freq_spin,
-            self.tab3_channel_start_spin,
-            self.tab3_channel_end_spin, self.tab3_time_downsample_spin, self.tab3_space_downsample_spin,
-            self.tab3_colormap_combo, self.tab3_vmin_spin, self.tab3_vmax_spin,
+            self.tab3_das_filter_enable_check, self.tab3_das_filter_range_edit, self.tab3_das_filter_order_spin,
+            self.tab3_channel_range_edit, self.tab3_space_time_total_seconds_spin,
+            self.tab3_space_time_shift_seconds_spin, self.tab3_time_downsample_spin, self.tab3_space_downsample_spin,
+            self.tab3_colormap_combo, self.tab3_v_range_edit,
             self.tab3_joint_storage_toggle_btn, self.tab3_storage_path_edit,
             self.tab3_storage_interval_spin, self.tab3_cache_seconds_spin,
             self.tab3_edas_storage_toggle_btn, self.tab3_edas_storage_path_edit,
             self.tab3_edas_blocks_per_file_spin, self.tab3_edas_queue_packets_spin,
             self.setting_gui_font_spin, self.setting_plot_title_font_spin,
             self.setting_axis_label_font_spin, self.setting_tick_font_spin,
+            self.setting_psd_downsample_spin,
         ]
         for controls in getattr(self, "detection_feature_checkboxes", {}).values():
             widgets.extend([controls.get("compute"), controls.get("plot")])
@@ -1954,8 +2169,12 @@ class MainWindow(QMainWindow):
         """Return the current Tab3 DAS settings."""
         curve1_das_channel = self.tab3_curve1_das_channel_spin.value()
         curve2_das_channel = self.tab3_curve2_das_channel_spin.value()
-        curve1_filter_enabled = self.tab3_curve1_filter_enable_check.isChecked()
-        curve2_filter_enabled = self.tab3_curve2_filter_enable_check.isChecked()
+        das_filter = self.get_tab3_das_filter_settings()
+        das_filter_enabled = bool(das_filter["enabled"])
+        das_low_hz = float(das_filter["low_freq"])
+        das_high_hz = float(das_filter["high_freq"])
+        channel_start, channel_end = self.get_tab3_channel_range()
+        vmin, vmax = self.get_tab3_v_range()
         return {
             "communication": {
                 "ip": self.tab3_ip_edit.text(),
@@ -1968,23 +2187,37 @@ class MainWindow(QMainWindow):
                 "curve2_das_channel": curve2_das_channel,
                 "das_channel": curve2_das_channel,
                 "display_seconds": self.tab3_display_seconds_spin.value(),
-                "curve1_apply_filter": curve1_filter_enabled,
-                "curve1_low_hz": self.tab3_curve1_low_freq_spin.value(),
-                "curve1_high_hz": self.tab3_curve1_high_freq_spin.value(),
-                "curve2_apply_filter": curve2_filter_enabled,
-                "curve2_low_hz": self.tab3_curve2_low_freq_spin.value(),
-                "curve2_high_hz": self.tab3_curve2_high_freq_spin.value(),
-                "apply_filter": curve2_filter_enabled,
-                "low_hz": self.tab3_curve2_low_freq_spin.value(),
-                "high_hz": self.tab3_curve2_high_freq_spin.value(),
-                "channel_start": self.tab3_channel_start_spin.value(),
-                "channel_end": self.tab3_channel_end_spin.value(),
+                "das_apply_filter": das_filter_enabled,
+                "das_filter_range": das_filter["range"],
+                "das_filter_type": das_filter["type"],
+                "das_filter_order": das_filter["order"],
+                "curve1_apply_filter": das_filter_enabled,
+                "curve1_filter_type": das_filter["type"],
+                "curve1_filter_order": das_filter["order"],
+                "curve1_low_hz": das_low_hz,
+                "curve1_high_hz": das_high_hz,
+                "curve2_apply_filter": das_filter_enabled,
+                "curve2_filter_type": das_filter["type"],
+                "curve2_filter_order": das_filter["order"],
+                "curve2_low_hz": das_low_hz,
+                "curve2_high_hz": das_high_hz,
+                "apply_filter": das_filter_enabled,
+                "filter_type": das_filter["type"],
+                "filter_order": das_filter["order"],
+                "low_hz": das_low_hz,
+                "high_hz": das_high_hz,
+                "channel_range": self.tab3_channel_range_edit.text(),
+                "channel_start": channel_start,
+                "channel_end": channel_end,
+                "space_time_total_seconds": self.tab3_space_time_total_seconds_spin.value(),
+                "space_time_shift_seconds": self.tab3_space_time_shift_seconds_spin.value(),
                 "time_downsample": self.tab3_time_downsample_spin.value(),
                 "space_downsample": self.tab3_space_downsample_spin.value(),
                 "plot_enabled": self.is_tab3_plot_enabled(),
                 "colormap": self.tab3_colormap_combo.currentData(),
-                "vmin": self.tab3_vmin_spin.value(),
-                "vmax": self.tab3_vmax_spin.value(),
+                "v_range": self.tab3_v_range_edit.text(),
+                "vmin": vmin,
+                "vmax": vmax,
                 "curve_max_points": self._tab3_curve_max_points,
                 "space_time_max_pixels": self._tab3_space_time_max_pixels,
             },
@@ -2092,6 +2325,8 @@ class MainWindow(QMainWindow):
         sensor_count: int = 1,
         values_by_sensor: Dict[int, Any] = None,
         packet_duration_seconds: float = 1.0,
+        psd_values_by_sensor: Dict[int, Any] = None,
+        psd_sample_rate_hz: float = None,
     ):
         """Update cached FIP comparison curves shown in Tab3."""
         curve1_mode = self.tab3_curve1_combo.currentText()
@@ -2142,8 +2377,26 @@ class MainWindow(QMainWindow):
             safe_packet_duration = max(float(packet_duration_seconds), 1e-6)
             times = (comm_count * safe_packet_duration) + selected_indexes / max(float(sample_rate_hz), 1.0)
             plot_values = np.ascontiguousarray(values_arr[::step], dtype=np.float32)
+            window_times, window_values = self._accumulate_fip_rolling(
+                curve_index=self._curve_index_for_item(curve_item),
+                sensor_index=sensor_index,
+                times=times,
+                values=plot_values,
+            )
+            psd_values = None
+            if isinstance(psd_values_by_sensor, dict):
+                psd_values = psd_values_by_sensor.get(sensor_index)
+            if psd_values is None:
+                psd_values = sensor_values
+            psd_values_arr = np.asarray(psd_values) if psd_values is not None else np.asarray([])
+            psd_rate = max(float(psd_sample_rate_hz or sample_rate_hz), 1.0)
+            psd_times = (
+                (comm_count * safe_packet_duration) + np.arange(psd_values_arr.size, dtype=np.float64) / psd_rate
+                if psd_values_arr.size
+                else np.asarray([], dtype=np.float64)
+            )
             source_points = max(source_points, int(values_arr.size))
-            rendered_points = max(rendered_points, int(plot_values.size))
+            rendered_points = max(rendered_points, int(window_values.size))
             if plot_values.size and abs(float(plot_values[0])) <= 1e-12:
                 self._tab3_logger.warning(
                     "TAB3_NODE ui.fip_curve_first_zero comm=%s curve=%s sensor=FIP%s "
@@ -2157,7 +2410,15 @@ class MainWindow(QMainWindow):
                     int(plot_values.size),
                     step,
                 )
-            self._render_tab3_curve(curve_item, curve_mode, times, plot_values, curve_mode)
+            self._render_tab3_curve(
+                curve_item,
+                curve_mode,
+                window_times,
+                window_values,
+                curve_mode,
+                cache_times=psd_times,
+                cache_values=psd_values_arr,
+            )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         self._tab3_logger.debug(
             "TAB3_NODE ui.fip_curve comm=%s sensors=%s source_points=%d plot_points=%d elapsed_ms=%.2f",
@@ -2205,10 +2466,10 @@ class MainWindow(QMainWindow):
             self._reset_tab3_space_time_image()
             return
         matrix = np.ascontiguousarray(matrix, dtype=np.float32)
-        levels = (self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value())
+        levels = self.get_tab3_v_range()
         if levels[0] >= levels[1]:
             self._set_tab3_space_time_levels(levels[0], levels[0] + 1e-6)
-            levels = (self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value())
+            levels = self.get_tab3_v_range()
         x_scale = 1.0
         x_offset = 0.0
         if x_axis is not None and len(x_axis) > 0:
@@ -2268,6 +2529,7 @@ class MainWindow(QMainWindow):
             1: {'source': None, 'times': np.asarray([]), 'values': np.asarray([])},
             2: {'source': None, 'times': np.asarray([]), 'values': np.asarray([])},
         }
+        self._fip_curve_rolling.clear()
         self._reset_tab3_space_time_image()
         self._tab3_last_fip_plot_monotonic = 0.0
         self._tab3_last_das_plot_monotonic = 0.0
@@ -2376,23 +2638,16 @@ class MainWindow(QMainWindow):
             center = (vmin + vmax) * 0.5
             vmin = center - 0.5
             vmax = center + 0.5
-        self.tab3_vmin_spin.blockSignals(True)
-        self.tab3_vmax_spin.blockSignals(True)
-        self.tab3_vmin_spin.setValue(vmin)
-        self.tab3_vmax_spin.setValue(vmax)
-        self.tab3_vmin_spin.blockSignals(False)
-        self.tab3_vmax_spin.blockSignals(False)
+        self._set_range_text(getattr(self, "tab3_v_range_edit", None), vmin, vmax)
         self._tab3_space_time_levels_locked = lock
 
     def _apply_tab3_space_time_levels(self):
         """Apply the current vmin/vmax settings to the Tab3 image and histogram."""
-        vmin = self.tab3_vmin_spin.value()
-        vmax = self.tab3_vmax_spin.value()
+        vmin, vmax = self.get_tab3_v_range()
         if vmin >= vmax:
             vmax = vmin + 1e-6
             self._set_tab3_space_time_levels(vmin, vmax)
-            vmin = self.tab3_vmin_spin.value()
-            vmax = self.tab3_vmax_spin.value()
+            vmin, vmax = self.get_tab3_v_range()
         self.tab3_space_time_image.setLevels((vmin, vmax))
         if hasattr(self, "tab3_space_time_histogram"):
             self.tab3_space_time_histogram.setLevels(vmin, vmax)
@@ -2495,19 +2750,9 @@ class MainWindow(QMainWindow):
         self._apply_tab3_space_time_colormap()
         self._emit_tab3_settings_changed()
 
-    def _on_tab3_vmin_changed(self, value: float):
-        """Handle manual Tab3 vmin changes."""
+    def _on_tab3_v_range_changed(self):
+        """Handle manual Tab3 color range changes."""
         self._tab3_space_time_levels_locked = True
-        if value >= self.tab3_vmax_spin.value():
-            self._set_tab3_space_time_levels(value, value + 1e-6)
-        self._apply_tab3_space_time_levels()
-        self._emit_tab3_settings_changed()
-
-    def _on_tab3_vmax_changed(self, value: float):
-        """Handle manual Tab3 vmax changes."""
-        self._tab3_space_time_levels_locked = True
-        if value <= self.tab3_vmin_spin.value():
-            self._set_tab3_space_time_levels(value - 1e-6, value)
         self._apply_tab3_space_time_levels()
         self._emit_tab3_settings_changed()
 
@@ -2521,7 +2766,7 @@ class MainWindow(QMainWindow):
         self.tab3_space_time_image.setImage(
             empty,
             autoLevels=False,
-            levels=(self.tab3_vmin_spin.value(), self.tab3_vmax_spin.value()),
+            levels=self.get_tab3_v_range(),
         )
         self.tab3_space_time_image.setRect(0.0, 0.0, 1.0, 1.0)
         self._tab3_last_space_time_rect = (0.0, 0.0, 1.0, 1.0)
@@ -2556,6 +2801,7 @@ class MainWindow(QMainWindow):
 
     def _handle_plot_manual_range_change(self, plot: pg.PlotWidget) -> None:
         """Keep live setData calls from fighting user pan/zoom interactions."""
+        self._view_user_range_active = True
         try:
             plot.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=False)
         except Exception:
@@ -2614,17 +2860,86 @@ class MainWindow(QMainWindow):
             np.ascontiguousarray(values_arr[::step], dtype=np.float32),
         )
 
+    def _time_window_seconds(self) -> float:
+        """Return the rolling time-domain display window in seconds."""
+        for spin_name in ("tab3_display_seconds_spin", "time_display_duration_spin"):
+            spin = getattr(self, spin_name, None)
+            if spin is not None:
+                try:
+                    return max(0.2, float(spin.value()))
+                except (TypeError, ValueError):
+                    continue
+        return 1.0
 
-    def _render_tab3_curve(self, curve_item, curve_mode: str, times, values, expected_mode: str):
+    def _accumulate_fip_rolling(
+        self,
+        curve_index: int,
+        sensor_index: int,
+        times: np.ndarray,
+        values: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """Append one FIP packet to its rolling window and trim to the display duration.
+
+        The View time-domain curves receive only one packet per update. Without a
+        rolling buffer the x-axis uses cumulative packet time, so the trace scrolls
+        right and falls out of view. Keeping a per-curve/per-sensor deque and
+        trimming to the display window makes the latest waveform stay on screen.
+        """
+        key = (int(curve_index), int(sensor_index))
+        state = self._fip_curve_rolling.get(key)
+        if state is None:
+            state = {"times": deque(), "values": deque()}
+            self._fip_curve_rolling[key] = state
+        times_arr = np.asarray(times, dtype=np.float64)
+        values_arr = np.asarray(values, dtype=np.float32)
+        if times_arr.size != values_arr.size:
+            count = min(times_arr.size, values_arr.size)
+            times_arr = times_arr[:count]
+            values_arr = values_arr[:count]
+        if times_arr.size == 0:
+            return np.array([], dtype=np.float64), np.array([], dtype=np.float32)
+        state["times"].extend(times_arr.tolist())
+        state["values"].extend(values_arr.tolist())
+        window = self._time_window_seconds()
+        latest = float(times_arr[-1])
+        cutoff = latest - window
+        while state["times"] and state["times"][0] < cutoff:
+            state["times"].popleft()
+            state["values"].popleft()
+        return np.asarray(state["times"], dtype=np.float64), np.asarray(state["values"], dtype=np.float32)
+
+    def _follow_time_axis(self, curve_item, times: np.ndarray) -> None:
+        """Slide the time-domain x-axis to keep the newest window in view."""
+        if getattr(self, "_view_user_range_active", False):
+            return
+        if hasattr(self, "view_axis_enable_check") and self.view_axis_enable_check.isChecked():
+            return
+        if times is None or np.asarray(times).size == 0:
+            return
+        plot = self._plot_for_curve_item(curve_item)
+        if plot is None:
+            return
+        window = self._time_window_seconds()
+        latest = float(np.asarray(times)[-1])
+        window_start = latest - window
+        try:
+            plot.setXRange(window_start, latest, padding=0.0)
+        except Exception:
+            pass
+
+
+    def _render_tab3_curve(
+        self,
+        curve_item,
+        curve_mode: str,
+        times,
+        values,
+        expected_mode: str,
+        cache_times=None,
+        cache_values=None,
+    ):
         # Render one View time-domain curve only when the selected source matches this item.
         if curve_mode != expected_mode:
-            if getattr(curve_item, "_tab3_has_data", False):
-                curve_item.setData([], [])
-                setattr(curve_item, "_tab3_has_data", False)
-            self._set_curve_legend_name(curve_item, None)
-            return
-        plot_times, plot_values = self._downsample_tab3_curve(times, values)
-        if plot_values.size == 0:
             if getattr(curve_item, "_tab3_has_data", False):
                 curve_item.setData([], [])
                 setattr(curve_item, "_tab3_has_data", False)
@@ -2632,13 +2947,25 @@ class MainWindow(QMainWindow):
             self._cache_view_curve_data(curve_item, curve_mode, [], [])
             self._request_view_psd_update()
             return
+        plot_times, plot_values = self._downsample_tab3_curve(times, values)
+        cache_times_arr = np.asarray(plot_times if cache_times is None else cache_times)
+        cache_values_arr = np.asarray(plot_values if cache_values is None else cache_values)
+        if plot_values.size == 0:
+            if getattr(curve_item, "_tab3_has_data", False):
+                curve_item.setData([], [])
+                setattr(curve_item, "_tab3_has_data", False)
+            self._set_curve_legend_name(curve_item, None)
+            self._cache_view_curve_data(curve_item, curve_mode, cache_times_arr, cache_values_arr)
+            self._request_view_psd_update()
+            return
         curve_item.setData(plot_times, plot_values)
         setattr(curve_item, "_tab3_has_data", True)
+        self._follow_time_axis(curve_item, plot_times)
         self._set_curve_legend_name(
             curve_item,
             self._legend_name_for_curve(self._curve_index_for_item(curve_item), curve_mode),
         )
-        self._cache_view_curve_data(curve_item, curve_mode, plot_times, plot_values)
+        self._cache_view_curve_data(curve_item, curve_mode, cache_times_arr, cache_values_arr)
         self._request_view_psd_update()
 
     def clear_alarm_table(self):
@@ -2662,7 +2989,7 @@ class MainWindow(QMainWindow):
         self.tab2_enable_btn.setChecked(enabled)
         self.tab2_enable_btn.blockSignals(False)
         self.tab2_enable_btn.setText("Stop Tab2" if enabled else "Start Tab2")
-        self._style_action_button(self.tab2_enable_btn, enabled, min_height=42, min_width=120, font_size=14)
+        self._style_action_button(self.tab2_enable_btn, enabled, min_height=42, min_width=120, font_size=15)
 
     def _emit_tab2_settings_changed(self):
         """Emit a unified Tab2 settings-changed signal."""
@@ -2697,7 +3024,7 @@ class MainWindow(QMainWindow):
     def _update_psd_settings(self):
         # Update both the legacy FIP PSD worker settings and the new View Welch PSD controls.
         window_duration_sec = self.psd_window_length_spin.value()
-        current_downsample_factor = self.downsample_spin.value()
+        current_downsample_factor = self.get_psd_downsample_factor()
         fip_settings = self.get_tab1_fip_settings() if hasattr(self, 'get_tab1_fip_settings') else {}
         original_sample_rate = float(fip_settings.get('sample_rate_hz', 1_000_000.0))
         effective_sample_rate = max(original_sample_rate, 1.0) / current_downsample_factor
@@ -2726,12 +3053,7 @@ class MainWindow(QMainWindow):
 
     def _update_filter_settings(self):
         """更新滤波器设置"""
-        filter_settings = {
-            'type': self.filter_type_combo.currentText(),
-            'low_freq': self.low_freq_spin.value(),
-            'high_freq': self.high_freq_spin.value(),
-            'order': self.filter_order_spin.value()
-        }
+        filter_settings = self.get_fip_filter_settings()
 
         # 发送信号给主程序
         if hasattr(self, 'filter_settings_changed'):
@@ -2765,7 +3087,7 @@ class MainWindow(QMainWindow):
         idle_color: str = "#2f6fed",
         min_height: int = 38,
         min_width: int = 104,
-        font_size: int = 13,
+        font_size: int = 15,
     ) -> None:
         # Primary action buttons share size, radius, and start/stop color semantics.
         if not button:
@@ -2798,7 +3120,7 @@ class MainWindow(QMainWindow):
             idle_color="#6f7a86",
             min_height=34,
             min_width=min_width,
-            font_size=12,
+            font_size=14,
         )
 
     def _style_secondary_button(self, button: QPushButton, min_height: int = 34, min_width: int = 88) -> None:
@@ -2808,7 +3130,7 @@ class MainWindow(QMainWindow):
         self._set_button_metrics(button, min_height=min_height, min_width=min_width)
         button.setStyleSheet("""
             QPushButton {
-                font-size: 12px;
+                font-size: 13px;
                 font-weight: 600;
                 padding: 7px 10px;
                 color: #1f2a37;
@@ -3111,7 +3433,7 @@ class MainWindow(QMainWindow):
         sample_rate = self._estimate_sample_rate_from_times(times)
         window_seconds = float(self.psd_window_length_spin.value()) if hasattr(self, 'psd_window_length_spin') else 1.0
         overlap_ratio = (float(self.psd_overlap_spin.value()) / 100.0) if hasattr(self, 'psd_overlap_spin') else 0.5
-        nperseg = int(max(8, min(values.size, round(sample_rate * window_seconds))))
+        nperseg = int(max(8, min(values.size, 50000, round(sample_rate * window_seconds))))
         noverlap = int(min(nperseg - 1, max(0, round(nperseg * overlap_ratio))))
         if nperseg > values.size:
             nperseg = values.size
@@ -3157,12 +3479,9 @@ class MainWindow(QMainWindow):
     def _apply_view_axes(self) -> None:
         if not hasattr(self, 'view_axis_enable_check') or not self.view_axis_enable_check.isChecked():
             return
-        x_min = float(self.view_xmin_spin.value())
-        x_max = float(self.view_xmax_spin.value())
-        y_min = float(self.view_ymin_spin.value())
-        y_max = float(self.view_ymax_spin.value())
-        psd_y_min = float(self.view_psd_ymin_spin.value())
-        psd_y_max = float(self.view_psd_ymax_spin.value())
+        x_min, x_max = self.get_view_x_range()
+        y_min, y_max = self.get_view_y_range()
+        psd_y_min, psd_y_max = self.get_view_psd_y_range()
         if x_max > x_min and y_max > y_min:
             for plot in (getattr(self, 'tab3_curve1_plot', None), getattr(self, 'tab3_curve2_plot', None)):
                 if plot:
@@ -3175,6 +3494,7 @@ class MainWindow(QMainWindow):
     def _reset_view_axes(self) -> None:
         if hasattr(self, 'view_axis_enable_check'):
             self.view_axis_enable_check.setChecked(False)
+        self._view_user_range_active = False
         for plot in self._iter_plot_widgets():
             plot.enableAutoRange(axis=pg.ViewBox.XYAxes, enable=True)
             plot.autoRange()
@@ -3208,6 +3528,14 @@ class MainWindow(QMainWindow):
                     axis.label.setFont(QFont('', axis_size))
                 except Exception:
                     pass
+        histogram = getattr(self, "tab3_space_time_histogram", None)
+        histogram_item = getattr(histogram, "item", None)
+        histogram_axis = getattr(histogram_item, "axis", None)
+        if histogram_axis is not None:
+            try:
+                histogram_axis.setStyle(tickFont=tick_font)
+            except Exception:
+                pass
 
     def _apply_global_display_runtime_settings(self) -> None:
         if hasattr(self, 'setting_gui_font_spin'):
@@ -3224,9 +3552,9 @@ class MainWindow(QMainWindow):
     def _apply_global_control_metrics(self) -> None:
         """Apply control heights and layout spacing that match the active GUI font."""
         try:
-            font_pt = int(self.setting_gui_font_spin.value()) if hasattr(self, 'setting_gui_font_spin') else 14
+            font_pt = int(self.setting_gui_font_spin.value()) if hasattr(self, 'setting_gui_font_spin') else 8
         except Exception:
-            font_pt = 14
+            font_pt = 8
         control_height = max(32, int(round(font_pt * 2.35)))
         label_height = max(24, int(round(font_pt * 1.9)))
         button_height = max(36, int(round(font_pt * 2.55)))
@@ -3292,13 +3620,13 @@ class MainWindow(QMainWindow):
         # 线程健康统计标签（X-01）：展示存储队列积压、丢包数、缺口数等关键指标
         # 由 main.py 的 QTimer 每 2 s 调用 update_thread_stats() 刷新
         self.thread_stats_label = QLabel("线程: 等待启动")
-        self.thread_stats_label.setStyleSheet("color: #444; font-size: 11px; padding: 0 8px;")
+        self.thread_stats_label.setStyleSheet("color: #444; font-size: 8pt; padding: 0 8px;")
         self.status_bar.addPermanentWidget(self.thread_stats_label)
 
         # 添加软件版本信息到右侧，包含研究所名称
         version_label = QLabel("PCCP v1.0 | 中国科学院半导体研究所")
         version_label.setToolTip("融合型光纤PCCP断丝监测软件 v1.0 - 中国科学院半导体研究所")
-        version_label.setStyleSheet("color: #666; font-size: 12px;")
+        version_label.setStyleSheet("color: #666; font-size: 8pt;")
         self.status_bar.addPermanentWidget(version_label)
         self._refresh_comm_lights()
         self._update_data_storage_buttons()
@@ -3325,7 +3653,7 @@ class MainWindow(QMainWindow):
         # 存储失败时用红色高亮提醒
         color = "#c00" if stor_fail > 0 or proc_drop > 50 else "#444"
         self.thread_stats_label.setStyleSheet(
-            f"color: {color}; font-size: 11px; padding: 0 8px;"
+            f"color: {color}; font-size: 8pt; padding: 0 8px;"
         )
         self.thread_stats_label.setText(f"线程: {text}")
 
@@ -3354,7 +3682,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'psd_window_length_spin'):
                 self.psd_window_length_spin.valueChanged.connect(self._update_psd_settings)
             if hasattr(self, 'psd_overlap_spin'):
-                self.psd_overlap_spin.valueChanged.connect(lambda _value: self._update_view_psd_curves(force=True))
+                self.psd_overlap_spin.valueChanged.connect(self._update_psd_settings)
             if hasattr(self, 'view_psd1_check'):
                 self.view_psd1_check.toggled.connect(lambda _checked: self._update_view_psd_curves(force=True))
             if hasattr(self, 'view_psd2_check'):
@@ -3379,6 +3707,8 @@ class MainWindow(QMainWindow):
             ):
                 if setting_spin is not None:
                     setting_spin.valueChanged.connect(lambda _value: self._apply_global_display_runtime_settings())
+            if hasattr(self, 'setting_psd_downsample_spin'):
+                self.setting_psd_downsample_spin.valueChanged.connect(self._update_psd_settings)
             if hasattr(self, 'data_comm_both_btn'):
                 self.data_comm_both_btn.clicked.connect(self._toggle_both_communication)
             if hasattr(self, 'phase_storage_check'):
@@ -3389,18 +3719,15 @@ class MainWindow(QMainWindow):
                 self.time_display_duration_spin.valueChanged.connect(self._update_time_display_settings)
 
             # 滤波参数变化信号连接
-            if hasattr(self, 'filter_type_combo'):
-                self.filter_type_combo.currentTextChanged.connect(self._update_filter_settings)
-            if hasattr(self, 'low_freq_spin'):
-                self.low_freq_spin.valueChanged.connect(self._update_filter_settings)
-            if hasattr(self, 'high_freq_spin'):
-                self.high_freq_spin.valueChanged.connect(self._update_filter_settings)
+            if hasattr(self, 'fip_filter_enable_check'):
+                self.fip_filter_enable_check.toggled.connect(self._update_filter_settings)
+            if hasattr(self, 'fip_filter_range_edit'):
+                self.fip_filter_range_edit.editingFinished.connect(self._update_filter_settings)
+                self.fip_filter_range_edit.returnPressed.connect(self._update_filter_settings)
             if hasattr(self, 'filter_order_spin'):
                 self.filter_order_spin.valueChanged.connect(self._update_filter_settings)
 
             # 降采样参数变化时，也需要更新PSD设置（因为PSD计算依赖采样率）
-            if hasattr(self, 'downsample_spin'):
-                self.downsample_spin.valueChanged.connect(self._update_psd_settings)
             if hasattr(self, 'fip_phase_unwrap_check'):
                 self.fip_phase_unwrap_check.toggled.connect(self._on_fip_phase_unwrap_changed)
 
@@ -3463,10 +3790,9 @@ class MainWindow(QMainWindow):
                 self.tab3_edas_storage_toggle_btn.toggled.connect(self._emit_tab3_settings_changed)
             if hasattr(self, 'tab3_colormap_combo'):
                 self.tab3_colormap_combo.currentTextChanged.connect(self._on_tab3_colormap_changed)
-            if hasattr(self, 'tab3_vmin_spin'):
-                self.tab3_vmin_spin.valueChanged.connect(self._on_tab3_vmin_changed)
-            if hasattr(self, 'tab3_vmax_spin'):
-                self.tab3_vmax_spin.valueChanged.connect(self._on_tab3_vmax_changed)
+            if hasattr(self, 'tab3_v_range_edit'):
+                self.tab3_v_range_edit.editingFinished.connect(self._on_tab3_v_range_changed)
+                self.tab3_v_range_edit.returnPressed.connect(self._on_tab3_v_range_changed)
 
             tab3_widgets = [
                 getattr(self, 'tab3_ip_edit', None),
@@ -3476,16 +3802,15 @@ class MainWindow(QMainWindow):
                 getattr(self, 'tab3_curve1_das_channel_spin', None),
                 getattr(self, 'tab3_curve2_das_channel_spin', None),
                 getattr(self, 'tab3_display_seconds_spin', None),
-                getattr(self, 'tab3_curve1_filter_enable_check', None),
-                getattr(self, 'tab3_curve2_filter_enable_check', None),
-                getattr(self, 'tab3_curve1_low_freq_spin', None),
-                getattr(self, 'tab3_curve1_high_freq_spin', None),
-                getattr(self, 'tab3_curve2_low_freq_spin', None),
-                getattr(self, 'tab3_curve2_high_freq_spin', None),
-                getattr(self, 'tab3_channel_start_spin', None),
-                getattr(self, 'tab3_channel_end_spin', None),
+                getattr(self, 'tab3_das_filter_enable_check', None),
+                getattr(self, 'tab3_das_filter_range_edit', None),
+                getattr(self, 'tab3_das_filter_order_spin', None),
+                getattr(self, 'tab3_channel_range_edit', None),
+                getattr(self, 'tab3_space_time_total_seconds_spin', None),
+                getattr(self, 'tab3_space_time_shift_seconds_spin', None),
                 getattr(self, 'tab3_time_downsample_spin', None),
                 getattr(self, 'tab3_space_downsample_spin', None),
+                getattr(self, 'tab3_v_range_edit', None),
                 getattr(self, 'tab3_storage_path_edit', None),
                 getattr(self, 'tab3_storage_interval_spin', None),
                 getattr(self, 'tab3_cache_seconds_spin', None),

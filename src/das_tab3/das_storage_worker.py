@@ -199,6 +199,15 @@ class DASStorageWorker(QThread):
                     ],
                     dtype=object,
                 ),
+                "fip_raw_data": np.array(
+                    [
+                        f.fip_packet.unwrapped_data
+                        if f.fip_packet is not None
+                        else np.array([], dtype=np.float64)
+                        for f in frames
+                    ],
+                    dtype=object,
+                ),
                 "fip_sensor_count": np.array(
                     [
                         f.fip_packet.sensor_count
@@ -224,7 +233,21 @@ class DASStorageWorker(QThread):
                     ],
                     dtype=object,
                 ),
+                "fip1_raw_data": np.array(
+                    [
+                        _get_fip_sensor_array(f.fip_packet, "unwrapped_by_sensor", "unwrapped_data", 1)
+                        for f in frames
+                    ],
+                    dtype=object,
+                ),
                 "fip2_raw_200khz": np.array(
+                    [
+                        _get_fip_sensor_array(f.fip_packet, "unwrapped_by_sensor", "unwrapped_data", 2)
+                        for f in frames
+                    ],
+                    dtype=object,
+                ),
+                "fip2_raw_data": np.array(
                     [
                         _get_fip_sensor_array(f.fip_packet, "unwrapped_by_sensor", "unwrapped_data", 2)
                         for f in frames
@@ -283,7 +306,7 @@ class DASStorageWorker(QThread):
                 ),
                 # incremental=True 表示本文件是增量 chunk，不是全量快照（T3-02）
                 "incremental": np.bool_(True),
-                "format_version": np.array("wb-monitor-joint-v3"),
+                "format_version": np.array("wb-monitor-joint-v4"),
                 "created_at": np.array(now.isoformat(timespec="milliseconds")),
             }
 

@@ -24,6 +24,7 @@ class DASRawPacket:
 
     header: DASPacketHeader
     data_1d: np.ndarray
+    receive_timestamp: float = 0.0
 
 
 @dataclass

@@ -94,7 +94,7 @@ class FIPTab2Manager(QObject):
         packet = FIPTab2InputPacket(
             timestamp=processed_data.timestamp,
             comm_count=processed_data.comm_count,
-            sample_rate=processed_data.effective_rate,
+            sample_rate=getattr(processed_data, "display_sample_rate_hz", processed_data.effective_rate),
             data=processed_data.downsampled_data,
             packet_duration_seconds=max(float(getattr(processed_data, "packet_duration_seconds", 1.0)), 1e-6),
         )

@@ -186,15 +186,15 @@ class DASTab3Manager(QObject):
         """Receive processed Tab1 data, push it into alignment, and update plots."""
         packet_duration_seconds = max(float(getattr(processed_data, "packet_duration_seconds", 1.0)), 1e-6)
         selected_sensor = getattr(processed_data, "selected_sensor", 1)
-        unfiltered_by_sensor = getattr(processed_data, "psd_by_sensor", {}) or {
-            selected_sensor: processed_data.psd_data
+        unwrapped_source_by_sensor = getattr(processed_data, "unwrapped_by_sensor", {}) or {
+            selected_sensor: processed_data.unwrapped_data
         }
-        selected_unfiltered = unfiltered_by_sensor.get(selected_sensor)
-        if selected_unfiltered is None:
-            selected_unfiltered = processed_data.psd_data
+        selected_unwrapped = unwrapped_source_by_sensor.get(selected_sensor)
+        if selected_unwrapped is None:
+            selected_unwrapped = processed_data.unwrapped_data
         alignment_by_sensor = {
             sensor_index: np.asarray(values)
-            for sensor_index, values in unfiltered_by_sensor.items()
+            for sensor_index, values in unwrapped_source_by_sensor.items()
         }
         display_source_by_sensor = getattr(processed_data, "downsampled_by_sensor", {}) or {
             selected_sensor: processed_data.downsampled_data
@@ -206,13 +206,23 @@ class DASTab3Manager(QObject):
         selected_display = display_by_sensor.get(selected_sensor)
         if selected_display is None:
             selected_display = processed_data.downsampled_data
-        selected_unfiltered = np.asarray(selected_unfiltered)
+        selected_unwrapped = np.asarray(selected_unwrapped)
         selected_display = np.asarray(selected_display)
+        raw_sample_rate = max(float(getattr(processed_data, "raw_sample_rate_hz", processed_data.effective_rate)), 1.0)
+        display_sample_rate = max(float(getattr(processed_data, "display_sample_rate_hz", processed_data.effective_rate)), 1.0)
+        psd_sample_rate = max(float(getattr(processed_data, "psd_sample_rate_hz", raw_sample_rate)), 1.0)
+        psd_source_by_sensor = getattr(processed_data, "psd_by_sensor", {}) or {
+            selected_sensor: processed_data.psd_data
+        }
+        psd_by_sensor = {
+            sensor_index: np.asarray(values)
+            for sensor_index, values in psd_source_by_sensor.items()
+        }
         packet = FIPSessionPacket(
             comm_count=processed_data.comm_count,
             packet_duration_seconds=packet_duration_seconds,
-            sample_rate_hz=processed_data.effective_rate,
-            unwrapped_data=selected_unfiltered,
+            sample_rate_hz=raw_sample_rate,
+            unwrapped_data=selected_unwrapped,
             display_data=selected_display,
             sensor_count=getattr(processed_data, "sensor_count", 1),
             selected_sensor=selected_sensor,
@@ -228,7 +238,7 @@ class DASTab3Manager(QObject):
             getattr(processed_data, "sensor_count", 1),
             selected_sensor,
             len(selected_display),
-            float(processed_data.effective_rate),
+            display_sample_rate,
             packet_duration_seconds,
             len(self._fip_recent_packets),
             float(selected_display[0]) if len(selected_display) else float("nan"),
@@ -243,8 +253,8 @@ class DASTab3Manager(QObject):
         if processed_data.comm_count % 50 == 0:
             display_min = float(np.min(selected_display)) if len(selected_display) else float("nan")
             display_max = float(np.max(selected_display)) if len(selected_display) else float("nan")
-            raw_min = float(np.min(selected_unfiltered)) if len(selected_unfiltered) else float("nan")
-            raw_max = float(np.max(selected_unfiltered)) if len(selected_unfiltered) else float("nan")
+            raw_min = float(np.min(selected_unwrapped)) if len(selected_unwrapped) else float("nan")
+            raw_max = float(np.max(selected_unwrapped)) if len(selected_unwrapped) else float("nan")
             self.logger.info(
                 "TAB3_NODE manager.fip_display comm=%s selected=FIP%s display_source=filtered_downsampled "
                 "display_points=%d display_range=[%.9g,%.9g] raw_points=%d raw_range=[%.9g,%.9g]",
@@ -253,17 +263,19 @@ class DASTab3Manager(QObject):
                 len(selected_display),
                 display_min,
                 display_max,
-                len(selected_unfiltered),
+                len(selected_unwrapped),
                 raw_min,
                 raw_max,
             )
         self.main_window.update_tab3_fip_curve(
             processed_data.comm_count,
             selected_display,
-            processed_data.effective_rate,
+            display_sample_rate,
             sensor_count=getattr(processed_data, "sensor_count", 1),
             values_by_sensor=display_by_sensor,
             packet_duration_seconds=packet_duration_seconds,
+            psd_values_by_sensor=psd_by_sensor,
+            psd_sample_rate_hz=psd_sample_rate,
         )
 
     def _handle_raw_packet(self, raw_packet: DASRawPacket) -> None:

@@ -234,13 +234,15 @@ class PCCPMonitorApp:
             },
             "preprocessing": {
                 "filter": {
-                    "type": "bandpass",
-                    "low_freq": 100,
-                    "high_freq": 10000,
+                    "enabled": False,
+                    "type": "none",
+                    "low_freq": 500,
+                    "high_freq": 6000,
+                    "range": "500-6000",
                     "order": 4
                 },
                 "downsample": {
-                    "factor": 5,  # 默认5倍降采样：1MHz -> 200kHz
+                    "factor": 1,
                     "method": "decimate"
                 }
             },
@@ -259,7 +261,7 @@ class PCCPMonitorApp:
                 "realtime": {
                     "enabled": False,
                     "interval": 10,
-                    "downsample_factor": 5,
+                    "downsample_factor": 1,
                     "path": "D:/PCCP/FIPdata"
                 },
                 "trigger": {
@@ -290,6 +292,7 @@ class PCCPMonitorApp:
         # Connect parameter control signals
         self.main_window.time_settings_changed.connect(self._update_time_parameters)
         self.main_window.filter_settings_changed.connect(self._update_filter_parameters)
+        self.main_window.psd_settings_changed.connect(self._update_psd_parameters)
 
         # Connect storage control signals
         if hasattr(self.main_window, 'phase_storage_check'):
@@ -315,6 +318,10 @@ class PCCPMonitorApp:
                     path,
                     self.main_window.storage_interval_spin.value() if hasattr(self.main_window, 'storage_interval_spin') else 10,
                 )
+            )
+        if hasattr(self.main_window, 'storage_downsample_spin'):
+            self.main_window.storage_downsample_spin.valueChanged.connect(
+                lambda _factor: self._sync_tab1_storage_settings()
             )
 
         # Connect downsampling control
@@ -359,15 +366,15 @@ class PCCPMonitorApp:
             self.signal_filter = SignalFilter(sample_rate=ORIGINAL_SAMPLE_RATE)
             filter_config = self.config['preprocessing']['filter']
 
-            config_filter_type = self._map_filter_type_from_ui(filter_config.get('type', 'bandpass'))
+            config_filter_type = self._map_filter_type_from_ui(filter_config.get('type', 'none'))
             if config_filter_type in ('bandpass', 'bandstop'):
-                config_cutoff = (filter_config.get('low_freq', 100), filter_config.get('high_freq', 10000))
+                config_cutoff = (filter_config.get('low_freq', 500), filter_config.get('high_freq', 6000))
             elif config_filter_type == 'lowpass':
-                config_cutoff = filter_config.get('high_freq', 10000)
+                config_cutoff = filter_config.get('high_freq', 6000)
             elif config_filter_type == 'highpass':
-                config_cutoff = filter_config.get('low_freq', 100)
+                config_cutoff = filter_config.get('low_freq', 500)
             else:
-                config_cutoff = filter_config.get('low_freq', 100)
+                config_cutoff = filter_config.get('low_freq', 500)
 
             self.signal_filter.design_filter(
                 config_filter_type,
@@ -403,6 +410,8 @@ class PCCPMonitorApp:
 
             # 启动前先同步一次前面板预处理参数，确保处理链路与UI一致
             self._refresh_preprocessing_parameters(source="init")
+            if hasattr(self.main_window, '_update_psd_settings'):
+                self.main_window._update_psd_settings()
 
             storage_path = self.main_window.get_tab2_storage_settings().get("path", "D:/PCCP/FIPmonitor")
             self.fip_tab2_manager = FIPTab2Manager(self.main_window, storage_path=storage_path)
@@ -486,14 +495,14 @@ class PCCPMonitorApp:
                 self.main_window.get_tab1_fip_settings()
                 if hasattr(self.main_window, 'get_tab1_fip_settings')
                 else {
-                    "sensor_count": 1,
+                    "sensor_count": 2,
                     "selected_sensor": 1,
                     "packet_duration_seconds": 1.0,
                     "sample_rate_hz": ORIGINAL_SAMPLE_RATE,
                     "phase_unwrap_enabled": False,
                 }
             )
-            sensor_count = int(fip_settings.get("sensor_count", 1))
+            sensor_count = int(fip_settings.get("sensor_count", 2))
             selected_sensor = int(fip_settings.get("selected_sensor", 1))
             packet_duration_seconds = max(float(fip_settings.get("packet_duration_seconds", 1.0)), 1e-6)
             configured_sample_rate_hz = max(float(fip_settings.get("sample_rate_hz", ORIGINAL_SAMPLE_RATE)), 1.0)
@@ -773,17 +782,22 @@ class PCCPMonitorApp:
             # Update signal filter
             if self.signal_filter:
                 filter_config = self.config['preprocessing']['filter']
-                if filter_config['type'] != 'none':
-                    if filter_config['type'] == 'bandpass':
-                        cutoff = (filter_config['low_freq'], filter_config['high_freq'])
-                    else:
-                        cutoff = filter_config.get('cutoff_freq', 1000)
-
-                    self.signal_filter.design_filter(
-                        filter_config['type'],
-                        cutoff,
-                        filter_config['order']
-                    )
+                filter_type = self._map_filter_type_from_ui(filter_config.get('type', 'none'))
+                if filter_type == 'bandpass':
+                    cutoff = (filter_config['low_freq'], filter_config['high_freq'])
+                elif filter_type == 'bandstop':
+                    cutoff = (filter_config['low_freq'], filter_config['high_freq'])
+                elif filter_type == 'lowpass':
+                    cutoff = filter_config.get('high_freq', filter_config.get('cutoff_freq', 1000))
+                elif filter_type == 'highpass':
+                    cutoff = filter_config.get('low_freq', filter_config.get('cutoff_freq', 1000))
+                else:
+                    cutoff = filter_config.get('low_freq', 100)
+                self.signal_filter.design_filter(
+                    filter_type,
+                    cutoff,
+                    filter_config['order']
+                )
 
             # Update downsampler
             if self.downsampler:
@@ -870,7 +884,7 @@ class PCCPMonitorApp:
             self.logger.error(f"Error toggling PSD plotting: {e}")
 
     # 注意：PSD参数和滤波器参数更新现在在优化的线程系统中处理
-    # 移除了旧的_update_psd_parameters和_update_filter_parameters方法
+    # PSD and filter parameter updates are synchronized into the optimized thread system.
 
     def _update_time_parameters(self, settings: Dict[str, Any]):
         """更新时域显示参数 - 使用优化线程系统"""
@@ -882,23 +896,62 @@ class PCCPMonitorApp:
         except Exception as e:
             self.logger.error(f"Error updating time parameters: {e}")
 
+    def _update_psd_parameters(self, settings: Dict[str, Any]):
+        """Apply independent PSD settings without changing time-domain display downsampling."""
+        try:
+            if not settings or not self.tab1_manager:
+                return
+            downsample_factor = int(settings.get("downsample_factor", 1))
+            self.tab1_manager.update_psd_downsample_factor(downsample_factor)
+            psd_plotter = getattr(self.tab1_manager, "psd_plotter", None)
+            psd_calculator = getattr(psd_plotter, "psd_calculator", None)
+            if psd_calculator is not None:
+                if settings.get("window_length") is not None:
+                    psd_calculator.nperseg = max(8, int(settings.get("window_length")))
+                if settings.get("overlap_ratio") is not None:
+                    psd_calculator.overlap = max(0.0, min(0.95, float(settings.get("overlap_ratio"))))
+            self.logger.info(
+                "PSD settings updated: downsample=%sx effective_rate=%.1fHz window=%s overlap=%.2f",
+                downsample_factor,
+                float(settings.get("effective_sample_rate", 0.0)),
+                settings.get("window_length"),
+                float(settings.get("overlap_ratio", 0.0)),
+            )
+        except Exception as e:
+            self.logger.error(f"Error updating PSD parameters: {e}")
+
     def _sync_tab1_storage_settings(self):
         """Sync current Tab1 storage settings from UI to the storage thread."""
         enabled = self.main_window.phase_storage_check.isChecked() if hasattr(self.main_window, 'phase_storage_check') else False
         path = self.main_window.storage_path_edit.text() if hasattr(self.main_window, 'storage_path_edit') else "D:/PCCP/FIPdata"
         interval_seconds = self.main_window.storage_interval_spin.value() if hasattr(self.main_window, 'storage_interval_spin') else 10
-        self._update_storage_settings(enabled, path, interval_seconds)
+        downsample_factor = self.main_window.storage_downsample_spin.value() if hasattr(self.main_window, 'storage_downsample_spin') else 1
+        self._update_storage_settings(enabled, path, interval_seconds, downsample_factor)
 
-    def _update_storage_settings(self, enabled: bool, path: str, interval_seconds: float):
+    def _update_storage_settings(
+        self,
+        enabled: bool,
+        path: str,
+        interval_seconds: float,
+        downsample_factor: int = None,
+    ):
         """Update Tab1 phase storage settings from the UI."""
         try:
+            if downsample_factor is None:
+                downsample_factor = (
+                    self.main_window.storage_downsample_spin.value()
+                    if hasattr(self.main_window, 'storage_downsample_spin')
+                    else 1
+                )
             if self.tab1_manager:
+                self.tab1_manager.update_storage_downsample_factor(downsample_factor)
                 self.tab1_manager.toggle_storage(enabled)
                 self.tab1_manager.update_storage_interval(interval_seconds)
                 if path:
                     self.tab1_manager.update_storage_path(path)
                 self.logger.info(
-                    f"Storage {'enabled' if enabled else 'disabled'}, path: {path}, interval: {interval_seconds}s"
+                    f"Storage {'enabled' if enabled else 'disabled'}, path: {path}, "
+                    f"interval: {interval_seconds}s, downsample: {int(downsample_factor)}x"
                 )
 
         except Exception as e:
@@ -907,7 +960,7 @@ class PCCPMonitorApp:
     def _update_fip_sensor_settings(self, settings: Dict[str, Any]):
         """Apply Tab1 FIP input and plotting setting changes."""
         try:
-            sensor_count = int(settings.get("sensor_count", 1))
+            sensor_count = int(settings.get("sensor_count", 2))
             selected_sensor = int(settings.get("selected_sensor", 1))
             packet_duration_seconds = max(float(settings.get("packet_duration_seconds", 1.0)), 1e-6)
             sample_rate_hz = max(float(settings.get("sample_rate_hz", ORIGINAL_SAMPLE_RATE)), 1.0)
@@ -1026,19 +1079,28 @@ class PCCPMonitorApp:
 
     def _map_filter_type_from_ui(self, ui_filter_type: str) -> str:
         """将界面滤波类型映射为SignalFilter支持的类型。"""
+        text = str(ui_filter_type or "").strip()
+        lowered = text.lower()
         mapping = {
-            "无滤波": "none",
-            "低通": "lowpass",
-            "高通": "highpass",
-            "带通": "bandpass",
-            "带阻": "bandstop",
             "none": "none",
             "lowpass": "lowpass",
             "highpass": "highpass",
             "bandpass": "bandpass",
             "bandstop": "bandstop",
         }
-        return mapping.get(ui_filter_type, "bandpass")
+        if lowered in mapping:
+            return mapping[lowered]
+        if "无" in text:
+            return "none"
+        if "低" in text:
+            return "lowpass"
+        if "高" in text:
+            return "highpass"
+        if "阻" in text or "stop" in lowered:
+            return "bandstop"
+        if "通" in text or "pass" in lowered:
+            return "bandpass"
+        return "none"
 
     def _get_tab1_sample_rate_hz(self) -> float:
         if self._fip_packet_sample_rate_override_hz is not None:
@@ -1095,11 +1157,16 @@ class PCCPMonitorApp:
                         )
 
             # 2) 滤波参数
-            ui_type = self.main_window.filter_type_combo.currentText() if hasattr(self.main_window, 'filter_type_combo') else '带通'
-            filter_type = self._map_filter_type_from_ui(ui_type)
-            low_freq = self.main_window.low_freq_spin.value() if hasattr(self.main_window, 'low_freq_spin') else 100
-            high_freq = self.main_window.high_freq_spin.value() if hasattr(self.main_window, 'high_freq_spin') else 10000
-            order = self.main_window.filter_order_spin.value() if hasattr(self.main_window, 'filter_order_spin') else 4
+            ui_type = 'none'
+            if hasattr(self.main_window, 'get_fip_filter_settings'):
+                filter_settings = self.main_window.get_fip_filter_settings()
+                filter_type = self._map_filter_type_from_ui(filter_settings.get('type', 'none'))
+                low_freq = filter_settings.get('low_freq', 500)
+                high_freq = filter_settings.get('high_freq', 6000)
+                order = filter_settings.get('order', 4)
+            else:
+                filter_type = self._map_filter_type_from_ui(ui_type)
+                low_freq, high_freq, order = 500, 6000, 4
 
             if filter_type in ('bandpass', 'bandstop'):
                 cutoff = (low_freq, high_freq)
@@ -1134,10 +1201,10 @@ class PCCPMonitorApp:
 
             self._sync_signal_filter_sample_rate(self._get_tab1_sample_rate_hz(), source="filter_settings")
 
-            ui_type = settings.get('type', '带通')
+            ui_type = settings.get('type', '无滤波')
             filter_type = self._map_filter_type_from_ui(ui_type)
-            low_freq = settings.get('low_freq', 100)
-            high_freq = settings.get('high_freq', 10000)
+            low_freq = settings.get('low_freq', 500)
+            high_freq = settings.get('high_freq', 6000)
             order = settings.get('order', 4)
 
             if filter_type in ('bandpass', 'bandstop'):

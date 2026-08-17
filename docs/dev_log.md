@@ -458,3 +458,189 @@ pccp_monitor_2026-07-19_01-30-45.log
 ```text
 {'time_enabled': False, 'psd_enabled': False, 'time_queue': 0, 'psd_queue': 0}
 ```
+
+## 2026-07-20 17:27:23 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/ui/main_window.py`、`src/main.py`、`src/fip_tab1/fip_tcp_server.py`、`src/fip_tab1/fip_tab1_manager.py`、`src/processing/phase_unwrap.py`、`src/das_tab3/das_types.py`、`src/das_tab3/das_tcp_server.py`、`src/das_tab3/das_tab3_manager.py`、`README.md`、`docs/2026-07-18-FIP和eDAS时间同步与通信检验.md`、`docs/2026-07-17-FIP-eDAS联调问题数量与修复日志.md`、`docs/2026-07-18-GUI大改日志.md`、`docs/各个tab参数含义与修改说明.md`、`docs/dev_log.md`
+
+### 日志分析
+
+分析文件：`logs/pccp_monitor_2026-07-19_10-06-32.log`
+
+1. `Processing queue full` 共 `6424` 次。
+2. `TAB3_NODE das_tcp.slow_receive` 共 `10342` 次。
+3. `TAB3_NODE plot_worker.slow` 共 `2593` 次。
+4. `Input data outside expected range` 共 `10258` 次。
+
+### 更新摘要
+
+1. 状态栏单位名改为 `中国科学院半导体研究所`。
+2. Setting 页按钮改为 `保存全局设置（重启生效）`，点击后只保存配置并提示重启，不再立即应用当前运行界面。
+3. Data 页时间同步方向统一为 `FIP-eDAS`，显示 `首包时间差（FIP-eDAS）`、`最新同序号时间差（FIP-eDAS）` 和 `平均时间差（FIP-eDAS）`。
+4. FIP/eDAS 同步时间戳改为 TCP 完整包体接收完成时刻，主线程只转发 packet 自带 `receive_timestamp`。
+5. 首包时间差独立保存首个匹配包，不再受 2000 包滑动缓存裁剪影响；最新和平均值按新匹配包增量更新。
+6. View 不可见时跳过可见曲线和 Space-Time 刷新；PSD 更新改为短时间合并调度，降低切换 tab 和切换曲线来源时的主线程压力。
+7. Data 页通信统计合并为统一表格，集中显示状态、接收包、缺包/失败、丢包率和最近 Comm。
+8. FIP TCP server 补充缺包、丢包率和最近 Comm 统计。
+9. FIP 相位输入增加极端值修复；`PhaseUnwrapper` 区分归一化输入和工程/弧度输入，不再对工程/弧度相位强行乘 `pi`。
+10. README、GUI 大改日志、参数说明、时间同步专项文档和联调修复日志均已更新到当前行为。
+
+### 验证
+
+```text
+python -m py_compile src\ui\main_window.py src\main.py src\fip_tab1\fip_tcp_server.py src\fip_tab1\fip_tab1_manager.py src\processing\phase_unwrap.py src\das_tab3\das_types.py src\das_tab3\das_tcp_server.py src\das_tab3\das_tab3_manager.py
+```
+
+结果：编译检查通过。
+
+## 2026-07-29 00:00:00 +08:00
+
+- 更新范围：`src/ui/main_window.py`、`src/main.py`、`src/fip_tab1/fip_tab1_manager.py`、`src/fip_tab2/fip_tab2_manager.py`、`src/das_tab3/das_tab3_manager.py`、`src/das_tab3/das_storage_worker.py`、`src/config/system_config.py`、`config/app_config.json`、`config/gui_last_state.json`、`docs/dev_log.md`
+
+### 更新摘要
+
+1. 拆分 FIP 时域显示降采样、PSD 计算前降采样和实时存储降采样：
+   - Tab1 的“降采样倍数”改为“时域显示降采样”，只影响时域显示/Tab2 输入。
+   - Tab4 新增“PSD降采样”，默认 `1`，PSD 使用对应采样率计算频率轴。
+   - Data 页新增 FIP 实时存储降采样，默认 `1`，默认按原始 `1 MHz` 采样率保存。
+2. 修复 PSD 频率范围不随采样率/降采样语义变化的问题：
+   - `ProcessedData` 增加 `display_sample_rate_hz` 和 `psd_sample_rate_hz`。
+   - View PSD 缓存使用 PSD 专用数据源，不再使用已经为时域显示抽点后的曲线数据推断采样率。
+   - Welch 单段 FFT 上限限制为 `50000` 点，避免默认 `1 MHz` PSD 造成 GUI 超大 FFT。
+3. GUI 默认值调整：
+   - FIP 数量默认 `2`。
+   - 全局 GUI 字体默认 `8 pt`。
+   - FIP 默认“无滤波”。
+   - 系统默认降采样常量调整为 `1`，默认有效采样率保持 `1 MHz`。
+4. Tab1 参数合并：
+   - C1/C2 DAS 带通合并为一套 “DAS带通 + DAS带通(Hz)” 参数。
+   - X/Y/PSD Y 轴范围、通道范围、色标范围、FIP 截止频率、DAS 截止频率均改为 `min-max` 文本格式，例如 `0-100`、`-0.3-0.3`、`-160-20`。
+   - 保留旧配置字段读取兼容，新配置会同时写入合并后的 range 字段。
+5. 存储语义更新：
+   - Tab1 实时存储使用独立存储降采样因子，默认 `1`。
+   - Tab3 joint 存储接收 FIP 原始展开数据与原始采样率；新增 `fip_raw_data`、`fip1_raw_data`、`fip2_raw_data` 字段，并保留旧 `fip_raw_200khz` 兼容字段；格式版本更新为 `wb-monitor-joint-v4`。
+
+### 自检
+
+1. 编译检查通过：
+```text
+python -m py_compile src\ui\main_window.py src\main.py src\fip_tab1\fip_tab1_manager.py src\fip_tab2\fip_tab2_manager.py src\das_tab3\das_tab3_manager.py src\das_tab3\das_storage_worker.py src\config\system_config.py
+```
+
+2. 离屏 GUI 与处理链路自检通过：
+```text
+self-check ok
+```
+
+验证点：
+- `config/app_config.json` 与 `config/gui_last_state.json` 可正常解析。
+- GUI 默认 FIP 数量为 `2`、FIP 滤波为“无滤波”、GUI 字体为 `8`、时域显示降采样/PSD 降采样/存储降采样均为 `1`。
+- 范围文本 `0-100`、`-1-1`、`-160-20`、`-0.3-0.3`、`100-10000` 均可正确解析。
+- 当时域显示降采样为 `5`、PSD 降采样为 `1` 时，显示采样率为 `200 kHz`，PSD 采样率保持 `1 MHz`。
+- 当 PSD 降采样改为 `4` 时，显示采样率仍为 `200 kHz`，PSD 采样率变为 `250 kHz`。
+- 存储线程默认采样率为 `1 MHz`；存储降采样改为 `4` 后，存储采样率变为 `250 kHz`。
+
+## 2026-07-29 12:43:23 +08:00
+
+- 更新范围：`src/ui/main_window.py`、`src/main.py`、`src/das_tab3/das_plot_worker.py`、`config/app_config.json`、`config/gui_last_state.json`、`docs/dev_log.md`
+
+### 更新摘要
+
+1. Tab1 参数区进一步整理：
+   - 原“曲线与DAS预处理”拆分为“曲线选择”和“DAS绘图”两个参数框。
+   - “曲线选择”仅保留 Curve1/Curve2 来源、DAS 通道和时域显示长度。
+   - “DAS绘图”新增统一 DAS 滤波勾选框、滤波参数文本框和滤波阶数。
+2. FIP 绘图参数重构：
+   - 原“FIP预处理”改为“FIP绘图”。
+   - FIP 默认不滤波，滤波由独立勾选框控制。
+   - FIP 与 DAS 滤波参数均支持 `100-` 高通、`-1000` 低通、`500-6000` 带通三种写法。
+   - FIP 绘图目标下拉框支持 `FIP1`、`FIP2`、`1和2`；当 FIP 数量为 `2` 时默认选择 `1和2`。
+3. Space-Time 绘图增加实时滚动参数：
+   - 新增“总时间长度(s)”，默认 `5.0 s`。
+   - 新增“单次平移(s)”，默认 `1.0 s`。
+   - DAS Space-Time worker 使用固定窗口缓存，缓存满后按单次平移长度向左滚动，再追加最新数据。
+4. 字体和图形显示优化：
+   - 所有 tab 的动作按钮基础字号调大，切换类按钮和次级按钮同步增大。
+   - tab 名称字号从 `16 px` 提升到 `18 px`。
+   - 图坐标轴标题默认字号从 `16 px` 调整为 `12 px`。
+   - Space-Time 色标刻度使用全局刻度字体设置，与其他图刻度保持一致。
+   - 底部状态栏通信/存储状态、线程统计和版本文字统一为 `8 pt`。
+5. 配置兼容：
+   - `config/gui_last_state.json` 同步写入新的 DAS/FIP 滤波默认值、Space-Time 默认值和 FIP `plot_target=both`。
+   - 旧配置缺少 `das_filter_range` 时，恢复默认范围改为 `500-6000`。
+   - 遗留 `get_fip_filter_range()` 默认范围同步为 `500-6000`。
+
+### 自检
+
+1. 编译检查通过：
+```text
+python -m py_compile src\ui\main_window.py src\main.py src\das_tab3\das_plot_worker.py src\das_tab3\das_tab3_manager.py src\fip_tab1\fip_tab1_manager.py src\fip_tab2\fip_tab2_manager.py src\das_tab3\das_storage_worker.py src\config\system_config.py
+```
+
+2. 离屏 GUI 与 DAS 滤波路径自检通过：
+```text
+self-check ok
+```
+
+3. Space-Time 固定窗口滚动自检通过：
+```text
+space-time ok (10, 500) 3.0 7.0
+```
+
+验证点：
+- `config/app_config.json` 与 `config/gui_last_state.json` 可正常解析。
+- Tab1 存在“曲线选择”、“DAS绘图”、“FIP绘图”三个目标参数框。
+- FIP 数量默认 `2`，FIP 绘图目标默认 `1和2`，FIP 默认不滤波。
+- 时域显示降采样、PSD 降采样、存储降采样默认均为 `1`。
+- FIP/DAS 滤波参数 `100-`、`-1000`、`500-6000` 均可解析为对应高通、低通和带通。
+- Space-Time 总时间长度默认 `5.0 s`，单次平移长度默认 `1.0 s`。
+- 5 秒 Space-Time 窗口填满后按 1 秒长度丢弃旧列并向左平移，继续追加最新数据。
+- tab 标题字号、状态栏字号和坐标轴标题默认字号均按本次要求生效。
+
+## 2026-08-17 17:27:29 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/ui/main_window.py`、`docs/2026-08-17-FIP联调问题梳理与修复日志.md`、`docs/dev_log.md`
+
+### 日志分析
+
+分析文件：`logs/pccp_monitor_2026-08-17_16-44-48.log`
+
+1. 前两次测试（16:45:18、16:47:03）首包/数据异常，判定为采集软件启动顺序不对：第一包 `raw_first=-9223372036854775808`（`INT64_MIN`）且 FIP1 全 0，第二次仅收到 1 包即中断。
+2. 最后一次较长测试（16:48:09~17:00:36，约 12.4 分钟）通信稳定：`Performance Stats` 显示 `Rate: 1.0 pkt/s`，`FIP_PROCESS_STATS` 显示 `queue_dropped=0`、`gaps=0`；16:48:12 收到 `comm=0`，16:58:12 收到 `comm=600`，600 秒 600 包，连续率约 100%。
+3. 处理性能 `avg_ms=95~98`、`max_ms=194~207`；View FIP 曲线偶发 `ui.fip_curve_slow`（`elapsed_ms=85~118`、`plot_points=8000`）。
+4. 时域图“只在最开始出现波形”根因：`update_tab3_fip_curve()` 使用 `comm_count * packet_duration + index/sample_rate` 作为绝对累计横轴，曲线随 `comm_count` 向右移动，而横轴范围不跟随，导致只有第一包（0~1 s）可见。
+
+### 更新摘要
+
+1. 时域图实时显示修复：新增 FIP 曲线滚动缓存 `_fip_curve_rolling`，按“显示时长(s)”窗口裁剪；新增 `_follow_time_axis()`，在曲线 `setData` 后把横轴滑动到 `[latest-window, latest]`；FIP 与 DAS 曲线统一走 `_render_tab3_curve()` 的横轴跟随。
+2. 用户手动缩放/平移或勾选“手动范围”时不再抢回横轴；点击“自动”或复位后恢复跟随；`reset_tab3_views()` 清空 FIP 滚动缓存。
+3. View 参数区紧凑化：DAS绘图/FIP绘图/PSD设置分别压为 1~2 行。
+4. View 绘图区由嵌套 `QSplitter` 改为单一 `QGridLayout`：两个时域图左对齐、等高；外层垂直 splitter 等比例，使两个时域图高度之和等于 Space-Time 图高度。
+5. Data 参数区紧凑化：FIP通信参数 5 参数压为 1 行；eDAS通信参数压为 2 行参数 + 2 行状态；FIP/eDAS时间同步检验改为 3 列紧凑网格。
+
+### 自检
+
+1. 编译检查通过：
+```text
+python -X utf8 -m py_compile src\ui\main_window.py src\main.py src\das_tab3\das_plot_worker.py src\das_tab3\das_tab3_manager.py src\fip_tab1\fip_tab1_manager.py
+python -X utf8 -m compileall -q src
+```
+
+2. 离屏 GUI 自检通过：
+```text
+TAB_ORDER ['View', 'Data', 'Tab3', 'Setting']
+HAS True True True True
+ROLLING_KEYS [(1, 1)]
+ROLLING_SIZES 2000 2000
+ROLLING_AFTER_RESET 0
+OFFSCREEN_OK
+```
+
+验证点：
+- 新参数框（DAS绘图、FIP绘图、PSD设置）可正常构造。
+- FIP 曲线滚动缓存可追加、裁剪，并在 `reset_tab3_views()` 后清空。
+- 横轴跟随 `_follow_time_axis()` 与 DAS Space-Time 图构造无异常。

@@ -299,6 +299,8 @@ class ProcessedData:
     selected_sensor: int = 1
     packet_duration_seconds: float = DEFAULT_FIP_PACKET_DURATION_SECONDS
     raw_sample_rate_hz: float = DEFAULT_FIP_SAMPLE_RATE_HZ
+    display_sample_rate_hz: float = DEFAULT_FIP_SAMPLE_RATE_HZ
+    psd_sample_rate_hz: float = DEFAULT_FIP_SAMPLE_RATE_HZ
     unwrapped_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
     filtered_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
     downsampled_by_sensor: Dict[int, np.ndarray] = field(default_factory=dict)
@@ -330,6 +332,7 @@ class DataProcessingThread(QThread):
         self.input_queue = Queue(maxsize=self.INPUT_QUEUE_MAXSIZE)
         self.running = False
         self.phase_unwrap_enabled = False
+        self.psd_downsample_factor = 1
 
         self.phase_unwrapper = phase_unwrapper
         self.signal_filter = signal_filter
@@ -354,6 +357,22 @@ class DataProcessingThread(QThread):
             'processing_time_max_ms': 0.0,
             'gap_count': 0,  # 检测到 comm_count 缺口的次数（T1-15）
         }
+
+    def set_psd_downsample_factor(self, factor: int) -> bool:
+        try:
+            factor = int(factor)
+        except (TypeError, ValueError):
+            factor = 1
+        factor = max(1, factor)
+        if factor == self.psd_downsample_factor:
+            return False
+        old_factor = self.psd_downsample_factor
+        self.psd_downsample_factor = factor
+        self.logger.info("PSD downsample factor changed: %sx -> %sx", old_factor, factor)
+        return True
+
+    def get_psd_downsample_factor(self) -> int:
+        return max(1, int(self.psd_downsample_factor))
 
     def add_raw_packet(self, packet: RawDataPacket) -> bool:
         """Queue raw packets for plotting-oriented processing."""
@@ -565,7 +584,8 @@ class DataProcessingThread(QThread):
             filtered_by_sensor: Dict[int, np.ndarray] = {}
             downsampled_by_sensor: Dict[int, np.ndarray] = {}
             psd_by_sensor: Dict[int, np.ndarray] = {}
-            effective_rate_by_sensor: Dict[int, float] = {}
+            display_rate_by_sensor: Dict[int, float] = {}
+            psd_rate_by_sensor: Dict[int, float] = {}
             actual_input_sensor_count = max(sensor_inputs.keys())
             selected_sensor_for_filter = normalize_fip_sensor_index(
                 packet.selected_sensor,
@@ -617,8 +637,9 @@ class DataProcessingThread(QThread):
                     unwrapped = np.asarray(phase_data, dtype=np.float64)
 
                 raw_sample_rate = normalize_fip_sample_rate(packet.sample_rate_hz)
-                psd_data = np.asarray(unwrapped[::downsample_factor], dtype=np.float64)
-                effective_rate = raw_sample_rate / downsample_factor
+                psd_downsample_factor = self.get_psd_downsample_factor()
+                psd_data = np.asarray(unwrapped[::psd_downsample_factor], dtype=np.float64)
+                psd_sample_rate = raw_sample_rate / psd_downsample_factor
 
                 if signal_filter is not None:
                     filtered, _ = signal_filter.apply_filter(unwrapped)
@@ -629,12 +650,14 @@ class DataProcessingThread(QThread):
                     downsampled, _ = downsampler.downsample(filtered)
                 else:
                     downsampled = np.asarray(filtered[::downsample_factor], dtype=np.float64)
+                display_sample_rate = raw_sample_rate / downsample_factor
 
                 unwrapped_by_sensor[sensor_index] = unwrapped
                 filtered_by_sensor[sensor_index] = filtered
                 downsampled_by_sensor[sensor_index] = downsampled
                 psd_by_sensor[sensor_index] = psd_data
-                effective_rate_by_sensor[sensor_index] = effective_rate
+                display_rate_by_sensor[sensor_index] = display_sample_rate
+                psd_rate_by_sensor[sensor_index] = psd_sample_rate
 
                 if log_packet_detail:
                     unwrapped_size, unwrapped_first, unwrapped_min, unwrapped_max = _array_summary_values(unwrapped)
@@ -648,7 +671,7 @@ class DataProcessingThread(QThread):
                         "unwrapped=%d first=%.9g range=[%.9g,%.9g] "
                         "unfiltered_ds=%d first=%.9g range=[%.9g,%.9g] "
                         "filtered=%d first=%.9g range=[%.9g,%.9g] "
-                        "display_ds=%d first=%.9g range=[%.9g,%.9g] raw_rate=%.1f effective_rate=%.1f",
+                        "display_ds=%d first=%.9g range=[%.9g,%.9g] raw_rate=%.1f display_rate=%.1f psd_rate=%.1f psd_downsample=%d",
                         packet.comm_count,
                         sensor_index,
                         sensor_index == selected_sensor_for_filter,
@@ -674,7 +697,9 @@ class DataProcessingThread(QThread):
                         down_min,
                         down_max,
                         raw_sample_rate,
-                        effective_rate,
+                        display_sample_rate,
+                        psd_sample_rate,
+                        psd_downsample_factor,
                     )
                 if psd_data.size and abs(float(psd_data[0])) <= 1e-12:
                     self.logger.warning(
@@ -704,7 +729,8 @@ class DataProcessingThread(QThread):
             filtered = filtered_by_sensor[selected_sensor]
             downsampled = downsampled_by_sensor[selected_sensor]
             psd_data = psd_by_sensor[selected_sensor]
-            effective_rate = effective_rate_by_sensor[selected_sensor]
+            display_sample_rate = display_rate_by_sensor[selected_sensor]
+            psd_sample_rate = psd_rate_by_sensor[selected_sensor]
 
             if packet.comm_count % 50 == 0:
                 sensor_summary = ", ".join(
@@ -725,12 +751,14 @@ class DataProcessingThread(QThread):
                 filtered_data=filtered,
                 downsampled_data=downsampled,
                 psd_data=psd_data,
-                effective_rate=effective_rate,
+                effective_rate=display_sample_rate,
                 comm_count=packet.comm_count,
                 sensor_count=actual_sensor_count,
                 selected_sensor=selected_sensor,
                 packet_duration_seconds=normalize_fip_packet_duration(packet.packet_duration_seconds),
                 raw_sample_rate_hz=normalize_fip_sample_rate(packet.sample_rate_hz),
+                display_sample_rate_hz=display_sample_rate,
+                psd_sample_rate_hz=psd_sample_rate,
                 unwrapped_by_sensor=unwrapped_by_sensor,
                 filtered_by_sensor=filtered_by_sensor,
                 downsampled_by_sensor=downsampled_by_sensor,
@@ -742,7 +770,9 @@ class DataProcessingThread(QThread):
             return None
 
     def get_stats(self) -> Dict[str, Any]:
-        return dict(self.stats)
+        stats = dict(self.stats)
+        stats['psd_downsample_factor'] = self.get_psd_downsample_factor()
+        return stats
 
     def stop(self):
         """Stop the thread."""
@@ -1028,9 +1058,8 @@ class PSDPlotThread(QThread):
     def _calculate_psd(self, data: ProcessedData):
         """计算PSD"""
         try:
-            # 使用相位展开后、未滤波的数据计算PSD（满足需求）
-            # 采样率与psd_data保持一致：effective_rate = ORIGINAL_SAMPLE_RATE / downsample_factor
-            self.psd_calculator.sample_rate = data.effective_rate
+            # 使用相位展开后、未滤波的数据计算PSD，采样率与独立 PSD 输入保持一致。
+            self.psd_calculator.sample_rate = max(float(getattr(data, "psd_sample_rate_hz", data.effective_rate)), 1.0)
             frequencies, psd = self.psd_calculator.compute_psd(data.psd_data)
 
             if len(frequencies) > 0:
@@ -1053,7 +1082,7 @@ class PSDPlotThread(QThread):
 class DataStorageThread(QThread):
     """Persist exact storage windows using an independent raw-packet path."""
 
-    STORAGE_DOWNSAMPLE_FACTOR = 5
+    STORAGE_DOWNSAMPLE_FACTOR = 1
     DEFAULT_STORAGE_SAMPLE_RATE = DEFAULT_FIP_SAMPLE_RATE_HZ / STORAGE_DOWNSAMPLE_FACTOR
     RAW_QUEUE_MAXSIZE = 2000
 
@@ -1071,7 +1100,8 @@ class DataStorageThread(QThread):
         self.phase_unwrapper = phase_unwrapper
         self._phase_unwrappers: Dict[int, Any] = {1: phase_unwrapper}
         self.raw_sample_rate_hz = DEFAULT_FIP_SAMPLE_RATE_HZ
-        self.storage_sample_rate_hz = self.raw_sample_rate_hz / self.STORAGE_DOWNSAMPLE_FACTOR
+        self.storage_downsample_factor = self.STORAGE_DOWNSAMPLE_FACTOR
+        self.storage_sample_rate_hz = self.raw_sample_rate_hz / self.storage_downsample_factor
         self.packet_duration_seconds = DEFAULT_FIP_PACKET_DURATION_SECONDS
         self.storage_path = storage_path
         self.storage_interval_seconds = float(storage_interval_seconds)
@@ -1158,6 +1188,35 @@ class DataStorageThread(QThread):
     def set_storage_path(self, path: str):
         self.storage_path = path
 
+    def set_storage_downsample_factor(self, factor: int):
+        if self.running:
+            self._ctrl_queue.put_nowait({'cmd': 'set_storage_downsample_factor', 'value': factor})
+            return
+        self._apply_storage_downsample_factor(factor)
+
+    def _apply_storage_downsample_factor(self, factor: int) -> bool:
+        try:
+            factor = int(factor)
+        except (TypeError, ValueError):
+            factor = 1
+        factor = max(1, factor)
+        if factor == self.storage_downsample_factor:
+            return False
+        if self.buffered_requests:
+            self._flush_buffered_data()
+            self._clear_buffer()
+        old_factor = self.storage_downsample_factor
+        self.storage_downsample_factor = factor
+        self.storage_sample_rate_hz = self.raw_sample_rate_hz / self.storage_downsample_factor
+        self.target_chunk_samples = max(1, int(round(self.storage_interval_seconds * self.storage_sample_rate_hz)))
+        self.logger.info(
+            'Storage downsample factor changed: %sx -> %sx, storage_rate=%.1fHz',
+            old_factor,
+            self.storage_downsample_factor,
+            self.storage_sample_rate_hz,
+        )
+        return True
+
     def set_storage_interval_seconds(self, interval_seconds: float):
         safe_seconds = max(float(interval_seconds), 0.1)
         self.storage_interval_seconds = safe_seconds
@@ -1182,7 +1241,7 @@ class DataStorageThread(QThread):
             self._flush_buffered_data()
             self._clear_buffer()
         self.raw_sample_rate_hz = sample_rate_hz
-        self.storage_sample_rate_hz = sample_rate_hz / self.STORAGE_DOWNSAMPLE_FACTOR
+        self.storage_sample_rate_hz = sample_rate_hz / self.storage_downsample_factor
         self.packet_duration_seconds = packet_duration_seconds
         self.target_chunk_samples = max(1, int(round(self.storage_interval_seconds * self.storage_sample_rate_hz)))
         self.logger.info(
@@ -1301,7 +1360,7 @@ class DataStorageThread(QThread):
                 unwrapped = np.asarray(phase_data, dtype=np.float64)
 
             storage_by_sensor[sensor_index] = np.asarray(
-                unwrapped[::self.STORAGE_DOWNSAMPLE_FACTOR],
+                unwrapped[::self.storage_downsample_factor],
                 dtype=np.float64,
             )
 
@@ -1325,7 +1384,7 @@ class DataStorageThread(QThread):
             data=storage_data,
             comm_count=packet.comm_count,
             timestamp=packet.timestamp,
-            sample_rate=normalize_fip_sample_rate(packet.sample_rate_hz) / self.STORAGE_DOWNSAMPLE_FACTOR,
+            sample_rate=normalize_fip_sample_rate(packet.sample_rate_hz) / self.storage_downsample_factor,
             data_type=data_type,
             sensor_count=len(sensor_ids),
             selected_sensor=normalize_fip_sensor_index(packet.selected_sensor, len(sensor_ids)),
@@ -1483,6 +1542,8 @@ class DataStorageThread(QThread):
                         self.logger.info('Storage enabled')
                 elif cmd['cmd'] == 'set_phase_unwrap_enabled':
                     self._apply_phase_unwrap_enabled(bool(cmd['value']))
+                elif cmd['cmd'] == 'set_storage_downsample_factor':
+                    self._apply_storage_downsample_factor(cmd.get('value', 1))
             except Empty:
                 break
 
@@ -1626,7 +1687,7 @@ class DataStorageThread(QThread):
                 'samples_per_sensor': int(sample_count),
                 'total_values': int(np.asarray(phase_data).size),
                 'sensor_count': int(sensor_count),
-                'downsample_factor': self.STORAGE_DOWNSAMPLE_FACTOR,
+                'downsample_factor': self.storage_downsample_factor,
                 'packet_duration_seconds': float(packet_duration_seconds),
                 'raw_sample_rate_hz': float(raw_sample_rate_hz),
                 'packet_points_per_sensor': int(round(raw_sample_rate_hz * packet_duration_seconds)),
@@ -1688,7 +1749,13 @@ class DataStorageThread(QThread):
         return f'{int(round(sample_rate))}Hz'
 
     def get_stats(self) -> Dict[str, Any]:
-        return dict(self.stats)
+        stats = dict(self.stats)
+        stats.update({
+            'raw_sample_rate_hz': self.raw_sample_rate_hz,
+            'storage_downsample_factor': self.storage_downsample_factor,
+            'storage_sample_rate_hz': self.storage_sample_rate_hz,
+        })
+        return stats
 
     def stop(self):
         self.running = False
@@ -1714,7 +1781,7 @@ class OptimizedTab1ThreadManager(QObject):
         self.psd_plot_widget = None
         self.time_curve = None
         self.psd_curve = None
-        self.fip_sensor_count = 1
+        self.fip_sensor_count = 2
         self.selected_fip_sensor = 1
         self.fip_packet_duration_seconds = DEFAULT_FIP_PACKET_DURATION_SECONDS
         self.fip_sample_rate_hz = DEFAULT_FIP_SAMPLE_RATE_HZ
@@ -2014,6 +2081,13 @@ class OptimizedTab1ThreadManager(QObject):
         if not enabled and self.psd_curve and QApplication.instance():
             QTimer.singleShot(0, lambda: self.psd_curve.setData([], []))
 
+    def update_psd_downsample_factor(self, factor: int):
+        """Update the independent PSD pre-calculation downsample factor."""
+        if self.data_processor.set_psd_downsample_factor(factor):
+            self.psd_plotter.reset_state(clear_queue=True)
+            if self.psd_curve and QApplication.instance():
+                QTimer.singleShot(0, lambda: self.psd_curve.setData([], []))
+
     def toggle_storage(self, enabled: bool):
         """控制数据存储"""
         self.storage_thread.set_enabled(enabled)
@@ -2037,6 +2111,10 @@ class OptimizedTab1ThreadManager(QObject):
             interval_seconds: 新的分块时长（秒），最小 1 s。
         """
         self.storage_thread.set_storage_interval_seconds(interval_seconds)
+
+    def update_storage_downsample_factor(self, factor: int):
+        """Update the independent FIP storage downsample factor."""
+        self.storage_thread.set_storage_downsample_factor(factor)
 
     def get_thread_stats(self):
         """Return processing and storage thread statistics for diagnostics."""

@@ -4,70 +4,69 @@
 
 本项目是基于 `Python 3.9 + PyQt5 + PyQtGraph` 开发的 PCCP 断丝监测软件原型。
 
-当前已完成 3 个模块的基础开发：
+当前界面按现场联调工作流重组为 4 个 tab：
 
-- `Tab1 / FIP`
-  - 干涉仪数据 TCP 接收
-  - 相位展开、滤波、降采样
-  - 时域波形与 PSD 绘图
-  - 相位数据存储
-- `Tab2 / SigID`
-  - 基于 Tab1 处理结果的短时特征提取
-  - 阈值检测
-  - 告警事件聚合
-  - 特征显示与触发存储
-- `Tab3 / eDAS`
-  - DAS TCP 接收
-  - DAS 数据包解析与二维矩阵恢复
-  - DAS 指定通道时域图
-  - FIP 对比曲线
-  - DAS `space-time` 图
-  - FIP/DAS 按 `comm_count` 对齐状态维护
-  - 对齐后联合原始数据存储
+- `Tab1 / View`
+  - 统一观察 FIP 和 eDAS 时域曲线
+  - Curve1/Curve2 可独立选择 `Off`、`DAS Channel`、`FIP1`、`FIP2`
+  - PSD1/PSD2 分别位于对应曲线右侧，使用 Welch 法计算
+  - 显示 eDAS `space-time` 图和色标
+  - View 不可见时跳过可见图件刷新，降低长时间运行后的 UI 压力
+- `Tab2 / Data`
+  - 集中 FIP/eDAS 通信启动、监听参数、连接状态和统一通信统计
+  - 统一显示 `接收包`、`缺包/失败`、`丢包率`、`最近Comm`
+  - 显示 FIP/eDAS 同序号包接收时间差，方向为 `FIP - eDAS`
+  - 提供 FIP、eDAS 和 FIP+eDAS 联合存储控制
+- `Tab3 / 检测`
+  - 保留原 Tab2 的短时特征提取、阈值检测、告警事件和触发存储能力
+  - 默认不启动，避免无需求时占用 CPU
+- `Tab4 / Setting`
+  - 管理 GUI 字体、图件标题、坐标轴标签和刻度字体
+  - 全局显示设置保存后需重启软件生效
 
-当前 `Tab4 / SigLoc` 仍为占位状态，后续用于 DAS 特征分析、触发定位与结果导出。
+FIP/eDAS 同步时间戳取自 TCP 接收线程“完整包体接收完成”的时刻；`首包时间差（FIP-eDAS）` 一旦形成会固定保存，不再随滑动缓存裁剪变化。
 
 ## 当前开发状态
 
-### Tab1 已完成
+### FIP 主链路已完成
 
 - TCP 服务端接收 FIP 数据
 - 解析 `>II` 头部与大端 `int64` 定点数据
 - 定点数据转 `float64`
+- 相位输入异常值修复与归一化/工程量输入判别
 - 相位展开、数字滤波、系统降采样
-- 时域波形实时显示
-- PSD 实时计算与绘图
+- FIP1/FIP2 曲线显示、PSD、Data 页统计和存储
 - `NPZ` 格式相位数据存储
 - 代码结构已整理到 `src/fip_tab1`
 
-### Tab2 已完成
+### eDAS 主链路已完成
+
+- TCP 服务端接收 eDAS 数据
+- 解析 `comm_count`、`sample_rate_hz`、`channel_count`、`data_bytes`、`packet_duration_seconds`
+- DAS 一维数据恢复为二维矩阵
+- 指定通道时域曲线显示
+- eDAS `space-time` 图显示
+- 缺失包统计、最近 Comm 显示和 Data 页统一通信统计
+- eDAS 独立原始数据存储
+
+### FIP/eDAS 联调能力已完成
+
+- Data 页同时启动/停止 FIP 和 eDAS 通信
+- FIP/eDAS 通信指示灯和存储指示灯
+- FIP/eDAS 按 `comm_count` 配对的同步时间差显示
+- 首包时间差固定保存，最新值和平均值增量更新
+- FIP/eDAS 对齐状态维护和联合原始数据定时存储
+
+### 检测页已完成
 
 - 独立的 `src/fip_tab2` 多线程流水线
-- 从 Tab1 接收处理后的下采样数据
-- Tab2 自身可选带通预处理
+- 从 FIP 主链路接收处理后的下采样数据
+- 检测页自身可选带通预处理
 - 短时特征提取
 - 基于滑动基线与阈值因子的异常检测
 - 连续异常窗口聚合为告警事件
 - 最多 4 路特征曲线显示
 - 告警表与触发存储
-
-### Tab3 已完成最小闭环
-
-- DAS 服务端独立启动与停止
-- DAS 包头解析：
-  - `comm_count`
-  - `sample_rate_hz`
-  - `channel_count`
-  - `data_bytes`
-  - `packet_duration_seconds`
-- DAS 一维数据恢复为二维矩阵
-- DAS 指定通道时域曲线显示
-- FIP 对比曲线显示
-- DAS `space-time` 图显示
-- FIP / DAS 按 `comm_count` 对齐状态维护
-- 缺失包区间记录
-- DAS 10 秒无数据提醒
-- 联合原始数据定时存储
 
 ## 当前代码结构
 
@@ -175,7 +174,7 @@ Tab3 debug 日志节点统一使用 `TAB3_NODE` 前缀，重点节点包括：
 
 ## 主要模块说明
 
-### 1. Tab1 主链路
+### 1. FIP 主链路
 
 - 入口：`src/main.py`
 - TCP 接收：`src/fip_tab1/fip_tcp_server.py`
@@ -186,7 +185,7 @@ Tab3 debug 日志节点统一使用 `TAB3_NODE` 前缀，重点节点包括：
   - `src/processing/signal_filter.py`
   - `src/processing/downsampling.py`
 
-### 2. Tab2 主链路
+### 2. 检测主链路
 
 - 管理器：`src/fip_tab2/fip_tab2_manager.py`
 - 特征提取：`src/fip_tab2/fip_feature_worker.py`
@@ -195,7 +194,7 @@ Tab3 debug 日志节点统一使用 `TAB3_NODE` 前缀，重点节点包括：
 - 触发存储：`src/fip_tab2/fip_trigger_storage.py`
 - 共享数据类型：`src/fip_tab2/fip_types.py`
 
-### 3. Tab3 主链路
+### 3. eDAS 与联合存储主链路
 
 - 管理器：`src/das_tab3/das_tab3_manager.py`
 - DAS TCP 接收：`src/das_tab3/das_tcp_server.py`
@@ -210,43 +209,48 @@ Tab3 debug 日志节点统一使用 `TAB3_NODE` 前缀，重点节点包括：
 
 当前界面能力：
 
-- `Tab1`
-  - 通信设置
-  - 预处理参数
-  - 相位数据存储
-  - 时域/PSD 显示与启停
-- `Tab2`
+- `View`
+  - Curve1/Curve2 时域图
+  - PSD1/PSD2
+  - eDAS Space-Time
+  - FIP/eDAS 曲线源、滤波、刷新、点数、坐标轴和色标设置
+- `Data`
+  - FIP/eDAS 通信控制
+  - FIP/eDAS 监听参数
+  - 统一通信统计：状态、接收包、缺包/失败、丢包率、最近 Comm
+  - 时间同步检验：首包、最新同序号和平均 `FIP-eDAS` 时间差
+  - FIP、eDAS 和联合存储控制
+- `Tab3 / 检测`
   - 特征勾选
-  - Tab2 独立预处理参数
+  - 检测独立预处理参数
   - 滑动窗与显示时长参数
   - 阈值因子配置
   - 告警清空与触发存储设置
-- `Tab3`
-  - DAS 通信设置
-  - 包头实时状态
-  - 对齐状态
-  - 曲线 1 / 曲线 2 控制
-  - `space-time` 图参数
-  - 联合原始存储设置
-  - DAS 独立启停
+- `Setting`
+  - GUI 和图件字体设置
+  - 保存全局显示设置，重启软件后生效
 
 ## 关键数据流
 
-### Tab1
+### FIP 主链路
 
-`LabVIEW TCP -> OptimizedTCPServer -> RawDataPacket -> 相位展开 -> 滤波 -> 降采样 -> 时域绘图 / PSD / Tab2 转发 / NPZ 存储`
+`LabVIEW TCP -> OptimizedTCPServer -> RawDataPacket -> 相位输入校验/修复 -> 相位展开 -> 滤波 -> 降采样 -> View 曲线/PSD -> 检测页转发 / NPZ 存储`
 
-### Tab2
+### 检测主链路
 
-`Tab1 processed_data -> FIPFeatureWorker -> FIPDetectionWorker / FIPFeaturePlotWorker / FIPTriggerStorageWorker`
+`FIP processed_data -> FIPFeatureWorker -> FIPDetectionWorker / FIPFeaturePlotWorker / FIPTriggerStorageWorker`
 
-### Tab3
+### eDAS 主链路
 
-`DAS TCP -> DASTCPServer -> DASRawPacket -> DASParsedPacket -> DASPlotWorker -> Tab3 UI`
+`DAS TCP -> DASTCPServer -> DASRawPacket -> DASParsedPacket -> DASPlotWorker -> View 曲线 / Space-Time`
 
 同时：
 
-`Tab1 processed_data + DAS parsed packet -> AlignedSessionCoordinator -> Tab3 对齐状态 / 联合原始存储`
+`FIP processed_data + DAS parsed packet -> AlignedSessionCoordinator -> Data 对齐状态 / 联合原始存储`
+
+### 时间同步检验
+
+`FIP DataPacket.receive_timestamp + DASRawPacket.receive_timestamp -> MainWindow 按 comm_count 配对 -> Data 页显示 FIP-eDAS 首包/最新/平均时间差`
 
 ## DAS 联调工具
 
@@ -290,38 +294,43 @@ VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve
 ## 当前默认参数
 
 - FIP 原始采样率：`1 MHz`
-- Tab1 默认系统降采样倍数：`5`
-- Tab1 默认有效采样率：`200 kHz`
-- Tab1 时域显示数据：`downsampled_data[::2]`
-- Tab1 默认时域显示采样率：`100 kHz`
-- Tab2 默认启用特征：`short_energy`
-- Tab2 默认阈值因子：`3.0`
-- Tab2 默认触发存储：
+- FIP 默认端口：`3677`
+- FIP 默认单包时长：`1.0 s`
+- View 默认 Curve1：`FIP1`
+- View 默认 Curve2：`DAS Channel`
+- View 默认 Curve2 eDAS 通道：`10`
+- View 时域曲线点数上限：`8000`
+- View PSD 刷新节流：`1.0 s`
+- 检测页默认启用特征：`short_energy`
+- 检测页默认阈值因子：`3.0`
+- 检测页默认触发存储：
   - pre-trigger：`1.0 s`
   - post-trigger：`3.0 s`
-- Tab3 默认 DAS 端口：`3678`
-- Tab3 默认联合原始存储路径：`D:/PCCP/FIPeDASDATA`
-- Tab3 默认联合原始存储时间窗：`10.0 s`
-- Tab3 默认对齐缓存保留时长：`10.0 s`
+- eDAS 默认端口：`3678`
+- FIP/eDAS 默认联合原始存储路径：`D:/PCCP/FIPeDASDATA`
+- FIP/eDAS 默认联合原始存储时间窗：`10.0 s`
+- FIP/eDAS 默认对齐缓存保留时长：`10.0 s`
 
 ## 文档索引
 
-- [docs/2026-3-11-声发射TCP通信丢包问题解决记录.md](/E:/codes/pccpHOST/wb-monitor/docs/2026-3-11-声发射TCP通信丢包问题解决记录.md)
-- [docs/2026-3-12-Tab1-声发射数据通信绘图功能开发问文档.md](/E:/codes/pccpHOST/wb-monitor/docs/2026-3-12-Tab1-声发射数据通信绘图功能开发问文档.md)
-- [docs/2026-3-12-Tab2-声发射信号短时特征提取与异常检测（初步）.md](/E:/codes/pccpHOST/wb-monitor/docs/2026-3-12-Tab2-声发射信号短时特征提取与异常检测（初步）.md)
-- [docs/2026-03-13-Tab3-Tab4-详细设计.md](/E:/codes/pccpHOST/wb-monitor/docs/2026-03-13-Tab3-Tab4-详细设计.md)
-- [docs/2026-03-14-Tab3-DAS数据接收对齐与绘图开发日志.md](/E:/codes/pccpHOST/wb-monitor/docs/2026-03-14-Tab3-DAS数据接收对齐与绘图开发日志.md)
+- [各个tab参数含义与修改说明](E:/codes/pccpHOST/wb-monitor/docs/各个tab参数含义与修改说明.md)
+- [2026-07-18 GUI大改日志](E:/codes/pccpHOST/wb-monitor/docs/2026-07-18-GUI大改日志.md)
+- [2026-07-18 FIP和eDAS时间同步与通信检验](E:/codes/pccpHOST/wb-monitor/docs/2026-07-18-FIP和eDAS时间同步与通信检验.md)
+- [2026-07-17 FIP-eDAS联调问题数量与修复日志](E:/codes/pccpHOST/wb-monitor/docs/2026-07-17-FIP-eDAS联调问题数量与修复日志.md)
+- [2026-07-18 Tab3-FIP丢帧缺口与首点0分析修复](E:/codes/pccpHOST/wb-monitor/docs/2026-07-18-Tab3-FIP丢帧缺口与首点0分析修复.md)
+- [2026-07-17 数据存储](E:/codes/pccpHOST/wb-monitor/docs/2026-07-17 数据存储.md)
+- [开发日志汇总](E:/codes/pccpHOST/wb-monitor/docs/dev_log.md)
 
 ## 已知现状
 
-- `Tab1`、`Tab2`、`Tab3` 已具备基础运行能力
-- `Tab4` 尚未开发
-- `Tab3` 已完成 headless 链路验证，但尚未完成完整 GUI 联调验收
+- `View`、`Data`、`Tab3 / 检测`、`Setting` 已具备基础运行能力
+- FIP/eDAS 通信、同步统计、统一通信统计和联合存储已接入 Data 页
+- `首包时间差（FIP-eDAS）` 使用 TCP 完整收包时间戳并固定首个匹配包
+- Setting 页全局显示设置保存后需重启软件生效
 - `run.py --config` 尚未完整接入自定义配置文件加载
 
 ## 后续建议
 
-- 补充 `tab3` 的 GUI 联调与人工验收记录
-- 在 `tab3` 中补齐 `space-time` 图的色图、颜色栏、`vmin/vmax`
-- 在 `tab4` 中复用对齐层实现补零时间窗提取、DAS 特征分析和事件定位
-- 为 `tab1/tab2/tab3` 增加自动化冒烟测试
+- 用 2026-07-20 后的新版本再做一次长时间联调，重点观察 `首包时间差（FIP-eDAS）` 是否固定，以及 `Processing queue full`、`plot_worker.slow`、`das_tcp.slow_receive` 是否下降。
+- 为 View/Data/Tab3/Setting 增加自动化冒烟测试。
+- 若仍有同步漂移，需要进一步引入设备侧硬件时间戳或触发源状态，而不是仅依赖主机收包时间。

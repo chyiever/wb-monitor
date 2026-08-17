@@ -31,16 +31,24 @@ class DASPlotWorker(QThread):
             "display_seconds": 1.0,
             "time_downsample": 1,
             "space_downsample": 1,
+            "space_time_total_seconds": 5.0,
+            "space_time_shift_seconds": 1.0,
             "channel_start": 0,
             "channel_end": 199,
             "low_hz": 1.0,
             "high_hz": 2000.0,
+            "filter_type": "none",
+            "filter_order": 4,
             "apply_filter": False,
             "curve1_low_hz": 1.0,
             "curve1_high_hz": 2000.0,
+            "curve1_filter_type": "none",
+            "curve1_filter_order": 4,
             "curve1_apply_filter": False,
             "curve2_low_hz": 1.0,
             "curve2_high_hz": 2000.0,
+            "curve2_filter_type": "none",
+            "curve2_filter_order": 4,
             "curve2_apply_filter": False,
             "curve_max_points": 5000,
             "space_time_max_pixels": 120000,
@@ -48,7 +56,7 @@ class DASPlotWorker(QThread):
         self._history: list[DASParsedPacket] = []
         self._space_time_buffer: Optional[np.ndarray] = None
         self._space_time_valid_cols = 0
-        self._space_time_signature: Optional[Tuple[int, int, int, int, int, int]] = None
+        self._space_time_signature: Optional[Tuple[int, ...]] = None
         self._process_times_ms: list[float] = []
         self._last_stats_time = time.monotonic()
         self._stats_packets_at_last_log = 0
@@ -291,7 +299,8 @@ class DASPlotWorker(QThread):
         if row_count <= 0:
             return np.empty((0, 0), dtype=np.float32), np.array([], dtype=np.float64), np.array([], dtype=np.int32)
 
-        display_seconds = max(0.2, float(self.settings.get("display_seconds", 1.0)))
+        display_seconds = max(0.5, float(self.settings.get("space_time_total_seconds", 5.0)))
+        shift_seconds = max(0.1, float(self.settings.get("space_time_shift_seconds", 1.0)))
         sample_rate = max(float(packet.header.sample_rate_hz), 1.0)
         max_pixels = min(300000, max(50000, int(self.settings.get("space_time_max_pixels", 120000))))
         effective_time_downsample = max(1, int(time_downsample))
@@ -308,6 +317,7 @@ class DASPlotWorker(QThread):
         row_count = int(block.shape[0])
         block_cols = int(block.shape[1])
         dt = effective_time_downsample / sample_rate
+        shift_cols = max(1, int(round(shift_seconds / max(dt, 1e-12))))
         max_cols_by_pixels = max(1, max_pixels // max(row_count, 1))
         max_cols_by_window = max(block_cols, int(np.ceil(display_seconds / max(dt, 1e-12))))
         max_cols = max(1, min(max_cols_by_window, max_cols_by_pixels))
@@ -315,7 +325,15 @@ class DASPlotWorker(QThread):
             block = block[:, -max_cols:]
             block_cols = int(block.shape[1])
 
-        signature = (row_count, start, end, int(space_downsample), int(effective_time_downsample), int(max_cols))
+        signature = (
+            row_count,
+            start,
+            end,
+            int(space_downsample),
+            int(effective_time_downsample),
+            int(max_cols),
+            int(shift_cols),
+        )
         if self._space_time_signature != signature or self._space_time_buffer is None:
             self._space_time_buffer = np.zeros((row_count, max_cols), dtype=np.float32)
             self._space_time_valid_cols = 0
@@ -337,9 +355,10 @@ class DASPlotWorker(QThread):
         else:
             if self._space_time_valid_cols + block_cols > max_cols:
                 overflow = self._space_time_valid_cols + block_cols - max_cols
-                remaining_cols = self._space_time_valid_cols - overflow
+                drop_cols = min(self._space_time_valid_cols, max(overflow, shift_cols))
+                remaining_cols = self._space_time_valid_cols - drop_cols
                 if remaining_cols > 0:
-                    self._space_time_buffer[:, :remaining_cols] = self._space_time_buffer[:, overflow:self._space_time_valid_cols]
+                    self._space_time_buffer[:, :remaining_cols] = self._space_time_buffer[:, drop_cols:self._space_time_valid_cols]
                 self._space_time_valid_cols = max(0, remaining_cols)
             insert_at = self._space_time_valid_cols
             self._space_time_buffer[:, insert_at:insert_at + block_cols] = block
@@ -363,6 +382,8 @@ class DASPlotWorker(QThread):
             int(settings.get("time_downsample", 1)),
             int(settings.get("space_downsample", 1)),
             float(settings.get("display_seconds", 1.0)),
+            float(settings.get("space_time_total_seconds", 5.0)),
+            float(settings.get("space_time_shift_seconds", 1.0)),
             int(settings.get("space_time_max_pixels", 120000)),
         )
 
@@ -374,13 +395,21 @@ class DASPlotWorker(QThread):
             "display_seconds",
             "time_downsample",
             "space_downsample",
+            "space_time_total_seconds",
+            "space_time_shift_seconds",
             "channel_start",
             "channel_end",
             "apply_filter",
+            "filter_type",
+            "filter_order",
             "curve1_apply_filter",
+            "curve1_filter_type",
+            "curve1_filter_order",
             "curve1_low_hz",
             "curve1_high_hz",
             "curve2_apply_filter",
+            "curve2_filter_type",
+            "curve2_filter_order",
             "curve2_low_hz",
             "curve2_high_hz",
             "curve_max_points",
@@ -409,18 +438,41 @@ class DASPlotWorker(QThread):
                     self.settings.get("high_hz", 2000.0),
                 )
             ),
+            "filter_type": str(
+                self.settings.get(
+                    f"curve{curve_index}_filter_type",
+                    self.settings.get("filter_type", "bandpass"),
+                )
+            ),
+            "filter_order": int(
+                self.settings.get(
+                    f"curve{curve_index}_filter_order",
+                    self.settings.get("filter_order", 4),
+                )
+            ),
         }
 
     def _maybe_filter(self, data: np.ndarray, sample_rate_hz: float, filter_settings: Dict[str, object]) -> np.ndarray:
         if len(data) == 0 or not bool(filter_settings.get("apply_filter", False)):
             return data
+        filter_type = str(filter_settings.get("filter_type", "bandpass")).lower()
+        if filter_type in ("none", ""):
+            return data
         low_hz = float(filter_settings.get("low_hz", 1.0))
         high_hz = float(filter_settings.get("high_hz", sample_rate_hz * 0.45))
         nyquist = sample_rate_hz * 0.5
-        low_hz = max(0.1, min(low_hz, nyquist * 0.95))
-        high_hz = max(low_hz + 0.1, min(high_hz, nyquist * 0.98))
+        order = max(1, min(10, int(filter_settings.get("filter_order", 4))))
         try:
-            sos = butter(4, [low_hz, high_hz], btype="bandpass", fs=sample_rate_hz, output="sos")
+            if filter_type == "highpass":
+                cutoff = max(0.1, min(low_hz, nyquist * 0.95))
+                sos = butter(order, cutoff, btype="highpass", fs=sample_rate_hz, output="sos")
+            elif filter_type == "lowpass":
+                cutoff = max(0.1, min(high_hz, nyquist * 0.98))
+                sos = butter(order, cutoff, btype="lowpass", fs=sample_rate_hz, output="sos")
+            else:
+                low_hz = max(0.1, min(low_hz, nyquist * 0.95))
+                high_hz = max(low_hz + 0.1, min(high_hz, nyquist * 0.98))
+                sos = butter(order, [low_hz, high_hz], btype="bandpass", fs=sample_rate_hz, output="sos")
             return sosfiltfilt(sos, data)
         except ValueError:
             return data
