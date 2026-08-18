@@ -705,3 +705,57 @@ VER wb-monitor-joint-v5
 - 新包名 `constants`、`fip`、`das`、`detection` 及 `src/tools` 均可正常导入。
 - View 页无 `tab3_display_seconds_spin`，`unwrap` 文案、PSD 6 刻度、轴宽对齐均生效。
 - joint npz 不再写入冗余 FIP 字段，版本为 v5。
+
+## 2026-08-18 10:27:40 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/ui/main_window.py`、`src/fip/manager.py`、`src/fip/tcp_server.py`、`src/das/manager.py`、`src/main.py`、`docs/2026-08-17-GUI布局与架构优化日志.md`、`docs/2026-08-18-FIP联调问题梳理与修复日志.md`、`docs/dev_log.md`
+
+### 日志分析
+
+分析文件：`logs/pccp_monitor_2026-08-18_00-01-05.log`（189152 行，约 9.8 小时）；存储样本 `logs/0000017-FIP2-1M-20260818T000538.347.npz`。
+
+1. TCP/处理链连续无丢包：`comm=0~34800` 共 34801 包，`FIP_PROCESS_STATS` 全程 `queue_dropped=0`、`gaps=0`。
+2. 存储链路丢包严重（核心问题）：`Storage queue full` 丢 5022 包、文件间缺 4444 包、停机排空超时滞留 1981 包，合计约 7000 包（约 1.94 h、约 20%）未落盘。
+3. FIP1 通道全程 `INT64_MIN`（`FIP_SPLIT ... FIP1:first=-5.49755814e+11`），修复后全 0；npz 样本中 FIP1 为 1000 万全 0、FIP2 有效（`std≈2.42`），属 FIP1 传感器硬件问题。
+4. 根因：FIP-only 存储 2 倍写放大（`phase_data` + `fip1_phase_data` + `fip2_phase_data` 重复）、存储队列 2000 包约 32 GB 内存膨胀触发换页、`FIRST_ZERO` 告警 132204 行未节流、停机排空超时仅 10 s。
+
+### 更新摘要
+
+1. View 参数区宽度可手动拖拽调整：`_create_tab1` 改用水平 `QSplitter`，默认宽度 448 px（较旧 560 px 缩小约 20%），宽度随 GUI 参数自动持久化。
+2. FIP-only 存储去写放大：`_save_chunk` 不再写冗余 `fip1_phase_data/fip2_phase_data`，仅保留 `phase_data`，格式升级 `wb-monitor-tab1-fip-v3`。
+3. 存储队列容量 `RAW_QUEUE_MAXSIZE` 由 2000 降为 120，避免内存膨胀/换页拖慢磁盘。
+4. 停机排空超时由 10 s 放宽到 180 s，减少尾包丢失。
+5. `FIRST_ZERO`/`FIP_*_FIRST_SAMPLE_ZERO` 类告警按 `comm % 50` 节流（`fip/manager.py`、`das/manager.py`、`ui/main_window.py`、`fip/tcp_server.py`、`main.py`）。
+
+### 自检
+
+1. 编译检查通过：`python -X utf8 -m compileall -q src`。
+2. 离屏 GUI 自检通过：`TAB_ORDER ['View', 'Data', 'Tab3', 'Setting']`、`HAS_SPLITTER True`、`PARAM_MIN 360 PARAM_MAX 720`、`DEFAULT_WIDTH 448`。
+3. 存储 v3 自检通过：`STORAGE_V3_OK True QUEUE_MAX 120`（不再含 `fip1_phase_data/fip2_phase_data`）。
+
+## 2026-08-18 11:48:46 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/main.py`、`src/ui/main_window.py`、`docs/2026-08-18-FIP联调问题梳理与修复日志.md`、`docs/dev_log.md`
+
+### 日志分析
+
+分析文件：`logs/pccp_monitor_2026-08-18_10-53-02.log`（222 行，约 5.3 分钟）；存储样本 `logs/0000005-FIP2-1M-20260818T105350.915.npz`。
+
+1. 第一轮修复验证通过：文件 `0000001~0000026` 的 `start_comm/end_comm` 全程连续（26-35 → … → 276-285），无 `Storage queue full`；样本 34.5 MB（旧 68 MB）、`wb-monitor-tab1-fip-v3`；`FIRST_ZERO` 仅 `comm % 50 == 0` 输出。
+2. 样本数据量正确：`phase_data` shape `(2, 10000000)`、`duration=10.0s`、`sample_rate=1MHz`、`total_values=20000000`；FIP2 有效（`std≈59.79`），FIP1 全 0（传感器硬件问题）。
+3. 关闭窗口尾包丢失：日志在 `Saved data to 0000026`（end_comm=285）后直接跳 `Application cleanup completed`，缺少 `Storage drain finished / All Tab1 threads stopped`，最后约 10 s（comm 286~295）未落盘。
+4. 时域图偶发慢帧：`ui.fip_curve_slow` 约 9 次/5 分钟（81~162 ms、8000 点）。
+
+### 更新摘要
+
+1. 修复关闭窗口时 FIP 线程未优雅停止：`src/main.py::cleanup()` 增加 `self.tab1_manager.stop()`（含存储排空 + `_flush_buffered_data`），与 `_stop_monitoring` 一致；重复停止幂等安全，消除关闭窗口尾包丢失。
+2. 优化 FIP 时域图慢帧：PSD 缓存已知采样率时不再构造/存储 1M 点全量时间轴（原每包分配+拷贝约 16 MB/曲线），改为缓存 `sample_rate`；`_compute_view_welch_psd` 直接使用采样率，跳过 `_estimate_sample_rate_from_times` 的 1M 点 `np.diff`。
+
+### 自检
+
+1. 编译检查通过：`python -X utf8 -m compileall -q src`。
+2. 离屏自检通过：PSD 缓存采样率路径正常（`cache times size=0`、`cache sample_rate=1000000.0`、Welch PSD 25000 频点、范围 20~500000 Hz）；DAS 无采样率回退路径（`_estimate_sample_rate_from_times`）正常。
