@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from queue import Empty, Full, Queue
 from typing import Dict, Optional, Tuple
@@ -23,6 +24,9 @@ class DASPlotWorker(QThread):
         super().__init__()
         self.logger = logging.getLogger(f"{__name__}.DASPlotWorker")
         self.input_queue: "Queue[DASParsedPacket]" = Queue(maxsize=4)
+        self._queue_lock = threading.Lock()
+        self._queued_bytes = 0
+        self._queue_memory_budget_bytes = 768 * 1024 * 1024
         self.running = False
         self.settings: Dict[str, object] = {
             "das_channel": 0,
@@ -70,28 +74,41 @@ class DASPlotWorker(QThread):
 
     def enqueue_packet(self, packet: DASParsedPacket) -> bool:
         """Queue one parsed packet without blocking the receiver path."""
+        packet_bytes = self._packet_bytes(packet)
         try:
-            if self.input_queue.full():
-                try:
+            with self._queue_lock:
+                while (
+                    not self.input_queue.empty()
+                    and (
+                        self.input_queue.full()
+                        or self._queued_bytes + packet_bytes > self._queue_memory_budget_bytes
+                    )
+                ):
                     dropped = self.input_queue.get_nowait()
+                    dropped_bytes = self._packet_bytes(dropped)
+                    self._queued_bytes = max(0, self._queued_bytes - dropped_bytes)
                     self.stats["packets_dropped"] += 1
                     self.logger.warning(
-                        "TAB3_NODE plot_worker.enqueue drop_oldest comm=%s queue_size=%d",
+                        "TAB3_NODE plot_worker.enqueue drop_oldest comm=%s queue_size=%d "
+                        "queued_mb=%.1f incoming_mb=%.1f budget_mb=%.1f",
                         dropped.header.comm_count,
                         self.input_queue.qsize(),
+                        self._queued_bytes / (1024 * 1024),
+                        packet_bytes / (1024 * 1024),
+                        self._queue_memory_budget_bytes / (1024 * 1024),
                     )
-                except Empty:
-                    pass
-            self.input_queue.put(packet, block=False)
-            self.stats["packets_enqueued"] += 1
-            self.stats["queue_peak"] = max(self.stats["queue_peak"], self.input_queue.qsize())
-            self.logger.debug(
-                "TAB3_NODE plot_worker.enqueue comm=%s queue_size=%d enqueued=%d dropped=%d",
-                packet.header.comm_count,
-                self.input_queue.qsize(),
-                self.stats["packets_enqueued"],
-                self.stats["packets_dropped"],
-            )
+                self.input_queue.put(packet, block=False)
+                self._queued_bytes += packet_bytes
+                self.stats["packets_enqueued"] += 1
+                self.stats["queue_peak"] = max(self.stats["queue_peak"], self.input_queue.qsize())
+                self.logger.debug(
+                    "TAB3_NODE plot_worker.enqueue comm=%s queue_size=%d queued_mb=%.1f enqueued=%d dropped=%d",
+                    packet.header.comm_count,
+                    self.input_queue.qsize(),
+                    self._queued_bytes / (1024 * 1024),
+                    self.stats["packets_enqueued"],
+                    self.stats["packets_dropped"],
+                )
             return True
         except Full:
             self.stats["packets_dropped"] += 1
@@ -114,9 +131,13 @@ class DASPlotWorker(QThread):
         self._reset_space_time_buffer()
         while not self.input_queue.empty():
             try:
-                self.input_queue.get_nowait()
+                packet = self.input_queue.get_nowait()
+                with self._queue_lock:
+                    self._queued_bytes = max(0, self._queued_bytes - self._packet_bytes(packet))
             except Empty:
                 break
+        with self._queue_lock:
+            self._queued_bytes = 0
         self._process_times_ms.clear()
         self._last_stats_time = time.monotonic()
         self._stats_packets_at_last_log = 0
@@ -130,6 +151,8 @@ class DASPlotWorker(QThread):
         while self.running:
             try:
                 packet = self.input_queue.get(timeout=0.2)
+                with self._queue_lock:
+                    self._queued_bytes = max(0, self._queued_bytes - self._packet_bytes(packet))
                 self._process_packet(packet)
             except Empty:
                 continue
@@ -140,12 +163,19 @@ class DASPlotWorker(QThread):
     def stop(self) -> None:
         self.running = False
 
+    @staticmethod
+    def _packet_bytes(packet: DASParsedPacket) -> int:
+        try:
+            return max(int(packet.header.data_bytes), int(getattr(packet.matrix, "nbytes", 0)))
+        except Exception:
+            return int(getattr(packet.matrix, "nbytes", 0) or 0)
+
     def _process_packet(self, packet: DASParsedPacket) -> None:
         started = time.perf_counter()
         self._history.append(packet)
         duration = max(0.2, float(self.settings.get("display_seconds", 1.0)))
         cutoff_time = packet.packet_end_time - duration
-        self._history = [item for item in self._history if item.packet_end_time >= cutoff_time]
+        self._history = [item for item in self._history if item.packet_end_time > cutoff_time]
 
         legacy_curve_channel = int(self.settings.get("das_channel", 0))
         curve1_channel = int(self.settings.get("curve1_das_channel", legacy_curve_channel))

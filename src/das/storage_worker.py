@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -39,6 +40,7 @@ class DASStorageRequest:
         self.frames = frames
         self.output_dir = output_dir
         self.end_comm = end_comm
+        self.estimated_bytes = sum(_estimate_frame_bytes(frame) for frame in frames)
 
 
 def _empty_fip_array() -> np.ndarray:
@@ -57,6 +59,29 @@ def _get_fip_sensor_array(packet: Any, mapping_name: str, fallback_name: str, se
     if sensor_index == selected_sensor or (sensor_count == 1 and sensor_index == 1):
         return getattr(packet, fallback_name, _empty_fip_array())
     return _empty_fip_array()
+
+
+def _array_nbytes(value: Any) -> int:
+    try:
+        return int(getattr(value, "nbytes", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _estimate_frame_bytes(frame: Any) -> int:
+    total = 0
+    fip_packet = getattr(frame, "fip_packet", None)
+    das_packet = getattr(frame, "das_packet", None)
+    if fip_packet is not None:
+        for attr in ("unwrapped_data", "display_data"):
+            total += _array_nbytes(getattr(fip_packet, attr, None))
+        for attr in ("unwrapped_by_sensor", "display_by_sensor"):
+            mapping = getattr(fip_packet, attr, None)
+            if isinstance(mapping, dict):
+                total += sum(_array_nbytes(value) for value in mapping.values())
+    if das_packet is not None:
+        total += _array_nbytes(getattr(das_packet, "matrix", None))
+    return total
 
 
 class DASStorageWorker(QThread):
@@ -81,12 +106,16 @@ class DASStorageWorker(QThread):
     """
 
     INPUT_QUEUE_MAXSIZE = 32
+    QUEUE_MEMORY_BUDGET_BYTES = 2048 * 1024 * 1024
+    MAX_SINGLE_REQUEST_BYTES = 2048 * 1024 * 1024
 
     def __init__(self) -> None:
         super().__init__()
         self.logger = logging.getLogger(f"{__name__}.DASStorageWorker")
         # 存储请求队列：主线程 put_nowait，本线程消费（T3-01）
         self._queue: Queue = Queue(maxsize=self.INPUT_QUEUE_MAXSIZE)
+        self._queue_lock = threading.Lock()
+        self._queued_bytes = 0
         self.running = False
 
         # 统计信息
@@ -107,27 +136,37 @@ class DASStorageWorker(QThread):
         主线程绝不阻塞。
         """
         try:
-            if self._queue.full():
-                # 覆写最旧请求，保护主线程
-                try:
-                    self._queue.get_nowait()
+            with self._queue_lock:
+                while (
+                    not self._queue.empty()
+                    and (
+                        self._queue.full()
+                        or self._queued_bytes + request.estimated_bytes > self.QUEUE_MEMORY_BUDGET_BYTES
+                    )
+                ):
+                    dropped = self._queue.get_nowait()
+                    self._queued_bytes = max(0, self._queued_bytes - int(getattr(dropped, "estimated_bytes", 0)))
                     self.stats["requests_dropped"] += 1
                     self.logger.warning(
                         "DAS storage queue full, dropped oldest request. "
-                        "Disk may be too slow."
+                        "queue_size=%d queued_mb=%.1f incoming_mb=%.1f budget_mb=%.1f",
+                        self._queue.qsize(),
+                        self._queued_bytes / (1024 * 1024),
+                        request.estimated_bytes / (1024 * 1024),
+                        self.QUEUE_MEMORY_BUDGET_BYTES / (1024 * 1024),
                     )
-                except Empty:
-                    pass
-            self._queue.put_nowait(request)
-            self.stats["requests_enqueued"] += 1
-            self.logger.debug(
-                "TAB3_NODE storage.joint_enqueue frames=%d end_comm=%s queue_size=%d enqueued=%d dropped=%d",
-                len(request.frames),
-                request.end_comm,
-                self._queue.qsize(),
-                self.stats["requests_enqueued"],
-                self.stats["requests_dropped"],
-            )
+                self._queue.put_nowait(request)
+                self._queued_bytes += request.estimated_bytes
+                self.stats["requests_enqueued"] += 1
+                self.logger.debug(
+                    "TAB3_NODE storage.joint_enqueue frames=%d end_comm=%s queue_size=%d queued_mb=%.1f enqueued=%d dropped=%d",
+                    len(request.frames),
+                    request.end_comm,
+                    self._queue.qsize(),
+                    self._queued_bytes / (1024 * 1024),
+                    self.stats["requests_enqueued"],
+                    self.stats["requests_dropped"],
+                )
         except Full:
             self.stats["requests_dropped"] += 1
             self.logger.error("DAS storage queue full, failed to enqueue request.")
@@ -139,6 +178,8 @@ class DASStorageWorker(QThread):
         while self.running or not self._queue.empty():
             try:
                 request = self._queue.get(timeout=0.2)
+                with self._queue_lock:
+                    self._queued_bytes = max(0, self._queued_bytes - int(getattr(request, "estimated_bytes", 0)))
                 self._save(request)
             except Empty:
                 continue
@@ -163,6 +204,16 @@ class DASStorageWorker(QThread):
         try:
             frames = request.frames
             if not frames:
+                return
+            if request.estimated_bytes > self.MAX_SINGLE_REQUEST_BYTES:
+                message = (
+                    "error: joint FIP+eDAS request too large "
+                    f"({request.estimated_bytes / (1024 * 1024):.1f} MB); "
+                    "reduce joint interval, downsample eDAS before TCP, or use eDAS raw storage"
+                )
+                self.stats["save_failures"] += 1
+                self.storage_saved.emit(message)
+                self.logger.error("TAB3_NODE storage.joint_too_large end_comm=%s %s", request.end_comm, message)
                 return
 
             output_path = Path(request.output_dir)
@@ -315,6 +366,7 @@ class EDASRawStorageRequest:
         self.output_dir = output_dir
         self.blocks_per_file = max(1, int(blocks_per_file))
         self.queue_packets = max(1, int(queue_packets))
+        self.data_bytes = int(getattr(getattr(packet, "header", None), "data_bytes", 0) or 0)
 
 
 class EDASRawStorageWorker(QThread):
@@ -328,11 +380,14 @@ class EDASRawStorageWorker(QThread):
     storage_status = pyqtSignal(str)
 
     INPUT_QUEUE_MAXSIZE = 4096
+    QUEUE_MEMORY_BUDGET_BYTES = 2048 * 1024 * 1024
 
     def __init__(self) -> None:
         super().__init__()
         self.logger = logging.getLogger(f"{__name__}.EDASRawStorageWorker")
         self._queue: Queue = Queue(maxsize=self.INPUT_QUEUE_MAXSIZE)
+        self._queue_lock = threading.Lock()
+        self._queued_bytes = 0
         self.running = False
         self._file_handle = None
         self._current_file_path: Optional[Path] = None
@@ -349,6 +404,7 @@ class EDASRawStorageWorker(QThread):
             "save_failures": 0,
             "files_created": 0,
             "bytes_written": 0,
+            "queue_peak_bytes": 0,
         }
 
     def enqueue_packet(
@@ -362,26 +418,39 @@ class EDASRawStorageWorker(QThread):
         request = EDASRawStorageRequest(packet, output_dir, blocks_per_file, queue_packets)
         capacity = max(1, min(request.queue_packets, self.INPUT_QUEUE_MAXSIZE))
         try:
-            while self._queue.qsize() >= capacity:
-                try:
-                    self._queue.get_nowait()
+            with self._queue_lock:
+                while (
+                    not self._queue.empty()
+                    and (
+                        self._queue.qsize() >= capacity
+                        or self._queued_bytes + request.data_bytes > self.QUEUE_MEMORY_BUDGET_BYTES
+                    )
+                ):
+                    dropped = self._queue.get_nowait()
+                    self._queued_bytes = max(0, self._queued_bytes - int(getattr(dropped, "data_bytes", 0)))
                     self.stats["blocks_dropped"] += 1
                     self.logger.warning(
                         "eDAS raw storage queue full, dropped oldest packet. "
-                        "Disk may be too slow."
+                        "queue_size=%d queued_mb=%.1f incoming_mb=%.1f budget_mb=%.1f"
+                        " Disk may be too slow.",
+                        self._queue.qsize(),
+                        self._queued_bytes / (1024 * 1024),
+                        request.data_bytes / (1024 * 1024),
+                        self.QUEUE_MEMORY_BUDGET_BYTES / (1024 * 1024),
                     )
-                except Empty:
-                    break
-            self._queue.put_nowait(request)
-            self.stats["blocks_enqueued"] += 1
-            self.logger.debug(
-                "TAB3_NODE storage.edas_enqueue comm=%s queue_size=%d capacity=%d enqueued=%d dropped=%d",
-                packet.header.comm_count,
-                self._queue.qsize(),
-                capacity,
-                self.stats["blocks_enqueued"],
-                self.stats["blocks_dropped"],
-            )
+                self._queue.put_nowait(request)
+                self._queued_bytes += request.data_bytes
+                self.stats["blocks_enqueued"] += 1
+                self.stats["queue_peak_bytes"] = max(self.stats["queue_peak_bytes"], self._queued_bytes)
+                self.logger.debug(
+                    "TAB3_NODE storage.edas_enqueue comm=%s queue_size=%d capacity=%d queued_mb=%.1f enqueued=%d dropped=%d",
+                    packet.header.comm_count,
+                    self._queue.qsize(),
+                    capacity,
+                    self._queued_bytes / (1024 * 1024),
+                    self.stats["blocks_enqueued"],
+                    self.stats["blocks_dropped"],
+                )
             return True
         except Full:
             self.stats["blocks_dropped"] += 1
@@ -394,6 +463,8 @@ class EDASRawStorageWorker(QThread):
         while self.running or not self._queue.empty():
             try:
                 request = self._queue.get(timeout=0.2)
+                with self._queue_lock:
+                    self._queued_bytes = max(0, self._queued_bytes - int(getattr(request, "data_bytes", 0)))
                 self._write_request(request)
             except Empty:
                 continue
@@ -413,9 +484,13 @@ class EDASRawStorageWorker(QThread):
         """Clear pending packets and close any active file before a new session."""
         while not self._queue.empty():
             try:
-                self._queue.get_nowait()
+                request = self._queue.get_nowait()
+                with self._queue_lock:
+                    self._queued_bytes = max(0, self._queued_bytes - int(getattr(request, "data_bytes", 0)))
             except Empty:
                 break
+        with self._queue_lock:
+            self._queued_bytes = 0
         self._close_current_file(closed_at=datetime.now().isoformat(timespec="milliseconds"))
         self._current_key = None
         self._blocks_in_file = 0

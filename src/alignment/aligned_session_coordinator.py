@@ -27,11 +27,13 @@ class AlignedSessionCoordinator(QObject):
     # Keep a small packet-count drift tolerance; actual frame duration comes from packets.
     MAX_COMM_COUNT_DRIFT = 5
     DEFAULT_PACKET_DURATION_SECONDS = 1.0
+    DEFAULT_CACHE_MEMORY_BUDGET_BYTES = 2048 * 1024 * 1024
 
-    def __init__(self, cache_seconds: float = 10.0) -> None:
+    def __init__(self, cache_seconds: float = 10.0, max_cache_bytes: int = DEFAULT_CACHE_MEMORY_BUDGET_BYTES) -> None:
         super().__init__()
         self.logger = logging.getLogger(f"{__name__}.AlignedSessionCoordinator")
         self.cache_seconds = max(5.0, float(cache_seconds))
+        self.max_cache_bytes = max(64 * 1024 * 1024, int(max_cache_bytes))
         self._lock = threading.Lock()
         self._fip_packets: Dict[int, FIPSessionPacket] = {}
         self._das_packets: Dict[int, DASSessionPacket] = {}
@@ -168,11 +170,37 @@ class AlignedSessionCoordinator(QObject):
 
     def _trim_cache_locked(self) -> None:
         max_duration = self._latest_packet_duration_locked()
-        max_frames = max(10, int(round(self.cache_seconds / max_duration)))
+        max_frames_by_time = max(1, int(round(self.cache_seconds / max_duration)))
+        latest_frame_bytes = max(1, self._latest_frame_bytes_locked())
+        max_frames_by_bytes = max(1, int(self.max_cache_bytes // latest_frame_bytes))
+        max_frames = max(1, min(max_frames_by_time, max_frames_by_bytes))
+        if len(self._ordered_counts) > max_frames and max_frames_by_bytes < max_frames_by_time:
+            self.logger.warning(
+                "Alignment cache byte budget trimming active: cache_seconds=%.1f max_frames_by_time=%d "
+                "max_frames_by_bytes=%d latest_frame_mb=%.1f budget_mb=%.1f",
+                self.cache_seconds,
+                max_frames_by_time,
+                max_frames_by_bytes,
+                latest_frame_bytes / (1024 * 1024),
+                self.max_cache_bytes / (1024 * 1024),
+            )
         while len(self._ordered_counts) > max_frames:
             old_count = self._ordered_counts.popleft()
             self._fip_packets.pop(old_count, None)
             self._das_packets.pop(old_count, None)
+
+    def _latest_frame_bytes_locked(self) -> int:
+        total = 0
+        if self._last_fip_comm_count is not None and self._last_fip_comm_count in self._fip_packets:
+            packet = self._fip_packets[self._last_fip_comm_count]
+            for value in (packet.unwrapped_data, packet.display_data):
+                total += int(getattr(value, "nbytes", 0) or 0)
+            for mapping in (packet.unwrapped_by_sensor, packet.display_by_sensor):
+                if isinstance(mapping, dict):
+                    total += sum(int(getattr(value, "nbytes", 0) or 0) for value in mapping.values())
+        if self._last_das_comm_count is not None and self._last_das_comm_count in self._das_packets:
+            total += int(getattr(self._das_packets[self._last_das_comm_count].matrix, "nbytes", 0) or 0)
+        return total
 
     def _latest_packet_duration_locked(self) -> float:
         durations = []

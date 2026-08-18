@@ -759,3 +759,55 @@ VER wb-monitor-joint-v5
 
 1. 编译检查通过：`python -X utf8 -m compileall -q src`。
 2. 离屏自检通过：PSD 缓存采样率路径正常（`cache times size=0`、`cache sample_rate=1000000.0`、Welch PSD 25000 频点、范围 20~500000 Hz）；DAS 无采样率回退路径（`_estimate_sample_rate_from_times`）正常。
+
+## 2026-08-18  eDAS模块联调前潜在风险排查与修复
+
+- 新增报告：`docs/2026-08-18-eDAS模块联调前潜在bug和风险排查与修复报告.md`。
+- 排查范围：本软件 `src/das/`、`src/alignment/`、`src/ui/main_window.py`、`src/main.py`，以及 eDAS 发送端 `E:\codes\PCIe-7821\pcie7821_gui\src\tcp_tab3\`。
+- 数据量复核：100 kHz x 800 点 x float64 x 1 s 约 640,000,000 bytes（约 610 MiB），原 512 MiB payload 上限不足以接收满速 1 s 包。
+
+### 修复摘要
+
+1. `src/das/tcp_server.py`
+   - `MAX_PAYLOAD_BYTES` 提升到 1 GiB，支持满速 1 s eDAS 包。
+   - header/payload 读取失败、非法 header、非法 `data_bytes` 时关闭当前连接等待重连，避免断线空读循环和 TCP 字节流错位。
+   - `_recv_exact()` 返回 `bytearray`，big-endian `float64` 原地 byteswap 为本机字节序，减少大 payload 的整包额外拷贝。
+
+2. `src/das/plot_worker.py`
+   - 绘图队列新增 768 MiB 字节预算，超过预算时丢弃旧显示帧，保护通信和主流程。
+   - eDAS 1 s 显示窗口历史裁剪改为严格大于左边界，避免边界上多保留前一秒整包。
+
+3. `src/das/storage_worker.py`
+   - eDAS raw 存储队列新增 2 GiB 字节预算，避免 UI 默认 200 包在满速下膨胀到百 GB 级。
+   - 联合 FIP+eDAS 存储请求新增 `estimated_bytes`，队列按字节预算丢旧请求。
+   - 单次联合 `.npz` 请求超过 2 GiB 时拒绝写入并向 UI 报错，提示缩短间隔、发送端降采样或改用 eDAS raw 存储。
+
+4. `src/alignment/aligned_session_coordinator.py`、`src/das/manager.py`
+   - 对齐缓存新增 2 GiB 字节预算，按“时间窗口 + 字节预算”共同裁剪。
+   - 缓存接近字节预算时允许提前 flush 较短联合 chunk，避免满速大包下永远达不到 10 s interval。
+   - eDAS 停止时存储线程排空等待从 5 s 延长到 180 s。
+
+5. eDAS 发送端 `pcie7821_gui`
+   - `PhaseQueueItem` 增加 `comm_count`。
+   - `TCPTab3Manager` 在采集帧聚合成通信包时分配 `_next_comm_count`。
+   - `TCPSenderWorker` 使用 `item.comm_count` 构包，不再按发送成功递增序号。
+   - 修复网络未连接、发送失败或发送队列丢旧包时 eDAS 序号仍连续导致的 FIP/eDAS 假对齐风险。
+
+### 验证
+
+```text
+python -X utf8 -m py_compile src\das\tcp_server.py src\das\plot_worker.py src\das\storage_worker.py src\das\manager.py src\alignment\aligned_session_coordinator.py
+python -X utf8 src\tools\validate_tab3_pipeline.py
+python -X utf8 -m compileall -q src
+EDAS_SAFETY_OK 1 3 2 2 3221225472
+```
+
+eDAS 发送端：
+
+```text
+python -X utf8 -m py_compile src\tcp_tab3\tcp_types.py src\tcp_tab3\tcp_tab3_manager.py src\tcp_tab3\tcp_sender_worker.py
+python -X utf8 -m unittest tests.test_tcp_tab3_comm_count
+python -X utf8 -m unittest discover -s tests
+```
+
+结果：本软件 eDAS TCP 模拟验证通过，发送端 8 项测试通过。后续现场重点观察 `DAS comm_count gap`、`Alignment cache byte budget trimming active`、`storage.edas_enqueue queued_mb`、`.json` 中 `comm_counts` 连续性和 FIP/eDAS 同序号接收时间差。

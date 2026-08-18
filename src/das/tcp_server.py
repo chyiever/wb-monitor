@@ -25,7 +25,10 @@ class DASTCPServer(QObject):
     statistics_updated = pyqtSignal(dict)
 
     HEADER_STRUCT = struct.Struct(">IIIId")
-    MAX_PAYLOAD_BYTES = 512 * 1024 * 1024
+    # 100 kHz x 800 channels x float64 x 1 s ~= 640 MB. Keep the
+    # protocol capable of accepting one full-rate second while rejecting
+    # clearly corrupt headers before they can exhaust memory.
+    MAX_PAYLOAD_BYTES = 1024 * 1024 * 1024
 
     def __init__(self, ip: str = "0.0.0.0", port: int = 3678):
         super().__init__()
@@ -149,8 +152,9 @@ class DASTCPServer(QObject):
             packet_started = time.perf_counter()
             try:
                 header_bytes = self._recv_exact(self.HEADER_STRUCT.size)
-                if not header_bytes:
-                    continue
+                if header_bytes is None:
+                    self.logger.info("DAS client disconnected while waiting for packet header")
+                    break
                 comm_count, sample_rate_hz, channel_count, data_bytes, packet_duration_seconds = self.HEADER_STRUCT.unpack(header_bytes)
                 self.logger.debug(
                     "TAB3_NODE das_tcp.header comm=%s sample_rate=%s channels=%s data_bytes=%s duration=%.9f",
@@ -164,15 +168,33 @@ class DASTCPServer(QObject):
                     self.error_occurred.emit(
                         f"Invalid DAS header: sample_rate={sample_rate_hz}, channels={channel_count}"
                     )
-                    continue
+                    self.logger.warning(
+                        "DAS invalid header; closing connection to resync stream: comm=%s sample_rate=%s channels=%s data_bytes=%s",
+                        comm_count,
+                        sample_rate_hz,
+                        channel_count,
+                        data_bytes,
+                    )
+                    break
                 if data_bytes <= 0 or data_bytes > self.MAX_PAYLOAD_BYTES or data_bytes % 8 != 0:
                     self.error_occurred.emit(f"Invalid DAS data_bytes: {data_bytes}")
-                    continue
+                    self.logger.warning(
+                        "DAS invalid payload size; closing connection to resync stream: comm=%s data_bytes=%s max=%s",
+                        comm_count,
+                        data_bytes,
+                        self.MAX_PAYLOAD_BYTES,
+                    )
+                    break
                 payload = self._recv_exact(data_bytes)
-                if not payload:
-                    continue
+                if payload is None:
+                    self.logger.info("DAS client disconnected while receiving payload comm=%s", comm_count)
+                    break
                 packet_receive_time = time.time()
-                data = np.frombuffer(payload, dtype=">f8").astype(np.float64, copy=False)
+                data = np.frombuffer(payload, dtype=">f8")
+                if data.dtype.byteorder == ">":
+                    data = data.byteswap(inplace=True).view(np.float64)
+                else:
+                    data = data.astype(np.float64, copy=False)
                 total_points = int(data_bytes // 8)
                 if total_points % channel_count != 0:
                     self.error_occurred.emit(
@@ -261,7 +283,7 @@ class DASTCPServer(QObject):
             self._last_comm_count,
         )
 
-    def _recv_exact(self, size: int) -> Optional[bytes]:
+    def _recv_exact(self, size: int) -> Optional[bytearray]:
         if not self.client_socket:
             return None
         chunks = bytearray()
@@ -277,7 +299,7 @@ class DASTCPServer(QObject):
                 continue
             except OSError:
                 return None
-        return bytes(chunks) if len(chunks) == size else None
+        return chunks if len(chunks) == size else None
 
     def _reset_connection_stats(self) -> None:
         self.packets_received = 0

@@ -125,10 +125,10 @@ class DASTab3Manager(QObject):
         # Stop background storage workers.
         self.storage_worker.stop()
         if self.storage_worker.isRunning():
-            self.storage_worker.wait(5000)
+            self.storage_worker.wait(180000)
         self.edas_storage_worker.stop()
         if self.edas_storage_worker.isRunning():
-            self.edas_storage_worker.wait(5000)
+            self.edas_storage_worker.wait(180000)
         self.coordinator.update_online_state("das", False)
         self.logger.info("Tab3 DAS pipeline stopped")
 
@@ -413,7 +413,18 @@ class DASTab3Manager(QObject):
         chunk_start = float(frames[0].packet_start_time)
         chunk_end = float(frames[-1].packet_start_time + frames[-1].packet_duration_seconds)
         chunk_seconds = max(0.0, chunk_end - chunk_start)
-        if chunk_seconds + 1e-9 < interval_seconds:
+        request = DASStorageRequest(
+            frames=list(frames),
+            output_dir=storage_settings.get("path", self._joint_storage_path),
+            end_comm=end_comm,
+        )
+        cache_budget_bytes = int(getattr(self.coordinator, "max_cache_bytes", 0) or 0)
+        byte_limited_chunk = (
+            cache_budget_bytes > 0
+            and request.estimated_bytes >= int(cache_budget_bytes * 0.80)
+            and chunk_seconds >= 1.0
+        )
+        if chunk_seconds + 1e-9 < interval_seconds and not byte_limited_chunk:
             self.logger.debug(
                 "TAB3_NODE manager.joint_storage collecting chunk_seconds=%.3f interval=%.3f frames=%d end_comm=%s",
                 chunk_seconds,
@@ -425,13 +436,19 @@ class DASTab3Manager(QObject):
                 f"Collecting joint chunk {chunk_seconds:.1f}/{interval_seconds:.1f}s"
             )
             return
+        if byte_limited_chunk and chunk_seconds + 1e-9 < interval_seconds:
+            self.logger.warning(
+                "TAB3_NODE manager.joint_storage byte_limited_flush chunk_seconds=%.3f interval=%.3f "
+                "frames=%d estimated_mb=%.1f cache_budget_mb=%.1f end_comm=%s",
+                chunk_seconds,
+                interval_seconds,
+                len(frames),
+                request.estimated_bytes / (1024 * 1024),
+                cache_budget_bytes / (1024 * 1024),
+                end_comm,
+            )
 
         self._last_snapshot_end_comm = end_comm
-        request = DASStorageRequest(
-            frames=list(frames),
-            output_dir=storage_settings.get("path", self._joint_storage_path),
-            end_comm=end_comm,
-        )
         self.storage_worker.enqueue_request(request)
         self.logger.debug(
             "TAB3_NODE manager.joint_storage queued frames=%d end_comm=%s output_dir=%s",
