@@ -1258,6 +1258,12 @@ class PCCPMonitorApp:
             if self.fip_tab2_manager and self._is_tab2_running():
                 self.fip_tab2_manager.stop()
 
+            # 停止 FIP 线程系统（含存储排空）。用户直接关闭窗口时不会走
+            # _stop_monitoring，若此处不停止 tab1_manager，存储线程会在缓冲未落盘
+            # 的情况下被强杀，导致最后一段（不足一个存储间隔的）数据丢失。
+            if self.tab1_manager:
+                self.tab1_manager.stop()
+
             if self.tab3_manager:
                 self.tab3_manager.stop()
 

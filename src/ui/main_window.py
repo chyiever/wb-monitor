@@ -2530,11 +2530,6 @@ class MainWindow(QMainWindow):
                 psd_values = sensor_values
             psd_values_arr = np.asarray(psd_values) if psd_values is not None else np.asarray([])
             psd_rate = max(float(psd_sample_rate_hz or sample_rate_hz), 1.0)
-            psd_times = (
-                (comm_count * safe_packet_duration) + np.arange(psd_values_arr.size, dtype=np.float64) / psd_rate
-                if psd_values_arr.size
-                else np.asarray([], dtype=np.float64)
-            )
             source_points = max(source_points, int(values_arr.size))
             rendered_points = max(rendered_points, int(window_values.size))
             if plot_values.size and abs(float(plot_values[0])) <= 1e-12 and comm_count % 50 == 0:
@@ -2556,8 +2551,8 @@ class MainWindow(QMainWindow):
                 window_times,
                 window_values,
                 curve_mode,
-                cache_times=psd_times,
                 cache_values=psd_values_arr,
+                cache_sample_rate=psd_rate,
             )
         elapsed_ms = (time.perf_counter() - started) * 1000.0
         self._tab3_logger.debug(
@@ -3076,6 +3071,7 @@ class MainWindow(QMainWindow):
         expected_mode: str,
         cache_times=None,
         cache_values=None,
+        cache_sample_rate=None,
     ):
         # Render one View time-domain curve only when the selected source matches this item.
         if curve_mode != expected_mode:
@@ -3083,18 +3079,21 @@ class MainWindow(QMainWindow):
                 curve_item.setData([], [])
                 setattr(curve_item, "_tab3_has_data", False)
             self._set_curve_legend_name(curve_item, None)
-            self._cache_view_curve_data(curve_item, curve_mode, [], [])
+            self._cache_view_curve_data(curve_item, curve_mode, [], [], sample_rate=cache_sample_rate)
             self._request_view_psd_update()
             return
         plot_times, plot_values = self._downsample_tab3_curve(times, values)
-        cache_times_arr = np.asarray(plot_times if cache_times is None else cache_times)
         cache_values_arr = np.asarray(plot_values if cache_values is None else cache_values)
+        if cache_sample_rate is None:
+            cache_times_arr = np.asarray(plot_times if cache_times is None else cache_times)
+        else:
+            cache_times_arr = np.asarray([], dtype=np.float64)
         if plot_values.size == 0:
             if getattr(curve_item, "_tab3_has_data", False):
                 curve_item.setData([], [])
                 setattr(curve_item, "_tab3_has_data", False)
             self._set_curve_legend_name(curve_item, None)
-            self._cache_view_curve_data(curve_item, curve_mode, cache_times_arr, cache_values_arr)
+            self._cache_view_curve_data(curve_item, curve_mode, cache_times_arr, cache_values_arr, sample_rate=cache_sample_rate)
             self._request_view_psd_update()
             return
         curve_item.setData(plot_times, plot_values)
@@ -3104,7 +3103,7 @@ class MainWindow(QMainWindow):
             curve_item,
             self._legend_name_for_curve(self._curve_index_for_item(curve_item), curve_mode),
         )
-        self._cache_view_curve_data(curve_item, curve_mode, cache_times_arr, cache_values_arr)
+        self._cache_view_curve_data(curve_item, curve_mode, cache_times_arr, cache_values_arr, sample_rate=cache_sample_rate)
         self._request_view_psd_update()
 
     def clear_alarm_table(self):
@@ -3536,17 +3535,21 @@ class MainWindow(QMainWindow):
             return 2
         return 0
 
-    def _cache_view_curve_data(self, curve_item, source_name: str, times: np.ndarray, values: np.ndarray) -> None:
+    def _cache_view_curve_data(self, curve_item, source_name: str, times: np.ndarray, values: np.ndarray, sample_rate: Optional[float] = None) -> None:
         curve_index = self._curve_index_for_item(curve_item)
         if curve_index not in (1, 2):
             return
         if values is None or len(values) < 2:
-            self._view_curve_cache[curve_index] = {'source': source_name, 'times': np.asarray([]), 'values': np.asarray([])}
+            self._view_curve_cache[curve_index] = {'source': source_name, 'times': np.asarray([]), 'values': np.asarray([]), 'sample_rate': sample_rate}
             return
+        # 已知采样率时不再存储全量时间轴（FIP 每包 1M 点，全量时间轴数组
+        # 每包分配 + 拷贝约 16 MB，是时域图慢帧的主要来源），仅保留采样率。
+        stored_times = np.asarray([], dtype=np.float64) if sample_rate is not None else np.asarray(times, dtype=float)
         self._view_curve_cache[curve_index] = {
             'source': str(source_name),
-            'times': np.asarray(times, dtype=float).copy(),
+            'times': stored_times,
             'values': np.asarray(values, dtype=float).copy(),
+            'sample_rate': sample_rate,
         }
 
     def _estimate_sample_rate_from_times(self, times: np.ndarray) -> float:
@@ -3559,17 +3562,22 @@ class MainWindow(QMainWindow):
             return 1.0
         return max(1e-9, 1.0 / float(np.median(diffs)))
 
-    def _compute_view_welch_psd(self, times: np.ndarray, values: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    def _compute_view_welch_psd(self, times: np.ndarray, values: np.ndarray, sample_rate: Optional[float] = None) -> Tuple[np.ndarray, np.ndarray]:
         values = np.asarray(values, dtype=float)
-        times = np.asarray(times, dtype=float)
         finite_mask = np.isfinite(values)
-        if times.size == values.size:
-            finite_mask &= np.isfinite(times)
-        values = values[finite_mask]
-        times = times[finite_mask] if times.size == finite_mask.size else np.arange(values.size, dtype=float)
-        if values.size < 4:
-            return np.asarray([]), np.asarray([])
-        sample_rate = self._estimate_sample_rate_from_times(times)
+        if sample_rate is None or not np.isfinite(sample_rate) or sample_rate <= 0:
+            times = np.asarray(times, dtype=float)
+            if times.size == values.size:
+                finite_mask &= np.isfinite(times)
+            values = values[finite_mask]
+            times = times[finite_mask] if times.size == finite_mask.size else np.arange(values.size, dtype=float)
+            if values.size < 4:
+                return np.asarray([]), np.asarray([])
+            sample_rate = self._estimate_sample_rate_from_times(times)
+        else:
+            values = values[finite_mask]
+            if values.size < 4:
+                return np.asarray([]), np.asarray([])
         window_seconds = float(self.psd_window_length_spin.value()) if hasattr(self, 'psd_window_length_spin') else 1.0
         overlap_ratio = (float(self.psd_overlap_spin.value()) / 100.0) if hasattr(self, 'psd_overlap_spin') else 0.5
         nperseg = int(max(8, min(values.size, 50000, round(sample_rate * window_seconds))))
@@ -3611,7 +3619,11 @@ class MainWindow(QMainWindow):
                 plot_curve.setData([], [])
                 continue
             cached = self._view_curve_cache.get(curve_index, {})
-            freq, psd_db = self._compute_view_welch_psd(cached.get('times', np.asarray([])), cached.get('values', np.asarray([])))
+            freq, psd_db = self._compute_view_welch_psd(
+                cached.get('times', np.asarray([])),
+                cached.get('values', np.asarray([])),
+                cached.get('sample_rate'),
+            )
             plot_curve.setData(freq, psd_db)
         self._apply_view_axes()
 
