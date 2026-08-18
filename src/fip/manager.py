@@ -606,7 +606,7 @@ class DataProcessingThread(QThread):
                     warn_outside_normalized=self.phase_unwrap_enabled,
                 )
                 input_size, input_first, input_min, input_max = _array_summary_values(phase_data)
-                if abs(input_first) <= 1e-12:
+                if abs(input_first) <= 1e-12 and log_packet_detail:
                     self.logger.warning(
                         "FIP_PROCESS_INPUT_FIRST_ZERO comm=%s sensor=FIP%s input_first=%.9g "
                         "input_range=[%.9g,%.9g] points=%d",
@@ -701,14 +701,14 @@ class DataProcessingThread(QThread):
                         psd_sample_rate,
                         psd_downsample_factor,
                     )
-                if psd_data.size and abs(float(psd_data[0])) <= 1e-12:
+                if psd_data.size and abs(float(psd_data[0])) <= 1e-12 and log_packet_detail:
                     self.logger.warning(
                         "FIP_PROCESS_UNFILTERED_FIRST_ZERO comm=%s sensor=FIP%s value=%.9g",
                         packet.comm_count,
                         sensor_index,
                         float(psd_data[0]),
                     )
-                if downsampled.size and abs(float(downsampled[0])) <= 1e-12:
+                if downsampled.size and abs(float(downsampled[0])) <= 1e-12 and log_packet_detail:
                     self.logger.warning(
                         "FIP_PROCESS_DISPLAY_FIRST_ZERO comm=%s sensor=FIP%s filtered_path=%s value=%.9g",
                         packet.comm_count,
@@ -1084,7 +1084,11 @@ class DataStorageThread(QThread):
 
     STORAGE_DOWNSAMPLE_FACTOR = 1
     DEFAULT_STORAGE_SAMPLE_RATE = DEFAULT_FIP_SAMPLE_RATE_HZ / STORAGE_DOWNSAMPLE_FACTOR
-    RAW_QUEUE_MAXSIZE = 2000
+    # 存储队列容量：每包约 16 MB（2 传感器 × 1M 点 × 8 字节），2000 包约 32 GB，
+    # 会造成严重内存压力并触发系统换页，反而拖慢磁盘、加剧丢包。
+    # 存储线程在去除写放大后已能接近实时落盘，120 包（约 2 GB）即可覆盖突发，
+    # 同时避免内存膨胀导致的反向拖慢。
+    RAW_QUEUE_MAXSIZE = 120
 
     def __init__(self, phase_unwrapper, storage_path: str = "D:/PCCP/FIPdata", storage_interval_seconds: float = 10.0):
         super().__init__()
@@ -1337,7 +1341,7 @@ class DataStorageThread(QThread):
                     input_min,
                     input_max,
                 )
-            if abs(input_first) <= 1e-12:
+            if abs(input_first) <= 1e-12 and packet.comm_count % 50 == 0:
                 self.logger.warning(
                     "FIP_STORAGE_INPUT_FIRST_ZERO comm=%s sensor=FIP%s value=%.9g",
                     packet.comm_count,
@@ -1712,13 +1716,12 @@ class DataStorageThread(QThread):
                 'fip_sensor_count': np.int32(sensor_count),
                 'data_info': data_info,
                 'phase_unwrap_enabled': np.bool_(str(data_type) == 'phase_unwrapped_downsampled'),
-                'format_version': np.array('wb-monitor-tab1-fip-v2' if sensor_count == 2 else 'wb-monitor-tab1-fip-v1'),
+                'format_version': np.array('wb-monitor-tab1-fip-v3'),
             }
-            if sensor_count == 2:
-                payload['fip1_phase_data'] = np.asarray(phase_data[0], dtype=np.float64)
-                payload['fip2_phase_data'] = np.asarray(phase_data[1], dtype=np.float64)
-            else:
-                payload['fip1_phase_data'] = np.asarray(phase_data, dtype=np.float64)
+            # v3：不再写入 fip1_phase_data / fip2_phase_data 冗余字段。
+            # phase_data 已包含全部传感器数据（2 传感器时为 (2, N) 二维数组），
+            # 旧版本同时写 phase_data + fip1 + fip2 造成 2 倍写放大，显著拖慢
+            # 存储线程并导致存储队列堆积丢包（详见 2026-08-18 联调日志）。
 
             np.savez_compressed(file_path, **payload)
 
@@ -1888,8 +1891,10 @@ class OptimizedTab1ThreadManager(QObject):
         """
         # --- 阶段一：排空存储队列 ---
         self.storage_thread.begin_drain()
-        # 等待存储线程排空（最多 10 s）
-        drain_timeout_ms = 10000
+        # 等待存储线程排空。队列容量已降为 120 包，按每 10 s 数据约 6~13 s 落盘
+        # 估算，排空 120 包最长约 3 分钟；此处放宽到 180 s，避免尾包大量丢失
+        # （旧值 10 s 曾导致停机时 1981 包滞留队列未落盘）。
+        drain_timeout_ms = 180000
         drain_wait_start = time.time()
         while self.storage_thread.isRunning():
             elapsed_ms = (time.time() - drain_wait_start) * 1000

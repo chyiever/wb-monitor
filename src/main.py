@@ -483,7 +483,7 @@ class PCCPMonitorApp:
                     f"first={float(packet.phase_data[0]) if len(packet.phase_data) else float('nan'):.9g}, "
                     f"range=[{np.min(packet.phase_data):.9g}, {np.max(packet.phase_data):.9g}]"
                 )
-            if len(packet.phase_data) and abs(float(packet.phase_data[0])) <= 1e-12:
+            if len(packet.phase_data) and abs(float(packet.phase_data[0])) <= 1e-12 and packet.comm_count % 50 == 0:
                 self.logger.warning(
                     "FIP_MAIN_FIRST_SAMPLE_ZERO comm=%s first=%.9g points=%d",
                     packet.comm_count,

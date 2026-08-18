@@ -39,6 +39,12 @@ pg.setConfigOption('foreground', 'k')
 class MainWindow(QMainWindow):
     """主窗口类"""
 
+    # View 页参数区宽度边界（用户可通过水平 QSplitter 手动调整）。
+    VIEW_PARAM_PANEL_MIN_WIDTH = 360
+    VIEW_PARAM_PANEL_MAX_WIDTH = 720
+    # 默认宽度：较旧版 560px 缩小约 20%（560 * 0.8 = 448）。
+    VIEW_PARAM_PANEL_DEFAULT_WIDTH = 448
+
     # 信号定义
     start_monitoring = pyqtSignal()
     stop_monitoring = pyqtSignal()
@@ -240,11 +246,20 @@ class MainWindow(QMainWindow):
 
         main_layout = QHBoxLayout(tab1)
         main_layout.setContentsMargins(8, 8, 8, 8)
-        main_layout.setSpacing(8)
+        main_layout.setSpacing(0)
+
+        # 参数区与绘图区之间用水平 QSplitter 分隔，允许用户拖拽调整参数区宽度。
+        self.view_param_splitter = QSplitter(Qt.Horizontal)
+        self.view_param_splitter.setChildrenCollapsible(False)
+        self.view_param_splitter.setHandleWidth(6)
         self.param_widget = self._create_parameter_panel()
-        main_layout.addWidget(self.param_widget, stretch=0)
         self.plot_widget = self._create_view_plot_panel()
-        main_layout.addWidget(self.plot_widget, stretch=1)
+        self.view_param_splitter.addWidget(self.param_widget)
+        self.view_param_splitter.addWidget(self.plot_widget)
+        self.view_param_splitter.setStretchFactor(0, 0)
+        self.view_param_splitter.setStretchFactor(1, 1)
+        self.view_param_splitter.setSizes([self.VIEW_PARAM_PANEL_DEFAULT_WIDTH, 1100])
+        main_layout.addWidget(self.view_param_splitter)
 
     def _init_view_runtime_state(self) -> None:
         # Keep the old tab3 runtime field names because the controller already uses them.
@@ -273,8 +288,9 @@ class MainWindow(QMainWindow):
 
     def _create_parameter_panel(self) -> QWidget:
         widget = QWidget()
-        widget.setMinimumWidth(460)
-        widget.setMaximumWidth(560)
+        # 参数区宽度可通过 QSplitter 手动调整；默认宽度约 448px（较旧版 560px 缩小约 20%）。
+        widget.setMinimumWidth(self.VIEW_PARAM_PANEL_MIN_WIDTH)
+        widget.setMaximumWidth(self.VIEW_PARAM_PANEL_MAX_WIDTH)
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(8)
@@ -1694,12 +1710,37 @@ class MainWindow(QMainWindow):
 
         return config
 
+    def _current_param_panel_width(self) -> int:
+        """Return the current View parameter-panel width in pixels."""
+        try:
+            if hasattr(self, "view_param_splitter"):
+                sizes = self.view_param_splitter.sizes()
+                if sizes:
+                    return int(sizes[0])
+        except Exception:
+            pass
+        return self.VIEW_PARAM_PANEL_DEFAULT_WIDTH
+
+    def _apply_param_panel_width(self, width: Any) -> None:
+        """Apply a persisted View parameter-panel width to the horizontal splitter."""
+        try:
+            if not hasattr(self, "view_param_splitter"):
+                return
+            total = sum(self.view_param_splitter.sizes())
+            if total <= 0:
+                total = int(width) + 1100
+            clamped = max(self.VIEW_PARAM_PANEL_MIN_WIDTH, min(int(width), self.VIEW_PARAM_PANEL_MAX_WIDTH))
+            self.view_param_splitter.setSizes([clamped, max(total - clamped, 200)])
+        except (TypeError, ValueError):
+            return
+
     def get_view_settings(self) -> Dict[str, Any]:
         """Return View-tab display, PSD, and axis settings for persistence."""
         x_min, x_max = self.get_view_x_range()
         y_min, y_max = self.get_view_y_range()
         psd_y_min, psd_y_max = self.get_view_psd_y_range()
         return {
+            "param_panel_width": self._current_param_panel_width(),
             "time_plot_enabled": self.time_plot_btn.isChecked(),
             "psd_plot_enabled": self.psd_plot_btn.isChecked(),
             "view_update_enabled": self.tab3_plot_toggle_btn.isChecked(),
@@ -1910,6 +1951,8 @@ class MainWindow(QMainWindow):
     def _restore_view_settings(self, config: Dict[str, Any]) -> None:
         view = config.get("view", {})
         tab3_plot = config.get("tab3", {}).get("plot", {})
+        if view.get("param_panel_width"):
+            self._apply_param_panel_width(view.get("param_panel_width"))
         self._set_checked(getattr(self, "time_plot_btn", None), view.get("time_plot_enabled"))
         self._set_checked(getattr(self, "psd_plot_btn", None), view.get("psd_plot_enabled"))
         self._set_checked(getattr(self, "tab3_plot_toggle_btn", None), view.get("view_update_enabled", tab3_plot.get("plot_enabled")))
@@ -2494,7 +2537,7 @@ class MainWindow(QMainWindow):
             )
             source_points = max(source_points, int(values_arr.size))
             rendered_points = max(rendered_points, int(window_values.size))
-            if plot_values.size and abs(float(plot_values[0])) <= 1e-12:
+            if plot_values.size and abs(float(plot_values[0])) <= 1e-12 and comm_count % 50 == 0:
                 self._tab3_logger.warning(
                     "TAB3_NODE ui.fip_curve_first_zero comm=%s curve=%s sensor=FIP%s "
                     "source_first=%.9g plot_first=%.9g source_points=%d plot_points=%d step=%d",

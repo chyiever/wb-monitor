@@ -243,7 +243,7 @@ class DASTab3Manager(QObject):
             len(self._fip_recent_packets),
             float(selected_display[0]) if len(selected_display) else float("nan"),
         )
-        if len(selected_display) and abs(float(selected_display[0])) <= 1e-12:
+        if len(selected_display) and abs(float(selected_display[0])) <= 1e-12 and processed_data.comm_count % 50 == 0:
             self.logger.warning(
                 "TAB3_NODE manager.fip_first_zero comm=%s selected=FIP%s source=display_downsampled value=%.9g",
                 processed_data.comm_count,

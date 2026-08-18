@@ -425,7 +425,7 @@ class OptimizedTCPServer(QObject):
                     float(np.min(data_array)) if point_count else float("nan"),
                     float(np.max(data_array)) if point_count else float("nan"),
                 )
-            if point_count and abs(float(data_array[0])) <= 1e-12:
+            if point_count and abs(float(data_array[0])) <= 1e-12 and comm_count % 50 == 0:
                 self.logger.warning(
                     "FIP_TCP_FIRST_SAMPLE_ZERO comm=%s raw_comm=%s raw_first=%d decoded_first=%.9g",
                     comm_count,
