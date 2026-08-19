@@ -875,3 +875,35 @@ View 页 DAS Space-Time 图长期以深蓝或深红为主，手动 V 范围从 `
 2. 端到端管道自检通过：`python -X utf8 src\tools\validate_tab3_pipeline.py` 输出 `VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800)`。
 3. 发送端 `pcie7821_gui` 单测通过：`python -X utf8 -m unittest discover -s tests` 输出 `Ran 8 tests ... OK`。
 4. 数值 round-trip 自检：int32 载荷解码值与发送矩阵逐值一致，`rad = int32/32767*pi` 与预期一致，`data_bytes` 由 64 降为 32（减半）。
+
+## 2026-08-20 01:20:00 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/das/tcp_server.py`、`src/tools/simulate_das_client.py`、`docs/2026-6-19-通信协议与数据包格式.md`、`docs/2026-07-17 数据存储.md`、`docs/dev_log.md`
+- 关联仓库：`https://github.com/chyiever/pcie7821_gui.git`（发送端 `src/tcp_tab3/tcp_packet_builder.py`）
+
+### 背景
+
+现场 100 kHz x 461 通道 int32 联调日志显示丢包率约 38%（接收端 `packets=113 missing=69 last_comm=181`）。根因是带宽饱和：单包 184.4 MB、数据率约 1.48 Gbps，超过 1 Gbps 链路（发送端 `Slow TCP send` 约 1.4–1.6 s/包、接收端 `data_rate≈103 MB/s`），发送端 `queue_max=8` 队列持续堆满并「丢最旧包」。
+
+### 更新摘要
+
+1. `src/das/tcp_server.py`
+   - payload 字节序由大端 `>i4` 改为小端 `<i4`（x86 本机字节序），去掉热路径上的 in-place byteswap。
+   - 解析改为单趟 `np.frombuffer(payload, dtype="<i4").astype(np.float64)` 后原地乘 `DAS_INT32_TO_RADIANS`，减少一次整包内存读写。
+2. `src/tools/simulate_das_client.py`
+   - 模拟客户端载荷由 `>i4` 改为 `<i4`。
+3. 文档同步：协议文档、数据存储文档改为小端 `int32` 口径。
+
+### 效果与结论
+
+- 小端去掉两端字节交换，实测 46.1M 样本下发送端构包由约 128 ms 降至约 39 ms，接收端解析省去约 60–100 ms 字节交换；属约 10% 开销优化，不能消除丢包。
+- 丢包的根本解法仍需在发送端 `Tab3` 通信参数开启 `time_downsample` 或 `space_downsample`（任一 `=2` 即可把 184.4 MB/s 降到 92.2 MB/s ≈ 0.74 Gbps，落到 1 Gbps 内），或升级到 10 Gbps 链路。
+
+### 验证
+
+1. 编译检查通过：`python -X utf8 -m py_compile src\das\tcp_server.py src\tools\simulate_das_client.py`。
+2. 端到端管道自检通过：`python -X utf8 src\tools\validate_tab3_pipeline.py` 输出 `VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800)`。
+3. 发送端 `pcie7821_gui` 单测通过：`python -X utf8 -m unittest discover -s tests` 输出 `Ran 8 tests ... OK`。
+4. 小端 round-trip 自检：int32 载荷解码值与发送矩阵逐值一致，`data_bytes=32` 减半保持。

@@ -3,7 +3,7 @@
 This script stays outside `src/` on purpose. It connects to the Tab3 DAS TCP
 server and sends packets using the agreed protocol:
 
-    >IIIId + big-endian int32 payload
+    >IIIId + little-endian int32 payload
 
 Usage:
     python tools/simulate_das_client.py --host 127.0.0.1 --port 3678
@@ -32,7 +32,7 @@ def build_payload(
     base_frequency_hz: float,
     pulse_every_packets: int,
 ) -> bytes:
-    """Build one DAS packet as big-endian int32 bytes."""
+    """Build one DAS packet as little-endian int32 bytes."""
     samples_per_channel = int(round(sample_rate_hz * packet_duration_seconds))
     time_axis = np.arange(samples_per_channel, dtype=np.float64) / float(sample_rate_hz)
 
@@ -53,7 +53,7 @@ def build_payload(
             signal = signal + pulse
         matrix[channel_index] = np.rint(signal * (32767.0 / np.pi)).astype(np.int32)
 
-    payload = np.asarray(matrix.reshape(-1), dtype=">i4").tobytes()
+    payload = np.asarray(matrix.reshape(-1), dtype="<i4").tobytes()
     header = HEADER_STRUCT.pack(
         comm_count,
         sample_rate_hz,
