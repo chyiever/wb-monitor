@@ -842,3 +842,36 @@ View 页 DAS Space-Time 图长期以深蓝或深红为主，手动 V 范围从 `
 3. 导出数据数值验证：原始范围 `-13.0097 ~ 12.7132`，去基线后 `-0.6036 ~ 0.7588`，1%/99% `-0.1889 ~ 0.1914`，自动色阶 `-0.2974 ~ 0.2974`，超出比例约 0.5%，符合预期。
 4. worker 路径验证：`ACTUAL_WORKER_OK shape=(51, 1820) owns=True min=-0.3300 max=0.3874 p99.5(abs)=0.1882`，连续帧 `np.shares_memory` 均为 `False`。
 5. 已执行 UTF-8 中文自检，本次修改文件未发现问号乱码。
+
+## 2026-08-20 00:38:07 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/das/tcp_server.py`、`src/tools/simulate_das_client.py`、`docs/2026-6-19-通信协议与数据包格式.md`、`docs/dev_log.md`
+- 关联仓库：`https://github.com/chyiever/pcie7821_gui.git`（发送端 `src/tcp_tab3/tcp_packet_builder.py`）
+
+### 背景
+
+原 DAS TCP 协议载荷为大端 `float64` 弧度，满速 1 s 包约 610 MiB（100 kHz x 800 点 x 8 字节），对应约 2.95 Gbps，超过 1 Gbps 链路，导致每包实际接收约 3.2 s、timespace 图与 comm 计数增长变慢。改用 `int32` 发送原始相位计数可把载荷减半到约 305 MiB。
+
+### 更新摘要
+
+1. `src/das/tcp_server.py`
+   - 载荷校验由 `data_bytes % 8 != 0` 改为 `% 4 != 0`，`total_points = data_bytes // 4`。
+   - 解析由 `>f8` 改为大端 `>i4`，原地 byteswap 后转 `int32`，再 `astype(float64)` 并乘 `DAS_INT32_TO_RADIANS`（`pi / 32767`）恢复弧度。
+   - 新增常量 `DAS_PHASE_FIXED_POINT_SCALE = 32767.0`、`DAS_INT32_TO_RADIANS`，`MAX_PAYLOAD_BYTES` 注释更新为 int32 口径。
+   - `DASRawPacket.data_1d` 仍为 `float64` 弧度，下游绘图、对齐、存储链路无感知变化。
+2. `src/tools/simulate_das_client.py`
+   - 模拟客户端改为生成 `int32` 相位计数并按 `>i4` 发送，`amplitude` 正弦先转弧度再 `round(x * 32767/pi)` 量化。
+3. `docs/2026-6-19-通信协议与数据包格式.md`
+   - 载荷描述由大端 `float64` 更新为大端 `int32`，`N = data_bytes/(4C)`，明确客户端不再做弧度换算、由服务端接收后统一 `phase_rad = phase_int32/32767*pi`，流程图 `Decode >f8` 改为 `Decode >i4`。
+4. `docs/2026-07-17 数据存储.md`
+   - eDAS TCP 载荷由 `>f8` 更新为 `>i4 int32`，写入流程同步说明服务端转换为 `float64` 弧度后仍以 `float64` 落盘。
+5. 附：修复 DAS 断流误报。`_recv_exact()` 每次成功 `recv()` 到 chunk 后刷新 `_last_data_time`，watchdog 由「距最后完整包」改为「距最后收到字节」计时，大包慢收时不再误报「DAS has not received data for 10 seconds」。
+
+### 验证
+
+1. 编译检查通过：`python -X utf8 -m py_compile src\das\tcp_server.py src\tools\simulate_das_client.py`。
+2. 端到端管道自检通过：`python -X utf8 src\tools\validate_tab3_pipeline.py` 输出 `VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800)`。
+3. 发送端 `pcie7821_gui` 单测通过：`python -X utf8 -m unittest discover -s tests` 输出 `Ran 8 tests ... OK`。
+4. 数值 round-trip 自检：int32 载荷解码值与发送矩阵逐值一致，`rad = int32/32767*pi` 与预期一致，`data_bytes` 由 64 降为 32（减半）。

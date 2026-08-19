@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import socket
 import struct
 import threading
@@ -15,6 +16,12 @@ from PyQt5.QtCore import QObject, pyqtSignal
 from .types import DASPacketHeader, DASRawPacket
 
 
+# Signed int32 fixed-point phase payload scale. The sender transmits raw
+# phase counts; the receiver restores radians via phase_rad = count / 32767 * pi.
+DAS_PHASE_FIXED_POINT_SCALE = 32767.0
+DAS_INT32_TO_RADIANS = math.pi / DAS_PHASE_FIXED_POINT_SCALE
+
+
 class DASTCPServer(QObject):
     """Receive DAS packets over TCP using the Tab3 protocol."""
 
@@ -25,7 +32,7 @@ class DASTCPServer(QObject):
     statistics_updated = pyqtSignal(dict)
 
     HEADER_STRUCT = struct.Struct(">IIIId")
-    # 100 kHz x 800 channels x float64 x 1 s ~= 640 MB. Keep the
+    # 100 kHz x 800 channels x int32 x 1 s ~= 320 MB. Keep the
     # protocol capable of accepting one full-rate second while rejecting
     # clearly corrupt headers before they can exhaust memory.
     MAX_PAYLOAD_BYTES = 1024 * 1024 * 1024
@@ -176,7 +183,7 @@ class DASTCPServer(QObject):
                         data_bytes,
                     )
                     break
-                if data_bytes <= 0 or data_bytes > self.MAX_PAYLOAD_BYTES or data_bytes % 8 != 0:
+                if data_bytes <= 0 or data_bytes > self.MAX_PAYLOAD_BYTES or data_bytes % 4 != 0:
                     self.error_occurred.emit(f"Invalid DAS data_bytes: {data_bytes}")
                     self.logger.warning(
                         "DAS invalid payload size; closing connection to resync stream: comm=%s data_bytes=%s max=%s",
@@ -190,12 +197,14 @@ class DASTCPServer(QObject):
                     self.logger.info("DAS client disconnected while receiving payload comm=%s", comm_count)
                     break
                 packet_receive_time = time.time()
-                data = np.frombuffer(payload, dtype=">f8")
+                data = np.frombuffer(payload, dtype=">i4")
                 if data.dtype.byteorder == ">":
-                    data = data.byteswap(inplace=True).view(np.float64)
+                    data = data.byteswap(inplace=True).view(np.int32)
                 else:
-                    data = data.astype(np.float64, copy=False)
-                total_points = int(data_bytes // 8)
+                    data = data.astype(np.int32, copy=False)
+                data = data.astype(np.float64)
+                data *= DAS_INT32_TO_RADIANS
+                total_points = int(data_bytes // 4)
                 if total_points % channel_count != 0:
                     self.error_occurred.emit(
                         f"DAS payload/channel mismatch: points={total_points}, channels={channel_count}"
@@ -295,6 +304,7 @@ class DASTCPServer(QObject):
                     return None
                 chunks.extend(chunk)
                 remaining -= len(chunk)
+                self._last_data_time = time.time()
             except socket.timeout:
                 continue
             except OSError:
