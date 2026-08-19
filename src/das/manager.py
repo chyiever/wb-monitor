@@ -281,6 +281,7 @@ class DASTab3Manager(QObject):
     def _handle_raw_packet(self, raw_packet: DASRawPacket) -> None:
         started = time.perf_counter()
         parsed = self._parse_packet(raw_packet)
+        self._log_das_value_stats(parsed)
         if hasattr(self.main_window, 'record_edas_packet_receive'):
             try:
                 receive_time = float(getattr(raw_packet, "receive_timestamp", time.time()))
@@ -333,6 +334,40 @@ class DASTab3Manager(QObject):
                 elapsed_ms,
                 tuple(parsed.matrix.shape),
             )
+
+    def _log_das_value_stats(self, packet: DASParsedPacket) -> None:
+        """Periodically log bounded samples of raw DAS values for field diagnostics."""
+        if packet.header.comm_count % 50 != 0 or packet.matrix.size == 0:
+            return
+        flat = packet.matrix.reshape(-1)
+        sample_step = max(1, int(np.ceil(flat.size / 100000)))
+        sampled = np.asarray(flat[::sample_step])
+        finite = sampled[np.isfinite(sampled)]
+        nan_count = int(np.isnan(sampled).sum())
+        inf_count = int(np.isinf(sampled).sum())
+        if finite.size == 0:
+            self.logger.warning(
+                "TAB3_NODE manager.das_values comm=%s sampled=%d finite=0 nan=%d inf=%d",
+                packet.header.comm_count,
+                sampled.size,
+                nan_count,
+                inf_count,
+            )
+            return
+        self.logger.info(
+            "TAB3_NODE manager.das_values comm=%s sampled=%d step=%d "
+            "min=%.9g p01=%.9g median=%.9g p99=%.9g max=%.9g nan=%d inf=%d",
+            packet.header.comm_count,
+            sampled.size,
+            sample_step,
+            float(np.min(finite)),
+            float(np.percentile(finite, 1.0)),
+            float(np.median(finite)),
+            float(np.percentile(finite, 99.0)),
+            float(np.max(finite)),
+            nan_count,
+            inf_count,
+        )
 
     def _parse_packet(self, raw_packet: DASRawPacket) -> DASParsedPacket:
         header = raw_packet.header

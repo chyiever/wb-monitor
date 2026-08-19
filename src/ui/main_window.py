@@ -273,6 +273,7 @@ class MainWindow(QMainWindow):
         self._tab3_ui_slow_threshold_ms = 80.0
         self._tab3_last_space_time_rect = None
         self._tab3_space_time_levels_locked = True
+        self._tab3_auto_level_limit: Optional[float] = None
         self._view_curve_cache: Dict[int, Dict[str, Any]] = {1: {}, 2: {}}
         self._fip_curve_rolling: Dict[Tuple[int, int], Dict[str, Any]] = {}
         self._view_user_range_active = False
@@ -563,10 +564,19 @@ class MainWindow(QMainWindow):
         self.tab3_colormap_combo.setCurrentText("Seismic")
         layout.addWidget(self.tab3_colormap_combo, 1, 5)
 
-        layout.addWidget(QLabel("V范围"), 2, 0)
-        self.tab3_v_range_edit = QLineEdit("-0.3-0.3")
-        self.tab3_v_range_edit.setPlaceholderText("-0.3-0.3")
-        layout.addWidget(self.tab3_v_range_edit, 2, 1, 1, 5)
+        self.tab3_space_time_remove_baseline_check = QCheckBox("逐通道去基线")
+        self.tab3_space_time_remove_baseline_check.setChecked(True)
+        layout.addWidget(self.tab3_space_time_remove_baseline_check, 2, 0, 1, 2)
+
+        self.tab3_auto_levels_check = QCheckBox("自动色阶")
+        self.tab3_auto_levels_check.setChecked(True)
+        layout.addWidget(self.tab3_auto_levels_check, 2, 2, 1, 2)
+
+        layout.addWidget(QLabel("V范围"), 3, 0)
+        self.tab3_v_range_edit = QLineEdit("-1-1")
+        self.tab3_v_range_edit.setPlaceholderText("-1-1")
+        self.tab3_v_range_edit.setEnabled(False)
+        layout.addWidget(self.tab3_v_range_edit, 3, 1, 1, 5)
         return group
 
     def _create_view_plot_panel(self) -> QWidget:
@@ -1577,7 +1587,7 @@ class MainWindow(QMainWindow):
         return spec
 
     def get_tab3_v_range(self) -> Tuple[float, float]:
-        return self._parse_range_text(getattr(self, "tab3_v_range_edit", None), -0.3, 0.3)
+        return self._parse_range_text(getattr(self, "tab3_v_range_edit", None), -1.0, 1.0)
 
     def get_psd_downsample_factor(self) -> int:
         spin = getattr(self, "setting_psd_downsample_spin", None)
@@ -2052,11 +2062,19 @@ class MainWindow(QMainWindow):
         self._set_spin_value(getattr(self, "tab3_space_downsample_spin", None), plot.get("space_downsample"))
         self._set_spin_value(getattr(self, "tab3_space_time_total_seconds_spin", None), plot.get("space_time_total_seconds"))
         self._set_spin_value(getattr(self, "tab3_space_time_shift_seconds_spin", None), plot.get("space_time_shift_seconds"))
+        self._set_checked(
+            getattr(self, "tab3_space_time_remove_baseline_check", None),
+            plot.get("space_time_remove_baseline", True),
+        )
+        self._set_checked(
+            getattr(self, "tab3_auto_levels_check", None),
+            plot.get("space_time_auto_levels", True),
+        )
         self._set_combo_value(getattr(self, "tab3_colormap_combo", None), plot.get("colormap"))
         if plot.get("v_range"):
             self._set_line_text(getattr(self, "tab3_v_range_edit", None), plot.get("v_range"))
         else:
-            self._set_range_text(getattr(self, "tab3_v_range_edit", None), plot.get("vmin", -0.3), plot.get("vmax", 0.3))
+            self._set_range_text(getattr(self, "tab3_v_range_edit", None), plot.get("vmin", -1.0), plot.get("vmax", 1.0))
         storage = tab3.get("storage", {})
         self._set_checked(getattr(self, "tab3_joint_storage_toggle_btn", None), storage.get("joint_enabled", storage.get("enabled")))
         self._set_line_text(getattr(self, "tab3_storage_path_edit", None), storage.get("path"))
@@ -2109,6 +2127,7 @@ class MainWindow(QMainWindow):
         self._update_data_storage_buttons()
         self._update_tab2_enable_button_state(False)
         self._apply_tab3_space_time_colormap()
+        self._on_tab3_auto_levels_changed(self.tab3_auto_levels_check.isChecked(), emit=False)
         self._apply_tab3_space_time_levels()
         self._apply_global_display_runtime_settings()
         if self.view_axis_enable_check.isChecked():
@@ -2144,6 +2163,7 @@ class MainWindow(QMainWindow):
             self.tab3_das_filter_enable_check, self.tab3_das_filter_range_edit, self.tab3_das_filter_order_spin,
             self.tab3_channel_range_edit, self.tab3_space_time_total_seconds_spin,
             self.tab3_space_time_shift_seconds_spin, self.tab3_time_downsample_spin, self.tab3_space_downsample_spin,
+            self.tab3_space_time_remove_baseline_check, self.tab3_auto_levels_check,
             self.tab3_colormap_combo, self.tab3_v_range_edit,
             self.tab3_joint_storage_toggle_btn, self.tab3_storage_path_edit,
             self.tab3_storage_interval_spin, self.tab3_cache_seconds_spin,
@@ -2351,6 +2371,8 @@ class MainWindow(QMainWindow):
                 "channel_end": channel_end,
                 "space_time_total_seconds": self.tab3_space_time_total_seconds_spin.value(),
                 "space_time_shift_seconds": self.tab3_space_time_shift_seconds_spin.value(),
+                "space_time_remove_baseline": self.tab3_space_time_remove_baseline_check.isChecked(),
+                "space_time_auto_levels": self.tab3_auto_levels_check.isChecked(),
                 "time_downsample": self.tab3_time_downsample_spin.value(),
                 "space_downsample": self.tab3_space_downsample_spin.value(),
                 "plot_enabled": self.is_tab3_plot_enabled(),
@@ -2601,7 +2623,10 @@ class MainWindow(QMainWindow):
             self._reset_tab3_space_time_image()
             return
         matrix = np.ascontiguousarray(matrix, dtype=np.float32)
-        levels = self.get_tab3_v_range()
+        if self.tab3_auto_levels_check.isChecked():
+            levels = self._compute_tab3_space_time_levels(matrix)
+        else:
+            levels = self.get_tab3_v_range()
         if levels[0] >= levels[1]:
             self._set_tab3_space_time_levels(levels[0], levels[0] + 1e-6)
             levels = self.get_tab3_v_range()
@@ -2620,6 +2645,8 @@ class MainWindow(QMainWindow):
         x_width = max(x_scale, 1e-12) * matrix.shape[1]
         y_height = max(y_scale, 1e-12) * matrix.shape[0]
         self.tab3_space_time_image.setImage(matrix, autoLevels=False, levels=levels)
+        if hasattr(self, "tab3_space_time_histogram"):
+            self.tab3_space_time_histogram.setLevels(*levels)
         rect = (x_offset, y_offset, x_width, y_height)
         if self._tab3_last_space_time_rect != rect:
             self.tab3_space_time_image.setRect(*rect)
@@ -2686,19 +2713,22 @@ class MainWindow(QMainWindow):
         msg_box.exec_()
 
     def _compute_tab3_space_time_levels(self, matrix: np.ndarray) -> Tuple[float, float]:
-        """Build stable display levels for the Tab3 space-time float image."""
+        """Build smoothed symmetric levels from robust Space-Time percentiles."""
         finite_values = matrix[np.isfinite(matrix)]
         if finite_values.size == 0:
-            return (0.0, 1.0)
-        low = float(np.percentile(finite_values, 1.0))
-        high = float(np.percentile(finite_values, 99.0))
-        if not np.isfinite(low) or not np.isfinite(high) or low >= high:
-            low = float(np.min(finite_values))
-            high = float(np.max(finite_values))
-        if not np.isfinite(low) or not np.isfinite(high) or low >= high:
-            center = float(finite_values[0])
-            return (center - 0.5, center + 0.5)
-        return (low, high)
+            return (-1.0, 1.0)
+        target_limit = float(np.percentile(np.abs(finite_values), 99.5))
+        if not np.isfinite(target_limit) or target_limit <= 1e-6:
+            target_limit = 1.0
+        if self._tab3_auto_level_limit is None:
+            self._tab3_auto_level_limit = target_limit
+        else:
+            alpha = 0.2
+            self._tab3_auto_level_limit = (
+                (1.0 - alpha) * self._tab3_auto_level_limit + alpha * target_limit
+            )
+        limit = max(float(self._tab3_auto_level_limit), 1e-6)
+        return (-limit, limit)
 
     def _create_tab3_custom_colormap(self, name: str):
         """Create a small set of custom colormaps used by Tab3."""
@@ -2891,12 +2921,27 @@ class MainWindow(QMainWindow):
         self._apply_tab3_space_time_levels()
         self._emit_tab3_settings_changed()
 
+    def _on_tab3_auto_levels_changed(self, checked: bool, emit: bool = True):
+        """Switch between robust automatic levels and the manual V range."""
+        self._tab3_auto_level_limit = None
+        self.tab3_v_range_edit.setEnabled(not bool(checked))
+        if not checked:
+            self._apply_tab3_space_time_levels()
+        if emit:
+            self._emit_tab3_settings_changed()
+
+    def _on_tab3_space_time_baseline_changed(self, _checked: bool):
+        """Reset automatic contrast when the displayed data domain changes."""
+        self._tab3_auto_level_limit = None
+        self._emit_tab3_settings_changed()
+
     def is_tab3_plot_enabled(self) -> bool:
         """Return whether Tab3 plot widgets should update."""
         return self.tab3_plot_toggle_btn.isChecked()
 
     def _reset_tab3_space_time_image(self):
         """Restore the Tab3 space-time image to a known empty state."""
+        self._tab3_auto_level_limit = None
         empty = np.zeros((1, 1), dtype=np.float32)
         self.tab3_space_time_image.setImage(
             empty,
@@ -3944,6 +3989,12 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'tab3_v_range_edit'):
                 self.tab3_v_range_edit.editingFinished.connect(self._on_tab3_v_range_changed)
                 self.tab3_v_range_edit.returnPressed.connect(self._on_tab3_v_range_changed)
+            if hasattr(self, 'tab3_auto_levels_check'):
+                self.tab3_auto_levels_check.toggled.connect(self._on_tab3_auto_levels_changed)
+            if hasattr(self, 'tab3_space_time_remove_baseline_check'):
+                self.tab3_space_time_remove_baseline_check.toggled.connect(
+                    self._on_tab3_space_time_baseline_changed
+                )
 
             tab3_widgets = [
                 getattr(self, 'tab3_ip_edit', None),

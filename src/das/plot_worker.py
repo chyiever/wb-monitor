@@ -37,6 +37,7 @@ class DASPlotWorker(QThread):
             "space_downsample": 1,
             "space_time_total_seconds": 5.0,
             "space_time_shift_seconds": 1.0,
+            "space_time_remove_baseline": True,
             "channel_start": 0,
             "channel_end": 199,
             "low_hz": 1.0,
@@ -395,7 +396,21 @@ class DASPlotWorker(QThread):
             self._space_time_valid_cols += block_cols
 
         visible_cols = max(0, self._space_time_valid_cols)
-        matrix = np.ascontiguousarray(self._space_time_buffer[:, :visible_cols])
+        # The rolling buffer is mutated by this worker on every packet.  Emit an
+        # owned snapshot so the Qt GUI thread and pyqtgraph never retain a view
+        # into memory that is being changed concurrently.
+        matrix = np.array(
+            self._space_time_buffer[:, :visible_cols],
+            dtype=np.float32,
+            copy=True,
+            order="C",
+        )
+        if bool(self.settings.get("space_time_remove_baseline", True)) and matrix.size:
+            # Absolute DAS phase can contain a different multi-2*pi DC offset
+            # on every channel.  Remove only that display baseline; packet data
+            # retained for alignment and raw storage remains untouched.
+            baseline = np.nanmedian(matrix, axis=1, keepdims=True)
+            matrix -= baseline
         x_axis = np.arange(visible_cols, dtype=np.float64) * dt
         y_axis = np.arange(start, end + 1, space_downsample, dtype=np.int32)[:row_count]
         return matrix, x_axis, y_axis
@@ -414,6 +429,7 @@ class DASPlotWorker(QThread):
             float(settings.get("display_seconds", 1.0)),
             float(settings.get("space_time_total_seconds", 5.0)),
             float(settings.get("space_time_shift_seconds", 1.0)),
+            bool(settings.get("space_time_remove_baseline", True)),
             int(settings.get("space_time_max_pixels", 120000)),
         )
 
@@ -425,6 +441,7 @@ class DASPlotWorker(QThread):
             "display_seconds",
             "time_downsample",
             "space_downsample",
+            "space_time_remove_baseline",
             "space_time_total_seconds",
             "space_time_shift_seconds",
             "channel_start",

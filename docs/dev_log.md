@@ -811,3 +811,34 @@ python -X utf8 -m unittest discover -s tests
 ```
 
 结果：本软件 eDAS TCP 模拟验证通过，发送端 8 项测试通过。后续现场重点观察 `DAS comm_count gap`、`Alignment cache byte budget trimming active`、`storage.edas_enqueue queued_mb`、`.json` 中 `comm_counts` 连续性和 FIP/eDAS 同序号接收时间差。
+
+## 2026-08-19 23:52:40 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/das/plot_worker.py`、`src/ui/main_window.py`、`src/das/manager.py`、`docs/2026-08-19-View-DAS-Space-Time基线与色阶修复日志.md`、`docs/dev_log.md`
+
+### 问题现象
+
+View 页 DAS Space-Time 图长期以深蓝或深红为主，手动 V 范围从 `-1~1` 扩大到 `-3~3` 图像仍基本不变。检查现场导出数据（51 通道 x 10000 点、共 10 块）发现：多数通道含有接近 `±4π` 的固定相位基线（如通道 0 均值 `-12.5097`、通道 8 均值 `12.4716`），98.04% 样本 `abs(value) > 3`，原始小幅噪声变化被固定基线 + 手动色阶完全淹没。
+
+### 更新摘要
+
+1. `src/das/plot_worker.py`
+   - Space-Time 显示帧改为逐通道中位数去基线：生成独立 C-order `float32` 副本后按时间轴 `np.nanmedian` 扣除各通道固定基线，中位数较均值更抗短时冲击。
+   - 修复跨线程共享内存：`np.ascontiguousarray` 改为 `np.array(..., copy=True, order="C")`，保证 `plot_payload_ready` 携带独立矩阵，后台滚动缓冲原地更新不再污染已交给 UI 的帧。
+   - 新增 `space_time_remove_baseline` 设置项，接入 worker 设置签名与日志。
+2. `src/ui/main_window.py`
+   - Space-Time 参数区新增 `逐通道去基线`（默认开）与 `自动色阶`（默认开）两个开关；手动 V 范围默认改为 `-1~1`，自动色阶开启时禁用输入框。
+   - 自动色阶改为稳健对称范围 `(-P99.5(abs), +P99.5(abs))`，上限用 `alpha=0.2` 指数平滑降闪烁；新会话/清空 Space-Time 时重置平滑状态。
+   - 两个开关均接入 GUI 配置保存/恢复，去基线关闭可查看原始绝对相位。
+3. `src/das/manager.py`
+   - 新增 `_log_das_value_stats`：每 50 包从原始矩阵有界等步长抽样约 100,000 样本，记录 min/max、1%/99% 分位数、median、NaN/Inf 数量，日志节点 `TAB3_NODE manager.das_values`，避免对最大规格 DAS 包做全矩阵分位数计算。
+
+### 验证
+
+1. 编译检查通过：`python -m py_compile src/das/plot_worker.py src/das/manager.py src/ui/main_window.py`。
+2. `git diff --check` 通过，仅显示工作区既有 LF/CRLF 转换提示。
+3. 导出数据数值验证：原始范围 `-13.0097 ~ 12.7132`，去基线后 `-0.6036 ~ 0.7588`，1%/99% `-0.1889 ~ 0.1914`，自动色阶 `-0.2974 ~ 0.2974`，超出比例约 0.5%，符合预期。
+4. worker 路径验证：`ACTUAL_WORKER_OK shape=(51, 1820) owns=True min=-0.3300 max=0.3874 p99.5(abs)=0.1882`，连续帧 `np.shares_memory` 均为 `False`。
+5. 已执行 UTF-8 中文自检，本次修改文件未发现问号乱码。
