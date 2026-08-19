@@ -431,7 +431,7 @@ class MainWindow(QMainWindow):
         self.view_curve_max_points_spin.setValue(self._tab3_curve_max_points)
         layout.addWidget(self.view_curve_max_points_spin, 1, 3)
         plot_control_layout = QGridLayout()
-        for column in range(3):
+        for column in range(4):
             plot_control_layout.setColumnStretch(column, 1)
         self.time_plot_btn = QPushButton("时域 ON")
         self.time_plot_btn.setCheckable(True)
@@ -442,11 +442,16 @@ class MainWindow(QMainWindow):
         self.psd_plot_btn.setChecked(True)
         plot_control_layout.addWidget(self.psd_plot_btn, 0, 1)
 
+        self.space_time_plot_btn = QPushButton("时空 ON")
+        self.space_time_plot_btn.setCheckable(True)
+        self.space_time_plot_btn.setChecked(True)
+        plot_control_layout.addWidget(self.space_time_plot_btn, 0, 2)
+
         self.tab3_plot_toggle_btn = QPushButton("刷新 ON")
         self.tab3_plot_toggle_btn.setCheckable(True)
         self.tab3_plot_toggle_btn.setChecked(True)
-        plot_control_layout.addWidget(self.tab3_plot_toggle_btn, 0, 2)
-        for button in (self.time_plot_btn, self.psd_plot_btn, self.tab3_plot_toggle_btn):
+        plot_control_layout.addWidget(self.tab3_plot_toggle_btn, 0, 3)
+        for button in (self.time_plot_btn, self.psd_plot_btn, self.space_time_plot_btn, self.tab3_plot_toggle_btn):
             self._style_toggle_button(button, True, min_width=96)
         layout.addLayout(plot_control_layout, 2, 0, 1, 4)
         return group
@@ -652,9 +657,9 @@ class MainWindow(QMainWindow):
         self.psd_plot = self.view_psd1_plot
         self.view_psd_plot = self.view_psd1_plot
 
-        tab3_space_time_panel = QWidget()
-        tab3_space_time_panel.setMinimumHeight(280)
-        tab3_space_time_layout = QHBoxLayout(tab3_space_time_panel)
+        self.tab3_space_time_panel = QWidget()
+        self.tab3_space_time_panel.setMinimumHeight(280)
+        tab3_space_time_layout = QHBoxLayout(self.tab3_space_time_panel)
         tab3_space_time_layout.setContentsMargins(0, 0, 0, 0)
         tab3_space_time_layout.setSpacing(6)
         self.tab3_space_time_plot = pg.PlotWidget(title="DAS Space-Time")
@@ -669,7 +674,7 @@ class MainWindow(QMainWindow):
         self.tab3_space_time_histogram.setMaximumWidth(120)
         self.tab3_space_time_histogram.setImageItem(self.tab3_space_time_image)
         tab3_space_time_layout.addWidget(self.tab3_space_time_histogram, 0)
-        view_splitter.addWidget(tab3_space_time_panel)
+        view_splitter.addWidget(self.tab3_space_time_panel)
         view_splitter.setStretchFactor(0, 1)
         view_splitter.setStretchFactor(1, 1)
         view_splitter.setSizes([1, 1])
@@ -768,6 +773,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("监听地址"), 0, 0)
         self.ip_edit = QLineEdit("0.0.0.0")
         self.ip_edit.setPlaceholderText("0.0.0.0 或本机网卡IP")
+        self.ip_edit.setFixedWidth(160)
         self.ip_edit.setToolTip("本软件作为服务端时绑定本机地址；推荐 0.0.0.0 监听所有网卡。客户端应连接本机实际IP。")
         layout.addWidget(self.ip_edit, 0, 1)
 
@@ -823,6 +829,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("监听地址"), 0, 0)
         self.tab3_ip_edit = QLineEdit("0.0.0.0")
         self.tab3_ip_edit.setPlaceholderText("0.0.0.0 或本机网卡IP")
+        self.tab3_ip_edit.setFixedWidth(160)
         self.tab3_ip_edit.setToolTip("本软件作为服务端时绑定本机地址；推荐 0.0.0.0 监听所有网卡。eDAS客户端应连接本机实际IP。")
         layout.addWidget(self.tab3_ip_edit, 0, 1)
         layout.addWidget(QLabel("端口"), 0, 2)
@@ -885,9 +892,9 @@ class MainWindow(QMainWindow):
     def _create_data_comm_status_group(self) -> QGroupBox:
         group = QGroupBox("通信统计")
         layout = QGridLayout(group)
-        for column in range(6):
+        for column in range(7):
             layout.setColumnStretch(column, 1 if column else 0)
-        headers = ["模块", "状态", "接收包", "缺包/失败", "丢包率", "最近Comm"]
+        headers = ["模块", "状态", "接收包", "缺包/失败", "丢包率", "速率(MB/s)", "最近Comm"]
         for column, header in enumerate(headers):
             label = QLabel(header)
             label.setStyleSheet("font-weight: bold;")
@@ -898,23 +905,27 @@ class MainWindow(QMainWindow):
         self.data_fip_success_label = QLabel("0")
         self.data_fip_failure_label = QLabel("0")
         self.data_fip_loss_rate_label = QLabel("0.00%")
+        self.data_fip_rate_label = QLabel("-")
         self.data_fip_last_comm_label = QLabel("-")
         layout.addWidget(self.data_fip_status_label, 1, 1)
         layout.addWidget(self.data_fip_success_label, 1, 2)
         layout.addWidget(self.data_fip_failure_label, 1, 3)
         layout.addWidget(self.data_fip_loss_rate_label, 1, 4)
-        layout.addWidget(self.data_fip_last_comm_label, 1, 5)
+        layout.addWidget(self.data_fip_rate_label, 1, 5)
+        layout.addWidget(self.data_fip_last_comm_label, 1, 6)
         layout.addWidget(QLabel("eDAS"), 2, 0)
         self.data_edas_status_label = QLabel("未连接")
         self.data_edas_status_label.setStyleSheet("color: #9aa0a6; font-weight: bold;")
         self.data_edas_success_label = QLabel("0")
         self.data_edas_failure_label = QLabel("0")
         self.data_edas_loss_rate_label = QLabel("0.00%")
+        self.data_edas_rate_label = QLabel("-")
         layout.addWidget(self.data_edas_status_label, 2, 1)
         layout.addWidget(self.data_edas_success_label, 2, 2)
         layout.addWidget(self.data_edas_failure_label, 2, 3)
         layout.addWidget(self.data_edas_loss_rate_label, 2, 4)
-        layout.addWidget(self.tab3_last_comm_label, 2, 5)
+        layout.addWidget(self.data_edas_rate_label, 2, 5)
+        layout.addWidget(self.tab3_last_comm_label, 2, 6)
         return group
 
     def _create_data_sync_group(self) -> QGroupBox:
@@ -1015,20 +1026,27 @@ class MainWindow(QMainWindow):
         self.storage_downsample_spin.setRange(1, 100)
         self.storage_downsample_spin.setValue(1)
         layout.addWidget(self.storage_downsample_spin, 5, 5)
-        layout.addWidget(QLabel("FIP成功/失败"), 6, 0)
+        layout.addWidget(QLabel("预计文件"), 6, 0)
+        self.data_fip_size_label = QLabel("FIP: -")
+        layout.addWidget(self.data_fip_size_label, 6, 1, 1, 2)
+        self.data_edas_size_label = QLabel("eDAS: -")
+        layout.addWidget(self.data_edas_size_label, 6, 3, 1, 2)
+        self.data_joint_size_label = QLabel("联合: -")
+        layout.addWidget(self.data_joint_size_label, 6, 5)
+        layout.addWidget(QLabel("FIP成功/失败"), 7, 0)
         self.data_fip_storage_count_label = QLabel("0 / 0")
-        layout.addWidget(self.data_fip_storage_count_label, 6, 1, 1, 2)
-        layout.addWidget(QLabel("eDAS成功/失败"), 6, 3)
+        layout.addWidget(self.data_fip_storage_count_label, 7, 1, 1, 2)
+        layout.addWidget(QLabel("eDAS成功/失败"), 7, 3)
         self.data_edas_storage_count_label = QLabel("0 / 0")
-        layout.addWidget(self.data_edas_storage_count_label, 6, 4, 1, 2)
-        layout.addWidget(QLabel("联合Last"), 7, 0)
+        layout.addWidget(self.data_edas_storage_count_label, 7, 4, 1, 2)
+        layout.addWidget(QLabel("联合Last"), 8, 0)
         self.tab3_last_storage_label = QLabel("-")
         self.tab3_last_storage_label.setWordWrap(False)
-        layout.addWidget(self.tab3_last_storage_label, 7, 1, 1, 5)
-        layout.addWidget(QLabel("eDAS Last"), 8, 0)
+        layout.addWidget(self.tab3_last_storage_label, 8, 1, 1, 5)
+        layout.addWidget(QLabel("eDAS Last"), 9, 0)
         self.tab3_edas_last_storage_label = QLabel("-")
         self.tab3_edas_last_storage_label.setWordWrap(False)
-        layout.addWidget(self.tab3_edas_last_storage_label, 8, 1, 1, 5)
+        layout.addWidget(self.tab3_edas_last_storage_label, 9, 1, 1, 5)
         return group
 
     def _create_config_group(self) -> QGroupBox:
@@ -1753,6 +1771,7 @@ class MainWindow(QMainWindow):
             "param_panel_width": self._current_param_panel_width(),
             "time_plot_enabled": self.time_plot_btn.isChecked(),
             "psd_plot_enabled": self.psd_plot_btn.isChecked(),
+            "space_time_plot_enabled": self.space_time_plot_btn.isChecked(),
             "view_update_enabled": self.tab3_plot_toggle_btn.isChecked(),
             "time_display_seconds": self.time_display_duration_spin.value(),
             "fip_refresh_seconds": self.view_fip_refresh_spin.value(),
@@ -1965,6 +1984,7 @@ class MainWindow(QMainWindow):
             self._apply_param_panel_width(view.get("param_panel_width"))
         self._set_checked(getattr(self, "time_plot_btn", None), view.get("time_plot_enabled"))
         self._set_checked(getattr(self, "psd_plot_btn", None), view.get("psd_plot_enabled"))
+        self._set_checked(getattr(self, "space_time_plot_btn", None), view.get("space_time_plot_enabled"))
         self._set_checked(getattr(self, "tab3_plot_toggle_btn", None), view.get("view_update_enabled", tab3_plot.get("plot_enabled")))
         self._set_spin_value(getattr(self, "time_display_duration_spin", None), view.get("time_display_seconds"))
         self._set_spin_value(getattr(self, "view_fip_refresh_spin", None), view.get("fip_refresh_seconds"))
@@ -2122,9 +2142,11 @@ class MainWindow(QMainWindow):
         self._update_time_display_settings()
         self._toggle_time_plot(self.time_plot_btn.isChecked())
         self._toggle_psd_plot(self.psd_plot_btn.isChecked())
+        self._toggle_space_time_plot(self.space_time_plot_btn.isChecked())
         self._update_tab3_plot_button_state(self.tab3_plot_toggle_btn.isChecked())
         self._update_data_comm_buttons()
         self._update_data_storage_buttons()
+        self._update_storage_size_estimates()
         self._update_tab2_enable_button_state(False)
         self._apply_tab3_space_time_colormap()
         self._on_tab3_auto_levels_changed(self.tab3_auto_levels_check.isChecked(), emit=False)
@@ -2146,7 +2168,7 @@ class MainWindow(QMainWindow):
             self.fip_sample_rate_mhz_spin, self.fip_sensor_count_combo, self.fip_plot_sensor_combo,
             self.fip_filter_enable_check, self.fip_filter_range_edit,
             self.filter_order_spin, self.downsample_spin, self.fip_phase_unwrap_check,
-            self.time_plot_btn, self.psd_plot_btn, self.tab3_plot_toggle_btn,
+            self.time_plot_btn, self.psd_plot_btn, self.space_time_plot_btn, self.tab3_plot_toggle_btn,
             self.time_display_duration_spin, self.view_fip_refresh_spin,
             self.view_edas_refresh_spin, self.view_curve_max_points_spin,
             self.view_psd1_check, self.view_psd2_check,
@@ -2193,6 +2215,19 @@ class MainWindow(QMainWindow):
                 widget.toggled.connect(lambda *_args: self._schedule_auto_save())
             elif hasattr(widget, "textChanged"):
                 widget.textChanged.connect(lambda *_args: self._schedule_auto_save())
+        for widget in (
+            getattr(self, 'fip_sample_rate_mhz_spin', None),
+            getattr(self, 'storage_interval_spin', None),
+            getattr(self, 'storage_downsample_spin', None),
+            getattr(self, 'tab3_edas_blocks_per_file_spin', None),
+            getattr(self, 'tab3_storage_interval_spin', None),
+        ):
+            if widget is not None and hasattr(widget, 'valueChanged'):
+                widget.valueChanged.connect(lambda *_args: self._update_storage_size_estimates())
+        if getattr(self, 'fip_sensor_count_combo', None) is not None:
+            self.fip_sensor_count_combo.currentIndexChanged.connect(
+                lambda *_args: self._update_storage_size_estimates()
+            )
 
     def closeEvent(self, event):
         """Flush the latest GUI parameters before the window closes."""
@@ -2232,6 +2267,8 @@ class MainWindow(QMainWindow):
             self.data_fip_success_label.setText(str(packets_received))
             self.data_fip_failure_label.setText(str(self._fip_comm_failure_count))
             self.data_fip_loss_rate_label.setText(f"{loss_rate:.2f}%")
+            data_rate_mbps = float(stats.get('data_rate_mbps', 0.0) or 0.0)
+            self.data_fip_rate_label.setText(f"{data_rate_mbps:.1f}" if data_rate_mbps > 0 else "-")
             try:
                 last_comm = int(stats.get('last_comm_count', -1))
             except (TypeError, ValueError):
@@ -2413,13 +2450,63 @@ class MainWindow(QMainWindow):
 
     def update_tab3_header_status(self, payload: Dict[str, Any]):
         """Update Tab3 header labels."""
-        self.tab3_channel_count_label.setText(str(payload.get("channel_count", "-")))
+        channel_count = payload.get("channel_count", "-")
+        data_bytes = payload.get("data_bytes", "-")
+        self.tab3_channel_count_label.setText(str(channel_count))
         sample_rate_hz = payload.get("sample_rate_hz", "-")
         self.tab3_sample_rate_label.setText(f"{sample_rate_hz} Hz")
-        self.tab3_data_bytes_label.setText(str(payload.get("data_bytes", "-")))
+        self.tab3_data_bytes_label.setText(str(data_bytes))
         duration = payload.get("packet_duration_seconds", "-")
         self.tab3_packet_duration_label.setText(f"{duration} s")
         self.tab3_last_comm_label.setText(str(payload.get("comm_count", "-")))
+        try:
+            self._edas_channel_count = int(channel_count)
+            self._edas_samples_per_channel = int(data_bytes) // 4 // max(1, int(channel_count))
+        except (TypeError, ValueError):
+            self._edas_channel_count = None
+            self._edas_samples_per_channel = None
+        self._update_storage_size_estimates()
+
+    def _update_storage_size_estimates(self) -> None:
+        """Refresh estimated per-file sizes for the three storage paths."""
+        fip_bytes = None
+        try:
+            sensor_count = int(self.fip_sensor_count_combo.currentData())
+            sample_rate = float(self.fip_sample_rate_mhz_spin.value()) * 1_000_000.0
+            interval = float(self.storage_interval_spin.value())
+            downsample = max(1, int(self.storage_downsample_spin.value()))
+            fip_bytes = sample_rate / downsample * interval * sensor_count * 8
+        except Exception:
+            fip_bytes = None
+
+        channel_count = getattr(self, '_edas_channel_count', None)
+        samples_per_channel = getattr(self, '_edas_samples_per_channel', None)
+        edas_bytes = None
+        if channel_count and samples_per_channel:
+            blocks_per_file = int(self.tab3_edas_blocks_per_file_spin.value())
+            edas_bytes = channel_count * samples_per_channel * blocks_per_file * 8
+
+        joint_bytes = None
+        try:
+            joint_interval = float(self.tab3_storage_interval_spin.value())
+            fip_per_sec = (sample_rate / downsample * sensor_count * 8) if fip_bytes else 0.0
+            edas_per_sec = (channel_count * samples_per_channel * 8) if (channel_count and samples_per_channel) else 0.0
+            joint_bytes = (fip_per_sec + edas_per_sec) * joint_interval
+        except Exception:
+            joint_bytes = None
+
+        if hasattr(self, 'data_fip_size_label'):
+            self.data_fip_size_label.setText(f"FIP: {self._format_file_size_mb(fip_bytes)}")
+        if hasattr(self, 'data_edas_size_label'):
+            self.data_edas_size_label.setText(f"eDAS: {self._format_file_size_mb(edas_bytes)}")
+        if hasattr(self, 'data_joint_size_label'):
+            self.data_joint_size_label.setText(f"联合: {self._format_file_size_mb(joint_bytes)}")
+
+    @staticmethod
+    def _format_file_size_mb(num_bytes) -> str:
+        if num_bytes is None or num_bytes <= 0:
+            return "-"
+        return f"~{num_bytes / (1024 * 1024):.1f} MB"
 
 
     def update_tab3_packet_statistics(self, stats: Dict[str, Any]):
@@ -2435,6 +2522,8 @@ class MainWindow(QMainWindow):
             self.data_edas_success_label.setText(str(packets_received))
             self.data_edas_failure_label.setText(str(self._edas_comm_failure_count))
             self.data_edas_loss_rate_label.setText(f"{loss_rate:.2f}%")
+            data_rate_mbps = float(stats.get('data_rate_mbps', 0.0) or 0.0)
+            self.data_edas_rate_label.setText(f"{data_rate_mbps:.1f}" if data_rate_mbps > 0 else "-")
         self._refresh_comm_lights()
 
     def update_tab3_alignment_status(self, payload: Dict[str, Any]):
@@ -2615,6 +2704,9 @@ class MainWindow(QMainWindow):
         das_values2 = payload.get("curve2_das_values", payload.get("das_curve_values", []))
         self._render_tab3_curve(self.tab3_curve1_das_curve, self.tab3_curve1_combo.currentText(), das_times1, das_values1, "DAS Channel")
         self._render_tab3_curve(self.tab3_curve2_das_curve, self.tab3_curve2_combo.currentText(), das_times2, das_values2, "DAS Channel")
+
+        if not self.space_time_plot_btn.isChecked():
+            return
 
         matrix = payload.get("space_time_matrix")
         x_axis = payload.get("space_time_x")
@@ -3202,6 +3294,16 @@ class MainWindow(QMainWindow):
         self.psd_plot_btn.setText("PSD ON" if enabled else "PSD OFF")
         self._style_toggle_button(self.psd_plot_btn, enabled, min_width=96)
         self._update_view_psd_curves(force=True)
+
+
+    def _toggle_space_time_plot(self, enabled: bool):
+        # Toggle visibility of the View Space-Time pane and skip image updates when hidden.
+        if hasattr(self, 'tab3_space_time_panel'):
+            self.tab3_space_time_panel.setVisible(enabled)
+        if not enabled:
+            self._reset_tab3_space_time_image()
+        self.space_time_plot_btn.setText("时空 ON" if enabled else "时空 OFF")
+        self._style_toggle_button(self.space_time_plot_btn, enabled, min_width=96)
 
 
     def _update_psd_settings(self):
@@ -3873,6 +3975,8 @@ class MainWindow(QMainWindow):
                 self.time_plot_btn.toggled.connect(self._toggle_time_plot)
             if hasattr(self, 'psd_plot_btn'):
                 self.psd_plot_btn.toggled.connect(self._toggle_psd_plot)
+            if hasattr(self, 'space_time_plot_btn'):
+                self.space_time_plot_btn.toggled.connect(self._toggle_space_time_plot)
 
             # PSD参数变化信号连接
             if hasattr(self, 'psd_window_length_spin'):

@@ -62,6 +62,7 @@ class DASPlotWorker(QThread):
         self._space_time_buffer: Optional[np.ndarray] = None
         self._space_time_valid_cols = 0
         self._space_time_signature: Optional[Tuple[int, ...]] = None
+        self._sos_cache: Dict[tuple, object] = {}
         self._process_times_ms: list[float] = []
         self._last_stats_time = time.monotonic()
         self._stats_packets_at_last_log = 0
@@ -505,24 +506,37 @@ class DASPlotWorker(QThread):
         filter_type = str(filter_settings.get("filter_type", "bandpass")).lower()
         if filter_type in ("none", ""):
             return data
+        try:
+            sos = self._design_sos(filter_settings, sample_rate_hz)
+            return sosfiltfilt(sos, data)
+        except ValueError:
+            return data
+
+    def _design_sos(self, filter_settings: Dict[str, object], sample_rate_hz: float):
+        """Design (and cache) the SOS filter so it is not rebuilt every packet."""
+        filter_type = str(filter_settings.get("filter_type", "bandpass")).lower()
         low_hz = float(filter_settings.get("low_hz", 1.0))
         high_hz = float(filter_settings.get("high_hz", sample_rate_hz * 0.45))
         nyquist = sample_rate_hz * 0.5
         order = max(1, min(10, int(filter_settings.get("filter_order", 4))))
-        try:
-            if filter_type == "highpass":
-                cutoff = max(0.1, min(low_hz, nyquist * 0.95))
-                sos = butter(order, cutoff, btype="highpass", fs=sample_rate_hz, output="sos")
-            elif filter_type == "lowpass":
-                cutoff = max(0.1, min(high_hz, nyquist * 0.98))
-                sos = butter(order, cutoff, btype="lowpass", fs=sample_rate_hz, output="sos")
-            else:
-                low_hz = max(0.1, min(low_hz, nyquist * 0.95))
-                high_hz = max(low_hz + 0.1, min(high_hz, nyquist * 0.98))
-                sos = butter(order, [low_hz, high_hz], btype="bandpass", fs=sample_rate_hz, output="sos")
-            return sosfiltfilt(sos, data)
-        except ValueError:
-            return data
+        key = (filter_type, order, round(low_hz, 6), round(high_hz, 6), round(sample_rate_hz, 6))
+        sos = self._sos_cache.get(key)
+        if sos is not None:
+            return sos
+        if filter_type == "highpass":
+            cutoff = max(0.1, min(low_hz, nyquist * 0.95))
+            sos = butter(order, cutoff, btype="highpass", fs=sample_rate_hz, output="sos")
+        elif filter_type == "lowpass":
+            cutoff = max(0.1, min(high_hz, nyquist * 0.98))
+            sos = butter(order, cutoff, btype="lowpass", fs=sample_rate_hz, output="sos")
+        else:
+            low_hz = max(0.1, min(low_hz, nyquist * 0.95))
+            high_hz = max(low_hz + 0.1, min(high_hz, nyquist * 0.98))
+            sos = butter(order, [low_hz, high_hz], btype="bandpass", fs=sample_rate_hz, output="sos")
+        if len(self._sos_cache) > 64:
+            self._sos_cache.clear()
+        self._sos_cache[key] = sos
+        return sos
 
     def _log_performance_stats(self) -> None:
         processed = self.stats["packets_processed"]

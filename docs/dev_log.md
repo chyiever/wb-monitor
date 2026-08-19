@@ -907,3 +907,35 @@ View 页 DAS Space-Time 图长期以深蓝或深红为主，手动 V 范围从 `
 2. 端到端管道自检通过：`python -X utf8 src\tools\validate_tab3_pipeline.py` 输出 `VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800)`。
 3. 发送端 `pcie7821_gui` 单测通过：`python -X utf8 -m unittest discover -s tests` 输出 `Ran 8 tests ... OK`。
 4. 小端 round-trip 自检：int32 载荷解码值与发送矩阵逐值一致，`data_bytes=32` 减半保持。
+
+## 2026-08-20 01:55:24 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- GitHub 分支：`dev`
+- 更新范围：`src/ui/main_window.py`、`src/das/plot_worker.py`、`docs/dev_log.md`
+- 关联仓库：`https://github.com/chyiever/pcie7821_gui.git`（发送端 `src/config.py`、`src/main_window.py`、`src/time_space_plot.py`）
+
+### 更新摘要
+
+1. View 页绘图控制按钮补全（`src/ui/main_window.py`）
+   - 「刷新参数」区新增 `时空 ON/OFF` 按钮，与时域/PSD/刷新三个按钮并列、样式统一。
+   - 新增 `_toggle_space_time_plot()`：切换 Space-Time 面板显隐并清空图像；`update_tab3_plot_payload()` 在时空关闭时跳过矩阵更新，节省 CPU。
+   - 新增 `space_time_plot_enabled` 配置持久化（保存/恢复/自动保存）。
+2. Data 页「通信统计」新增速率列（`src/ui/main_window.py`）
+   - 表头增加「速率(MB/s)」，FIP/eDAS 各显示 `data_rate_mbps`（来自各自 TCP 统计，`stats['data_rate_mbps']`）。
+3. 监听地址输入框宽度统一（`src/ui/main_window.py`）
+   - FIP/eDAS 两处「监听地址」输入框均 `setFixedWidth(160)`，避免因两组网格列数不同导致的宽度不一致。
+4. 存储区新增预计文件大小（`src/ui/main_window.py`）
+   - 新增 `预计文件` 行：FIP 文件按 `采样率/降采样 × 间隔 × 传感器数 × 8` 估算；eDAS 文件按 `通道 × 每通道样本 × 块/文件 × 8` 估算（依赖首个 eDAS 包头）；联合文件按间隔内 FIP+eDAS 未压缩字节估算。
+   - `update_tab3_header_status()` 记录 `_edas_channel_count`/`_edas_samples_per_channel` 并触发估算刷新；相关参数变化与恢复时也刷新。
+5. DAS 曲线滤波优化（`src/das/plot_worker.py`）
+   - 原 `_maybe_filter()` 每个包、每条曲线都重新 `scipy.signal.butter` 设计 SOS，改为 `_design_sos()` 按 `(类型, 阶数, 低/高截止, 采样率)` 缓存（上限 64 条），仅参数变化时重新设计。
+
+### 分析结论（滤波即时性/耗时）
+
+1. 滤波参数即时生效：FIP 滤波开关/阶数通过 `filter_settings_changed → _update_filter_parameters → design_filter` 立即生效（下一包起）；FIP 滤波范围文本仅在 `editingFinished`/`returnPressed` 后生效（非逐键）。DAS 滤波（开关/阶数/范围）通过 `tab3_settings_changed → sync_from_ui → plot_worker.update_settings` 即时生效。
+2. DAS 滤波耗时：`sosfiltfilt`（零相位）对整段显示历史逐包逐曲线重复滤波，且每包都重设计滤波器；本次缓存 SOS 消除重复设计开销。若仍需进一步降开销，可改用带状态 `zi` 的单向 `sosfilt` 只滤新增样本（代价是引入因果相位偏移）。
+
+### 验证
+
+1. 编译检查通过：`python -X utf8 -m py_compile src\ui\main_window.py src\das\plot_worker.py`。
