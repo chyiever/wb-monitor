@@ -531,7 +531,7 @@ FIPeDAS-YYYYMMDD-HHMMSS.mmm.npz
 
 ### 9.4 文件字段
 
-当前格式版本：`wb-monitor-joint-v5`。
+当前格式版本：`wb-monitor-joint-v6`。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -542,22 +542,20 @@ FIPeDAS-YYYYMMDD-HHMMSS.mmm.npz
 | `das_present` | `bool[]` | 对应帧是否有 eDAS 数据 |
 | `fip_sensor_count` | `int32[]` | 每帧 FIP 传感器数量 |
 | `fip_selected_sensor` | `int32[]` | 每帧 Tab1 选中的 FIP 编号 |
-| `fip1_raw_200khz` | object array | FIP1 原始解码数据，未滤波、未相位展开；字段名保留历史 `200khz`，真实采样率看 `fip_sample_rate_hz` |
-| `fip2_raw_200khz` | object array | FIP2 原始解码数据；单 FIP 或缺失时为空数组 |
-| `fip1_display_data` | object array | 与 `fip1_raw_200khz` 相同的原始数据副本，用于兼容旧读取代码 |
-| `fip2_display_data` | object array | 与 `fip2_raw_200khz` 相同的原始数据副本，用于兼容旧读取代码 |
+| `fip1_raw_data` | object array | FIP1 原始解码数据，未滤波、未相位展开；真实采样率看 `fip_sample_rate_hz` |
+| `fip2_raw_data` | object array | FIP2 原始解码数据；单 FIP 或缺失时为空数组 |
 | `das_raw_matrix` | object array | eDAS 矩阵，通常为 `channel_count x samples_per_channel` |
 | `fip_sample_rate_hz` | `float64[]` | FIP 每帧采样率 |
 | `das_sample_rate_hz` | `float64[]` | eDAS 每帧采样率 |
 | `das_channel_count` | `int32[]` | eDAS 每帧通道数 |
 | `incremental` | bool | `True` 表示增量 chunk |
-| `format_version` | string | 当前为 `wb-monitor-joint-v5` |
+| `format_version` | string | 当前为 `wb-monitor-joint-v6` |
 | `created_at` | string | ISO 毫秒格式创建时间 |
 
 注意：
 
-- `fip1_raw_200khz` / `fip2_raw_200khz` 的字段名是历史兼容命名，不代表固定 200 kHz；当前 joint 存储写入的是 raw FIP 包拆分后的原始数组。
-- joint v5 不再写入旧版冗余字段 `fip_raw_200khz`、`fip_display_data`、`fip_raw_data`、`fip1_raw_data`、`fip2_raw_data`。
+- joint v6 只写每路 FIP 原始数据字段，不再写兼容旧格式的冗余 FIP 字段。
+- `fip1_raw_data` / `fip2_raw_data` 只表达“FIP 原始数据”，不在字段名中编码采样率；真实采样率统一读取 `fip_sample_rate_hz`。
 - eDAS 满速大矩阵长期保存建议优先使用 eDAS 独立 `.bin + .json`；joint `.npz` 适合对齐分析窗口或降采样后的短窗口。
 
 ### 9.5 读取示例
@@ -568,8 +566,8 @@ import numpy as np
 data = np.load("FIPeDAS-20260916-120000.000.npz", allow_pickle=True)
 
 comm_counts = data["comm_counts"]
-fip1_frames = list(data["fip1_raw_200khz"])
-fip2_frames = list(data["fip2_raw_200khz"])
+fip1_frames = list(data["fip1_raw_data"])
+fip2_frames = list(data["fip2_raw_data"])
 das_frames = list(data["das_raw_matrix"])
 
 fip_rates = data["fip_sample_rate_hz"]
@@ -690,7 +688,7 @@ das_rates = data["das_sample_rate_hz"]
 - 若 joint 状态提示单请求过大，应缩短 `联合间隔(s)`、降低 eDAS 发送端采样/通道规模，或改用 eDAS 独立 `.bin`。
 - 若出现存储队列满日志，说明磁盘或压缩吞吐低于输入速率，应降低数据率或换更快磁盘。
 - 读取 FIP 独立 `.npz` 时只依赖 `phase_data`；不要假设存在 `fip1_phase_data` / `fip2_phase_data`。
-- 读取 joint `.npz` 时以 `format_version` 和 `fip_sample_rate_hz` 为准；不要按 `fip1_raw_200khz` 字段名推断固定采样率。
+- 读取 joint `.npz` 时以 `format_version` 和 `fip_sample_rate_hz` 为准；字段名不再携带采样率。
 
 ## 13. 代码位置
 
