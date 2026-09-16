@@ -526,7 +526,10 @@ class PCCPMonitorApp:
                 sample_rate_hz=sample_rate_hz,
             )
 
-            # 仅将数据包发送到后台处理线程，主线程立即返回
+            # 原始包先进入 joint 对齐/存储链路，再进入后台处理线程；主线程立即返回
+            if self.edas_manager:
+                self.edas_manager.process_fip_raw_packet(raw_packet)
+
             success = self.tab1_manager.process_raw_packet(raw_packet)
 
             if not success and packet.comm_count % 100 == 0:

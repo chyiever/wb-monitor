@@ -149,15 +149,16 @@ FIP 管线分为“处理显示链路”和“独立存储链路”：
 
 | 链路 | 输入 | 输出/用途 |
 |---|---|---|
-| 处理显示链路 | TCP 解析后的 `RawDataPacket.phase_data` | `ProcessedData`，用于 Tab1/View 绘图、PSD、Tab2 和 Data 页联合对齐 |
-| 独立存储链路 | 同一个 `RawDataPacket` | Tab1 FIP `.npz`，不依赖绘图刷新 |
+| 处理显示链路 | TCP 解析后的 `RawDataPacket.phase_data` | `ProcessedData`，用于 Tab1/View 绘图、PSD 和 Tab2 分析显示 |
+| 原始存储/对齐链路 | 同一个 `RawDataPacket` | FIP 独立 `.npz` 与 Data 页 joint `.npz` 的 FIP 部分，保持未滤波、未相位展开的原始解码数据 |
 
-FIP 的 `unwrap` 复选框控制处理和存储是否执行相位展开：
+FIP 的 `unwrap` 复选框只控制处理显示链路：
 
-- `unwrap=OFF`：`unwrapped_data` 实际为原始解码后的相位数值；存储 `data_info.type=phase_raw_downsampled`。
-- `unwrap=ON`：每个传感器独立调用相位展开；存储 `data_info.type=phase_unwrapped_downsampled`。
+- `unwrap=OFF`：处理显示链路使用原始解码后的相位数值。
+- `unwrap=ON`：每个传感器独立调用相位展开，仅影响 View/PSD/Tab2 分析显示，不影响任何存储文件。
+- FIP 独立 `.npz` 与 Data 页 joint `.npz` 的 FIP 字段始终来自 `RawDataPacket.phase_data` 拆分后的原始 `float64` 数组；默认 `FIP降采样=1`，即不抽取。
 
-无论 `unwrap` 状态如何，代码会修复明显异常的极端值或非有限值，并记录诊断日志。
+无论 `unwrap` 状态如何，处理链路会修复明显异常的极端值或非有限值，并记录诊断日志；存储链路只做传感器拆分和必要的数值类型转换。
 
 ## 4. eDAS 通信协议
 
@@ -301,8 +302,8 @@ D:/PCCP/FIPeDASDATA    -> FIP+eDAS joint .npz
 ```text
 RawDataPacket.phase_data
   -> 按 FIP数量 拆分传感器
-  -> 可选相位展开
-  -> 按 FIP降采样 抽取
+  -> 转为 float64 原始相位数组
+  -> 按 FIP降采样 抽取（默认 1，不抽取）
   -> 累积到目标存储间隔
   -> np.savez_compressed(...)
 ```
@@ -314,7 +315,7 @@ RawDataPacket.phase_data
 - 输入队列容量为 `120` 个原始 FIP 包。
 - 队列满时丢弃新入队包并计数，不阻塞 UI。
 - 停止监测时进入 drain 模式，尽量排空已入队请求。
-- 修改 `FIP降采样`、采样率、包时长、传感器数量或 unwrap 状态时，会刷新当前 chunk，避免不同参数混在一个文件中。
+- 修改 `FIP降采样`、采样率、包时长或传感器数量时，会刷新当前 chunk，避免不同参数混在一个文件中；`unwrap` 不再影响存储 chunk。
 
 ### 7.2 文件命名
 
@@ -345,14 +346,14 @@ RawDataPacket.phase_data
 | `packet_duration_seconds` | scalar | 单个 FIP TCP 包时长 |
 | `fip_sensor_count` | `int32` | 文件内传感器数量 |
 | `data_info` | dict-like object | 元数据 |
-| `phase_unwrap_enabled` | bool | 写入本文件时是否启用相位展开 |
+| `phase_unwrap_enabled` | bool | 固定为 `False`；存储文件不执行相位展开 |
 | `format_version` | string | 当前为 `wb-monitor-tab1-fip-v3` |
 
 `data_info` 关键字段：
 
 | 字段 | 说明 |
 |---|---|
-| `type` | `phase_raw_downsampled` 或 `phase_unwrapped_downsampled` |
+| `type` | 固定为 `phase_raw_downsampled` |
 | `length` / `samples_per_sensor` | 每路传感器样本数 |
 | `total_values` | 文件内总数值个数 |
 | `sensor_count` | FIP 传感器数量 |
@@ -541,10 +542,10 @@ FIPeDAS-YYYYMMDD-HHMMSS.mmm.npz
 | `das_present` | `bool[]` | 对应帧是否有 eDAS 数据 |
 | `fip_sensor_count` | `int32[]` | 每帧 FIP 传感器数量 |
 | `fip_selected_sensor` | `int32[]` | 每帧 Tab1 选中的 FIP 编号 |
-| `fip1_raw_200khz` | object array | FIP1 数据；字段名保留历史 `200khz`，真实采样率看 `fip_sample_rate_hz` |
-| `fip2_raw_200khz` | object array | FIP2 数据；单 FIP 或缺失时为空数组 |
-| `fip1_display_data` | object array | FIP1 显示链路数据 |
-| `fip2_display_data` | object array | FIP2 显示链路数据 |
+| `fip1_raw_200khz` | object array | FIP1 原始解码数据，未滤波、未相位展开；字段名保留历史 `200khz`，真实采样率看 `fip_sample_rate_hz` |
+| `fip2_raw_200khz` | object array | FIP2 原始解码数据；单 FIP 或缺失时为空数组 |
+| `fip1_display_data` | object array | 与 `fip1_raw_200khz` 相同的原始数据副本，用于兼容旧读取代码 |
+| `fip2_display_data` | object array | 与 `fip2_raw_200khz` 相同的原始数据副本，用于兼容旧读取代码 |
 | `das_raw_matrix` | object array | eDAS 矩阵，通常为 `channel_count x samples_per_channel` |
 | `fip_sample_rate_hz` | `float64[]` | FIP 每帧采样率 |
 | `das_sample_rate_hz` | `float64[]` | eDAS 每帧采样率 |
@@ -555,7 +556,7 @@ FIPeDAS-YYYYMMDD-HHMMSS.mmm.npz
 
 注意：
 
-- `fip1_raw_200khz` / `fip2_raw_200khz` 的字段名是历史兼容命名，不代表固定 200 kHz。
+- `fip1_raw_200khz` / `fip2_raw_200khz` 的字段名是历史兼容命名，不代表固定 200 kHz；当前 joint 存储写入的是 raw FIP 包拆分后的原始数组。
 - joint v5 不再写入旧版冗余字段 `fip_raw_200khz`、`fip_display_data`、`fip_raw_data`、`fip1_raw_data`、`fip2_raw_data`。
 - eDAS 满速大矩阵长期保存建议优先使用 eDAS 独立 `.bin + .json`；joint `.npz` 适合对齐分析窗口或降采样后的短窗口。
 
@@ -622,7 +623,7 @@ das_rates = data["das_sample_rate_hz"]
 | `采样率(MHz)` | 默认 `1.000` | 单路 FIP 原始采样率 |
 | `FIP数量` | `1个` / `2个` | 决定 FIP 包体拆分方式 |
 | `绘图FIP` | `FIP1` / `FIP2` | 双 FIP 时选择 Tab1 兼容字段和默认绘图源 |
-| `unwrap` | 默认 OFF | 控制 FIP 处理和存储是否相位展开 |
+| `unwrap` | 默认 OFF | 只控制 FIP 处理显示链路是否相位展开；不影响 FIP 独立存储或 joint 存储 |
 
 ### 11.3 eDAS 通信参数与状态
 
@@ -667,7 +668,7 @@ das_rates = data["das_sample_rate_hz"]
 | `缓存(s)` | `10.0` | 对齐缓存时间；代码保证至少大于 joint 间隔 `1 s` |
 | `eDAS块/文件` | `50` | eDAS `.bin` 每个文件包含的完整包数 |
 | `eDAS队列` | `200` | eDAS 独立存储有效队列容量 |
-| `FIP降采样` | `1` | FIP 独立存储抽取因子，范围 `1~100` |
+| `FIP降采样` | `1` | FIP 独立存储抽取因子，范围 `1~100`；默认 `1` 表示不降采样 |
 | `预计文件` | 自动估算 | 显示 FIP/eDAS/joint 未压缩体量估计 |
 | `FIP成功/失败`、`eDAS成功/失败` | 自动统计 | 存储状态计数 |
 | `联合Last`、`eDAS Last` | 自动更新 | 最近一次写盘状态或文件名 |

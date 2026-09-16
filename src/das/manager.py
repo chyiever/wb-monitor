@@ -13,7 +13,14 @@ import numpy as np
 from PyQt5.QtCore import QObject, QTimer
 
 from alignment import AlignedSessionCoordinator, DASSessionPacket, FIPSessionPacket
-from fip import ProcessedData
+from fip import ProcessedData, RawDataPacket
+from fip.manager import (
+    normalize_fip_packet_duration,
+    normalize_fip_sample_rate,
+    normalize_fip_sensor_count,
+    normalize_fip_sensor_index,
+    split_fip_sensor_data,
+)
 
 from .plot_worker import DASPlotWorker
 from .storage_worker import DASStorageRequest, DASStorageWorker, EDASRawStorageWorker
@@ -182,8 +189,71 @@ class EDASManager(QObject):
             cache_seconds,
         )
 
+    def process_fip_raw_packet(self, raw_packet: RawDataPacket) -> None:
+        """Receive one raw FIP packet for alignment and joint storage."""
+        try:
+            packet_duration_seconds = normalize_fip_packet_duration(
+                getattr(raw_packet, "packet_duration_seconds", 1.0)
+            )
+            sample_rate_hz = normalize_fip_sample_rate(
+                getattr(raw_packet, "sample_rate_hz", 1_000_000.0)
+            )
+            sensor_count = normalize_fip_sensor_count(getattr(raw_packet, "sensor_count", 1))
+            selected_sensor = normalize_fip_sensor_index(
+                getattr(raw_packet, "selected_sensor", 1),
+                sensor_count,
+            )
+            sensor_inputs = split_fip_sensor_data(
+                raw_packet.phase_data,
+                sensor_count,
+                packet_duration_seconds=packet_duration_seconds,
+                sample_rate_hz=sample_rate_hz,
+                logger=self.logger,
+                comm_count=raw_packet.comm_count,
+            )
+            if not sensor_inputs:
+                return
+            raw_by_sensor = {
+                sensor_index: np.asarray(values, dtype=np.float64)
+                for sensor_index, values in sensor_inputs.items()
+            }
+            selected_raw = raw_by_sensor.get(selected_sensor)
+            if selected_raw is None:
+                selected_raw = raw_by_sensor[sorted(raw_by_sensor)[0]]
+            packet = FIPSessionPacket(
+                comm_count=raw_packet.comm_count,
+                packet_duration_seconds=packet_duration_seconds,
+                sample_rate_hz=sample_rate_hz,
+                unwrapped_data=selected_raw,
+                display_data=selected_raw,
+                sensor_count=sensor_count,
+                selected_sensor=selected_sensor,
+                unwrapped_by_sensor=raw_by_sensor,
+                display_by_sensor=raw_by_sensor,
+            )
+            self._fip_recent_packets.append(packet)
+            self.coordinator.push_fip_packet(packet)
+            if raw_packet.comm_count % 50 == 0:
+                self.logger.info(
+                    "TAB3_NODE manager.fip_raw_storage comm=%s sensors=%s selected=FIP%s "
+                    "points=%d sample_rate=%.1f duration=%.6f recent=%d",
+                    raw_packet.comm_count,
+                    sensor_count,
+                    selected_sensor,
+                    len(selected_raw),
+                    sample_rate_hz,
+                    packet_duration_seconds,
+                    len(self._fip_recent_packets),
+                )
+        except Exception as exc:
+            self.logger.error(
+                "Failed to queue raw FIP packet for joint storage comm=%s: %s",
+                getattr(raw_packet, "comm_count", "?"),
+                exc,
+            )
+
     def process_fip_processed_data(self, processed_data: ProcessedData) -> None:
-        """Receive processed Tab1 data, push it into alignment, and update plots."""
+        """Receive processed Tab1 data and update plots."""
         packet_duration_seconds = max(float(getattr(processed_data, "packet_duration_seconds", 1.0)), 1e-6)
         selected_sensor = getattr(processed_data, "selected_sensor", 1)
         unwrapped_source_by_sensor = getattr(processed_data, "unwrapped_by_sensor", {}) or {
@@ -192,10 +262,6 @@ class EDASManager(QObject):
         selected_unwrapped = unwrapped_source_by_sensor.get(selected_sensor)
         if selected_unwrapped is None:
             selected_unwrapped = processed_data.unwrapped_data
-        alignment_by_sensor = {
-            sensor_index: np.asarray(values)
-            for sensor_index, values in unwrapped_source_by_sensor.items()
-        }
         display_source_by_sensor = getattr(processed_data, "downsampled_by_sensor", {}) or {
             selected_sensor: processed_data.downsampled_data
         }
@@ -208,8 +274,8 @@ class EDASManager(QObject):
             selected_display = processed_data.downsampled_data
         selected_unwrapped = np.asarray(selected_unwrapped)
         selected_display = np.asarray(selected_display)
-        raw_sample_rate = max(float(getattr(processed_data, "raw_sample_rate_hz", processed_data.effective_rate)), 1.0)
         display_sample_rate = max(float(getattr(processed_data, "display_sample_rate_hz", processed_data.effective_rate)), 1.0)
+        raw_sample_rate = max(float(getattr(processed_data, "raw_sample_rate_hz", processed_data.effective_rate)), 1.0)
         psd_sample_rate = max(float(getattr(processed_data, "psd_sample_rate_hz", raw_sample_rate)), 1.0)
         psd_source_by_sensor = getattr(processed_data, "psd_by_sensor", {}) or {
             selected_sensor: processed_data.psd_data
@@ -218,22 +284,9 @@ class EDASManager(QObject):
             sensor_index: np.asarray(values)
             for sensor_index, values in psd_source_by_sensor.items()
         }
-        packet = FIPSessionPacket(
-            comm_count=processed_data.comm_count,
-            packet_duration_seconds=packet_duration_seconds,
-            sample_rate_hz=raw_sample_rate,
-            unwrapped_data=selected_unwrapped,
-            display_data=selected_display,
-            sensor_count=getattr(processed_data, "sensor_count", 1),
-            selected_sensor=selected_sensor,
-            unwrapped_by_sensor=alignment_by_sensor,
-            display_by_sensor=display_by_sensor,
-        )
-        self._fip_recent_packets.append(packet)
-        self.coordinator.push_fip_packet(packet)
         self.logger.debug(
             "TAB3_NODE manager.fip_packet comm=%s sensors=%s selected=FIP%s display_points=%d "
-            "sample_rate=%.1f duration=%.6f recent=%d source=display_downsampled first=%.9g",
+            "sample_rate=%.1f duration=%.6f recent=%d source=display_processed first=%.9g",
             processed_data.comm_count,
             getattr(processed_data, "sensor_count", 1),
             selected_sensor,

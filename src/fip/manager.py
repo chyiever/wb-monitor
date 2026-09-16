@@ -289,7 +289,7 @@ class RawDataPacket:
 class ProcessedData:
     """处理后的数据包"""
     timestamp: float
-    unwrapped_data: np.ndarray  # 相位展开后的数据（用于存储）
+    unwrapped_data: np.ndarray  # 处理显示链路数据；是否展开由 Tab1 unwrap 决定
     filtered_data: np.ndarray   # 滤波后的数据
     downsampled_data: np.ndarray  # 降采样后的数据（用于绘图）
     psd_data: np.ndarray  # PSD专用数据：相位展开后、未滤波，再按系统降采样抽取
@@ -314,7 +314,7 @@ class StorageRequest:
     comm_count: int
     timestamp: float
     sample_rate: float
-    data_type: str = "phase_unwrapped"
+    data_type: str = "phase_raw_downsampled"
     sensor_count: int = 1
     selected_sensor: int = 1
     packet_duration_seconds: float = DEFAULT_FIP_PACKET_DURATION_SECONDS
@@ -1287,7 +1287,7 @@ class DataStorageThread(QThread):
         return self._phase_unwrappers[sensor_index]
 
     def set_phase_unwrap_enabled(self, enabled: bool) -> None:
-        enabled = bool(enabled)
+        enabled = False
         if self.running:
             self._ctrl_queue.put_nowait({'cmd': 'set_phase_unwrap_enabled', 'value': enabled})
             return
@@ -1328,7 +1328,7 @@ class DataStorageThread(QThread):
                 comm_count=packet.comm_count,
                 sensor_index=sensor_index,
                 context="storage",
-                warn_outside_normalized=self.phase_unwrap_enabled,
+                warn_outside_normalized=False,
             )
             input_size, input_first, input_min, input_max = _array_summary_values(phase_data)
             if packet.comm_count % 50 == 0:
@@ -1349,22 +1349,10 @@ class DataStorageThread(QThread):
                     input_first,
                 )
 
-            if self.phase_unwrap_enabled:
-                phase_unwrapper = self._get_phase_unwrapper(sensor_index)
-                unwrapped, _ = phase_unwrapper.unwrap_phase(phase_data, force_normalized=True)
-                if len(unwrapped) == 0:
-                    self.stats['phase_unwrap_failure_count'] += 1
-                    self.logger.warning(
-                        'Storage phase unwrapping failed for packet #%d FIP%d, storing wrapped phase fallback',
-                        packet.comm_count,
-                        sensor_index,
-                    )
-                    unwrapped = np.asarray(phase_data, dtype=np.float64) * np.pi
-            else:
-                unwrapped = np.asarray(phase_data, dtype=np.float64)
+            raw_values = np.asarray(phase_data, dtype=np.float64)
 
             storage_by_sensor[sensor_index] = np.asarray(
-                unwrapped[::self.storage_downsample_factor],
+                raw_values[::self.storage_downsample_factor],
                 dtype=np.float64,
             )
 
@@ -1383,7 +1371,7 @@ class DataStorageThread(QThread):
                 for sensor_id in sensor_ids
             ])
 
-        data_type = 'phase_unwrapped_downsampled' if self.phase_unwrap_enabled else 'phase_raw_downsampled'
+        data_type = 'phase_raw_downsampled'
         return StorageRequest(
             data=storage_data,
             comm_count=packet.comm_count,
@@ -1703,7 +1691,7 @@ class DataStorageThread(QThread):
                 'file_sequence': self.saved_file_count,
                 'stream_start_time': file_timestamp.isoformat(timespec='milliseconds'),
                 'save_time': datetime.now().isoformat(),
-                'phase_unwrap_enabled': bool(str(data_type) == 'phase_unwrapped_downsampled'),
+                'phase_unwrap_enabled': False,
             }
 
             payload = {
@@ -1715,7 +1703,7 @@ class DataStorageThread(QThread):
                 'packet_duration_seconds': packet_duration_seconds,
                 'fip_sensor_count': np.int32(sensor_count),
                 'data_info': data_info,
-                'phase_unwrap_enabled': np.bool_(str(data_type) == 'phase_unwrapped_downsampled'),
+                'phase_unwrap_enabled': np.bool_(False),
                 'format_version': np.array('wb-monitor-tab1-fip-v3'),
             }
             # v3：不再写入 fip1_phase_data / fip2_phase_data 冗余字段。
@@ -1944,7 +1932,7 @@ class OptimizedTab1ThreadManager(QObject):
             return
         self.phase_unwrap_enabled = enabled
         self.data_processor.set_phase_unwrap_enabled(enabled)
-        self.storage_thread.set_phase_unwrap_enabled(enabled)
+        self.storage_thread.set_phase_unwrap_enabled(False)
         self.time_plotter._reset_stream_state()
         self.psd_plotter.reset_state(clear_queue=True)
         self._clear_plots()
