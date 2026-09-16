@@ -41,10 +41,12 @@ pip install -r .\fipedasREAD\requirements.txt
 
 - 读取 `wb-monitor-joint-v5` 格式的 `FIPeDAS-*.npz`，并兼容部分旧字段。
 - 左侧提供数据路径、文件列表、时域曲线源、FIP 预处理、EDAS 预处理和 timespace 参数。
+- 文件信息栏显示采集时刻、时长、采样率、通道数与数据量。
 - 右侧显示两张时域图和一张 DAS timespace 图。
 - 三张图共用横轴时间范围：任意一张图矩形放大或平移后，其余两张同步。
 - 三张图采用垂直分割器，默认高度比例为 `1:1:2`，可手动拖动调整。
-- timespace 默认 `Seismic` 色图，可切换 `Viridis`、`Plasma`、`Inferno`、`Magma`、`Gray` 或 `Jet`。
+- timespace 默认 `Seismic` 色图，可切换 `RdBu`、`CoolWarm`、`Viridis`、`Plasma`、`Inferno`、`Magma`、`Gray` 或 `Jet`。
 - 两张时域图右侧保留与 timespace 色标等宽的空白区，保证三张图真实绘图区宽度一致。
+- 顶部标题栏显示软件名称与版本号（当前 `v1.1.0 · 2026-09-17`）。
 
 更多字段说明和 GUI 细节见 [docs/README.md](docs/README.md)。

@@ -55,6 +55,9 @@ pg.setConfigOption("foreground", "k")
 class ReplayWindow(QMainWindow):
     """Simple joint NPZ replay window."""
 
+    APP_NAME = "FIP/eDAS 联合数据回放"
+    APP_VERSION = "v1.1.0"
+    APP_BUILD_DATE = "2026-09-17"
     COLOR_MAPS = ("Seismic", "RdBu", "CoolWarm", "Viridis", "Plasma", "Inferno", "Magma", "Gray", "Jet")
     COLOR_BAR_WIDTH = 100
     REDRAW_DEBOUNCE_MS = 120
@@ -109,7 +112,7 @@ class ReplayWindow(QMainWindow):
 
     def __init__(self, initial_path: Path) -> None:
         super().__init__()
-        self.setWindowTitle("FIP/eDAS Joint NPZ Replay")
+        self.setWindowTitle(f"{self.APP_NAME} {self.APP_VERSION}")
         self.resize(1600, 960)
         self.setStyleSheet(self.APP_STYLE)
         self._data_dir = initial_path if initial_path.is_dir() else initial_path.parent
@@ -153,6 +156,7 @@ class ReplayWindow(QMainWindow):
         root = QVBoxLayout(central)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(8)
+        root.addWidget(self._build_header())
         splitter = QSplitter(Qt.Horizontal)
         splitter.setChildrenCollapsible(False)
         root.addWidget(splitter)
@@ -168,6 +172,20 @@ class ReplayWindow(QMainWindow):
         auto = self.auto_levels_check.isChecked()
         self.space_vmin_spin.setEnabled(not auto)
         self.space_vmax_spin.setEnabled(not auto)
+
+    def _build_header(self) -> QWidget:
+        header = QWidget()
+        header.setStyleSheet("background: #0b3d6e; border-radius: 6px;")
+        layout = QHBoxLayout(header)
+        layout.setContentsMargins(14, 7, 14, 7)
+        title = QLabel(self.APP_NAME)
+        title.setStyleSheet("color: #ffffff; font-size: 15px; font-weight: bold;")
+        layout.addWidget(title)
+        layout.addStretch(1)
+        version = QLabel(f"{self.APP_VERSION} · {self.APP_BUILD_DATE}")
+        version.setStyleSheet("color: #bcd8f5; font-size: 12px;")
+        layout.addWidget(version)
+        return header
 
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()

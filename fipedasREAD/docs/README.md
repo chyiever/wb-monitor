@@ -17,6 +17,8 @@ python .\fipedasREAD\run.py D:\PCCP\FIPeDASDATA
 python .\fipedasREAD\run.py D:\PCCP\FIPeDASDATA\FIPeDAS-20260916-120000.000.npz
 ```
 
+窗口顶部标题栏显示软件名称与版本号（当前 `v1.1.0 · 2026-09-17`）。
+
 依赖沿用主工程 `requirements.txt`：
 
 - PyQt5
@@ -55,6 +57,7 @@ python .\fipedasREAD\run.py D:\PCCP\FIPeDASDATA\FIPeDAS-20260916-120000.000.npz
 
 - 数据路径选择和刷新。
 - 文件名列表。
+- 文件信息：格式版本、采集时刻、时长（帧数）、采样率（FIP/DAS）、通道数、数据量（FIP/DAS 采样点数与文件大小）。
 - 两条时域曲线的数据源选择：`FIP1`、`FIP2`、`DAS Channel`。
 - DAS 通道号。
 - FIP 预处理：去均值、归一化、Butterworth 滤波、频带、阶数、降采样。

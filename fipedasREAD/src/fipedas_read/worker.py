@@ -177,11 +177,45 @@ def _file_info_text(data: JointReplayData) -> str:
     fip_rate = _median_text(data.fip_rates_hz, "Hz")
     das_rate = _median_text(data.das_rates_hz, "Hz")
     das_channels = int(np.nanmax(data.das_channel_counts)) if data.das_channel_counts.size else 0
-    return (
-        f"{data.format_version}\n"
-        f"frames={data.frame_count}, time={data.start_time:.3f}-{data.end_time:.3f}s\n"
-        f"FIP rate={fip_rate}, DAS rate={das_rate}, channels={das_channels}"
-    )
+    fip_samples = _sum_samples(data.fip1_frames)
+    das_samples = _sum_samples(data.das_frames)
+    duration = max(0.0, data.end_time - data.start_time)
+    file_size = int(data.path.stat().st_size) if data.path.exists() else 0
+    created = (data.created_at or "").strip() or "n/a"
+    lines = [
+        f"格式: {data.format_version}",
+        f"采集时刻: {created}",
+        f"时长: {duration:.3f} s（{data.frame_count} 帧）",
+        f"采样率: FIP {fip_rate}  |  DAS {das_rate}",
+        f"通道数: {das_channels}",
+        f"数据量: FIP {_human_samples(fip_samples)}  |  DAS {_human_samples(das_samples)}  |  文件 {_human_bytes(file_size)}",
+    ]
+    return "\n".join(lines)
+
+
+def _sum_samples(frames: list[np.ndarray]) -> int:
+    total = 0
+    for frame in frames:
+        arr = np.asarray(frame)
+        if arr.size:
+            total += int(arr.size)
+    return total
+
+
+def _human_samples(count: int) -> str:
+    if count >= 1_000_000:
+        return f"{count / 1_000_000:.2f} M点"
+    if count >= 1_000:
+        return f"{count / 1_000:.1f} k点"
+    return f"{count} 点"
+
+
+def _human_bytes(size: int) -> str:
+    if size >= 1_000_000:
+        return f"{size / 1_000_000:.1f} MB"
+    if size >= 1_000:
+        return f"{size / 1_000:.1f} KB"
+    return f"{size} B"
 
 
 def _median_text(values: np.ndarray, suffix: str) -> str:
