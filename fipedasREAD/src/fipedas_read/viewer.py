@@ -177,13 +177,16 @@ class ReplayWindow(QMainWindow):
         header = QWidget()
         header.setStyleSheet("background: #0b3d6e; border-radius: 6px;")
         layout = QHBoxLayout(header)
-        layout.setContentsMargins(14, 7, 14, 7)
+        layout.setContentsMargins(14, 8, 14, 8)
+        layout.addStretch(1)
         title = QLabel(self.APP_NAME)
-        title.setStyleSheet("color: #ffffff; font-size: 15px; font-weight: bold;")
+        title.setStyleSheet("color: #ffffff; font-size: 24px; font-weight: bold;")
+        title.setAlignment(Qt.AlignCenter)
         layout.addWidget(title)
         layout.addStretch(1)
         version = QLabel(f"{self.APP_VERSION} · {self.APP_BUILD_DATE}")
         version.setStyleSheet("color: #bcd8f5; font-size: 12px;")
+        version.setAlignment(Qt.AlignVCenter)
         layout.addWidget(version)
         return header
 
