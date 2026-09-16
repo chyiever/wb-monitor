@@ -7,7 +7,7 @@ import time
 from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Deque
+from typing import Deque, Optional
 
 import numpy as np
 from PyQt5.QtCore import QObject, QTimer
@@ -60,6 +60,8 @@ class EDASManager(QObject):
         self._watchdog_timer.setInterval(1000)
         self._watchdog_timer.timeout.connect(self._check_disconnect_timeout)
         self._last_snapshot_end_comm = -1
+        self._joint_write_pending = False
+        self._pending_wall_start: Optional[str] = None
         self._disconnect_alert_active = False
         self._setup_connections()
         self.logger.debug("TAB3_NODE manager.init settings=%s", settings)
@@ -74,6 +76,8 @@ class EDASManager(QObject):
         self.server.statistics_updated.connect(self.main_window.update_tab3_packet_statistics)
         self.plot_worker.plot_payload_ready.connect(self.main_window.update_tab3_plot_payload)
         self.storage_worker.storage_saved.connect(self.main_window.update_tab3_storage_status)
+        # 游标在写盘成功后才推进（cursor-bug fix）：失败不丢帧，下一轮重新收集
+        self.storage_worker.request_finished.connect(self._on_joint_request_finished)
         self.edas_storage_worker.storage_status.connect(self.main_window.update_tab3_edas_storage_status)
         self.coordinator.alignment_status_changed.connect(
             self.main_window.update_tab3_alignment_status
@@ -143,6 +147,8 @@ class EDASManager(QObject):
         """Reset local state for a new monitoring session."""
         self._fip_recent_packets.clear()
         self._last_snapshot_end_comm = -1
+        self._joint_write_pending = False
+        self._pending_wall_start = None
         self._disconnect_alert_active = False
         self.plot_worker.reset_state()
         self.edas_storage_worker.reset_session()
@@ -166,11 +172,28 @@ class EDASManager(QObject):
         self._joint_interval_seconds = max(
             1.0, float(storage_settings.get("interval_seconds", self._joint_interval_seconds))
         )
+        # 联合存储格式：bin / npz / h5（Tab2 存储组切换）
+        self.storage_worker.set_format(storage_settings.get("format", "npz"))
+        self.storage_worker.set_h5_compression(
+            storage_settings.get("h5_compression", "none"),
+            int(storage_settings.get("h5_compression_level", 4)),
+        )
         cache_seconds = max(
             float(storage_settings.get("cache_seconds", 10.0)),
-            self._joint_interval_seconds + 1.0,
+            self._joint_interval_seconds * 2.0 + 5.0,
         )
         self.coordinator.cache_seconds = cache_seconds
+        # 写盘慢（如 npz 压缩）时缓存需覆盖写入延迟，否则尾部帧会先被裁掉。
+        # 至少按当前帧大小 * 缓存秒数估算，且不低于默认 2GB 预算。
+        estimated_bytes_per_sec = self.coordinator.latest_frame_bytes() / max(
+            self.coordinator.latest_packet_duration_seconds(), 1e-6
+        )
+        needed_cache_bytes = int(estimated_bytes_per_sec * cache_seconds)
+        self.coordinator.max_cache_bytes = max(
+            self.coordinator.max_cache_bytes,
+            needed_cache_bytes,
+            self.coordinator.DEFAULT_CACHE_MEMORY_BUDGET_BYTES,
+        )
         self._edas_storage_enabled = bool(storage_settings.get("edas_enabled", False))
         self._edas_storage_path = storage_settings.get("edas_path", self._edas_storage_path)
         self._edas_blocks_per_file = max(
@@ -455,6 +478,12 @@ class EDASManager(QObject):
 
         FIP+eDAS SAVE writes joint npz only when both sources are online and aligned.
         If only one source is online, the UI routes storage to the matching single-source path.
+
+        Cursor fix: ``_last_snapshot_end_comm`` is advanced ONLY after the write
+        completes successfully (see ``_on_joint_request_finished``).  This means a
+        dropped or failed request never loses frames: the next timer tick simply
+        re-collects everything since the last successful save.  Only one request
+        is in flight at a time so the queue can never overflow and drop data.
         """
         settings = self.main_window.get_tab3_settings()
         storage_settings = settings["storage"]
@@ -462,6 +491,12 @@ class EDASManager(QObject):
             storage_settings.get("joint_enabled", storage_settings.get("enabled", False))
         )
         if not self._joint_storage_enabled:
+            return
+        if self._joint_write_pending:
+            self.logger.debug(
+                "TAB3_NODE manager.joint_storage write_in_flight last=%s",
+                self._last_snapshot_end_comm,
+            )
             return
 
         status = self.coordinator.snapshot_status()
@@ -473,9 +508,12 @@ class EDASManager(QObject):
         if end_comm == self._last_snapshot_end_comm:
             self.logger.debug("TAB3_NODE manager.joint_storage same_end_comm=%s", end_comm)
             return
+        if self._pending_wall_start is None:
+            self._pending_wall_start = datetime.now().isoformat(timespec="milliseconds")
 
         if not status.fip_online or not status.das_online:
             self._last_snapshot_end_comm = end_comm
+            self._pending_wall_start = None
             self.logger.debug(
                 "TAB3_NODE manager.joint_storage fallback fip_online=%s das_online=%s end_comm=%s",
                 status.fip_online,
@@ -486,6 +524,7 @@ class EDASManager(QObject):
             return
         if status.alignment_status != "aligned":
             self._last_snapshot_end_comm = end_comm
+            self._pending_wall_start = None
             self.logger.debug(
                 "TAB3_NODE manager.joint_storage wait_alignment status=%s frames=%d end_comm=%s",
                 status.alignment_status,
@@ -505,6 +544,7 @@ class EDASManager(QObject):
             frames=list(frames),
             output_dir=storage_settings.get("path", self._joint_storage_path),
             end_comm=end_comm,
+            wall_clock_start=self._pending_wall_start,
         )
         cache_budget_bytes = int(getattr(self.coordinator, "max_cache_bytes", 0) or 0)
         byte_limited_chunk = (
@@ -536,10 +576,12 @@ class EDASManager(QObject):
                 end_comm,
             )
 
-        self._last_snapshot_end_comm = end_comm
+        # 游标不在此推进；待写盘成功后由 _on_joint_request_finished 推进。
+        self._joint_write_pending = True
         self.storage_worker.enqueue_request(request)
         self.logger.debug(
-            "TAB3_NODE manager.joint_storage queued frames=%d end_comm=%s output_dir=%s",
+            "TAB3_NODE manager.joint_storage queued fmt=%s frames=%d end_comm=%s output_dir=%s",
+            self.storage_worker._format,
             len(frames),
             end_comm,
             request.output_dir,
@@ -547,6 +589,24 @@ class EDASManager(QObject):
         self.main_window.update_tab3_storage_status(
             f"Queued {len(frames)} frames (end_comm={end_comm})"
         )
+
+    def _on_joint_request_finished(self, end_comm: int, ok: bool) -> None:
+        """Advance the joint snapshot cursor only after a successful write."""
+        if ok:
+            self._last_snapshot_end_comm = max(self._last_snapshot_end_comm, int(end_comm))
+            self._pending_wall_start = None
+            self.logger.debug(
+                "TAB3_NODE manager.joint_storage saved end_comm=%s cursor=%s",
+                end_comm,
+                self._last_snapshot_end_comm,
+            )
+        else:
+            self.logger.warning(
+                "TAB3_NODE manager.joint_storage failed end_comm=%s cursor stays=%s; frames will be re-collected",
+                end_comm,
+                self._last_snapshot_end_comm,
+            )
+        self._joint_write_pending = False
 
     def _route_joint_storage_fallback(self, status) -> None:
         """Switch a joint-save request to the available single-source save mode."""

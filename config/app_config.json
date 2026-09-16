@@ -38,7 +38,7 @@
   "storage": {
     "realtime": {
       "enabled": false,
-      "interval": 30,
+      "interval": 2,
       "downsample_factor": 1,
       "path": "D:/PCCP/FIPdata"
     },
@@ -50,7 +50,7 @@
     }
   },
   "visualization": {
-    "time_window": 10,
+    "time_window": 2,
     "grid_enabled": true,
     "refresh_rate": 50
   }

@@ -939,3 +939,47 @@ View 页 DAS Space-Time 图长期以深蓝或深红为主，手动 V 范围从 `
 ### 验证
 
 1. 编译检查通过：`python -X utf8 -m py_compile src\ui\main_window.py src\das\plot_worker.py`。
+
+## 2026-09-17 00:00:00 +08:00
+
+- GitHub 仓库：`https://github.com/chyiever/wb-monitor.git`
+- 更新范围：`src/das/joint_formats.py`、`src/das/storage_worker.py`、`src/das/manager.py`、
+  `src/alignment/aligned_session_coordinator.py`、`src/ui/main_window.py`、`src/das/plot_worker.py`、
+  `src/main.py`、`config/app_config.json`、`docs/FIP／eDAS 通信协议与数据存储机制.md`、`docs/GUI美化记录.md`
+
+### 更新摘要
+
+1. 联合存储支持三种格式（`src/das/joint_formats.py` 新增）
+   - `bin`：裸二进制流式写盘（自描述头 + 逐帧 raw float64），无压缩，目标 500 MB/s+（受磁盘限制）。
+   - `npz`：`np.savez_compressed` 压缩归档，兼容旧字段并新增 `metadata_json`/`wall_clock_start`。
+   - `h5`：HDF5 容器，可选 gzip 压缩（默认 none）。
+   - 三种格式都内嵌统一元数据：`wall_clock_start`/`created_at`（采集时刻）、FIP 通道数/采样率/时长、
+     eDAS 通道数/采样率/时长、`comm_counts`、`packet_start_times`、`fip_present`/`das_present`。
+2. 联合存储游标修复（`_last_snapshot_end_comm` bug fix，`src/das/manager.py`）
+   - 旧实现：游标在入队时推进，请求被队列丢弃时帧永久丢失（联调日志中大量 `requests_dropped` 与 comm 空洞）。
+   - 新实现：单在途请求 + 写盘成功后由 `request_finished(end_comm, ok)` 信号推进游标；
+     失败/超限请求的帧下一轮自动重新收集；队列不再丢弃请求 → 零丢帧。
+3. 对齐缓存自适应（`src/alignment/aligned_session_coordinator.py`、`src/das/manager.py`）
+   - 暴露 `latest_frame_bytes()`/`latest_packet_duration_seconds()`；按帧大小×缓存秒数放大内存预算，
+     覆盖写盘延迟，避免慢写入时尾部帧被缓存裁剪。
+4. Tab2 存储区拆分与默认值（`src/ui/main_window.py`）
+   - “存储控制与日志”拆为三个子框：存储开关与路径 / 存储参数 / 存储状态与日志。
+   - 新增 `联合格式`（bin/npz/h5）与 `H5压缩`（none/gzip）下拉框。
+   - 默认联合间隔 `2.0 s`、FIP 间隔 `2 s`、显示窗口 `2 s`、Space-Time 窗口 `2 s`、刷新 `1 s`。
+5. 全局 GUI 美化（`src/ui/main_window.py`）
+   - 应用级 QSS：浅色专业主题、统一按钮/输入/下拉样式、GroupBox 卡片、Tab 选中态、滚动条等。
+   - 记录见 `docs/GUI美化记录.md`。
+6. View 时域滚动内存优化（`src/ui/main_window.py`）
+   - `_accumulate_fip_rolling` 由“Python float 列表 deque”改为“numpy 段 deque + 按时间修剪”，
+     减少内存占用与 GC 压力；FIP/DAS 曲线共用 2 s 窗口 + 1 s 刷新，右→左同步滚动。
+7. DAS 绘图默认窗口（`src/das/plot_worker.py`）
+   - `display_seconds` 与 `space_time_total_seconds` 默认 `2.0 s`，`space_time_shift_seconds` 默认 `1.0 s`。
+
+### 验证
+
+1. 三种格式端到端测试：各 6 帧实时流入 + 慢写入（0.4 s/次）+ 2 s 间隔，均 `dropped=0`、
+   `comm_counts` 完整（0-5）、游标仅写盘成功后推进。
+2. FIP TCP 服务器测试：原始 comm 从 1000 起，归一化为 0 起始；跳过 comm 2 时 `missing_packets=1`；Q40.24 解码正确。
+3. Tab3 DAS 管线验证通过：`python src/tools/validate_tab3_pipeline.py` → `VALIDATION_OK`。
+4. 时域滚动缓冲区测试：连续 1 s 包，2 s 窗口无重复边界点、严格递增。
+5. 编译检查通过、`PCCPMonitorApp` 离屏构建通过。

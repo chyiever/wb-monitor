@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from PyQt5.QtCore import QThread, pyqtSignal
 
+from .joint_formats import save_joint
+
 
 class DASStorageRequest:
     """封装一次增量存储请求的元数据与帧列表。
@@ -36,29 +38,12 @@ class DASStorageRequest:
         end_comm: 本批最后一帧的 comm_count，用于更新 _last_snapshot_end_comm。
     """
 
-    def __init__(self, frames: List[Any], output_dir: str, end_comm: int) -> None:
+    def __init__(self, frames: List[Any], output_dir: str, end_comm: int, wall_clock_start: Optional[str] = None) -> None:
         self.frames = frames
         self.output_dir = output_dir
         self.end_comm = end_comm
+        self.wall_clock_start = wall_clock_start
         self.estimated_bytes = sum(_estimate_frame_bytes(frame) for frame in frames)
-
-
-def _empty_fip_array() -> np.ndarray:
-    return np.array([], dtype=np.float64)
-
-
-def _get_fip_sensor_array(packet: Any, mapping_name: str, fallback_name: str, sensor_index: int) -> np.ndarray:
-    """Return one FIP sensor array while preserving old single-sensor packets."""
-    if packet is None:
-        return _empty_fip_array()
-    mapping = getattr(packet, mapping_name, None)
-    if isinstance(mapping, dict) and sensor_index in mapping:
-        return mapping[sensor_index]
-    selected_sensor = int(getattr(packet, "selected_sensor", 1))
-    sensor_count = int(getattr(packet, "sensor_count", 1))
-    if sensor_index == selected_sensor or (sensor_count == 1 and sensor_index == 1):
-        return getattr(packet, fallback_name, _empty_fip_array())
-    return _empty_fip_array()
 
 
 def _array_nbytes(value: Any) -> int:
@@ -86,6 +71,9 @@ def _estimate_frame_bytes(frame: Any) -> int:
 
 class DASStorageWorker(QThread):
     storage_saved = pyqtSignal(str)
+    # (end_comm, ok): emitted after a joint write completes; manager advances its
+    # snapshot cursor only when ok=True. Negative end_comm is never expected.
+    request_finished = pyqtSignal(int, bool)
 
     """独立线程，消费存储请求并执行 np.savez_compressed 写盘。
 
@@ -108,6 +96,8 @@ class DASStorageWorker(QThread):
     INPUT_QUEUE_MAXSIZE = 32
     QUEUE_MEMORY_BUDGET_BYTES = 2048 * 1024 * 1024
     MAX_SINGLE_REQUEST_BYTES = 2048 * 1024 * 1024
+    # bin 为裸二进制流式写盘，chunk 可远大于 2GB（受对齐缓存内存预算约束）
+    MAX_BIN_REQUEST_BYTES = 64 * 1024 * 1024 * 1024
 
     def __init__(self) -> None:
         super().__init__()
@@ -117,6 +107,10 @@ class DASStorageWorker(QThread):
         self._queue_lock = threading.Lock()
         self._queued_bytes = 0
         self.running = False
+        # 联合存储格式：bin（裸二进制流式）/ npz / h5
+        self._format = "npz"
+        self._h5_compression = "none"
+        self._h5_compression_level = 4
 
         # 统计信息
         self.stats: Dict[str, int] = {
@@ -125,6 +119,17 @@ class DASStorageWorker(QThread):
             "requests_dropped": 0,
             "save_failures": 0,
         }
+
+    def set_format(self, fmt: str) -> None:
+        """Select the joint storage backend: bin / npz / h5."""
+        fmt = str(fmt or "npz").lower()
+        if fmt in ("bin", "npz", "h5"):
+            self._format = fmt
+
+    def set_h5_compression(self, mode: str, level: int = 4) -> None:
+        mode = str(mode or "none").lower()
+        self._h5_compression = mode if mode in ("none", "gzip") else "none"
+        self._h5_compression_level = max(1, min(9, int(level or 4)))
 
     def enqueue_request(self, request: DASStorageRequest) -> None:
         """将存储请求放入队列（主线程调用，必须非阻塞）。
@@ -185,6 +190,7 @@ class DASStorageWorker(QThread):
                 continue
             except Exception as exc:
                 self.stats["save_failures"] += 1
+                self.request_finished.emit(getattr(request, "end_comm", -1), False)
                 self.logger.error("DAS storage worker error: %s", exc)
 
     def stop(self) -> None:
@@ -193,19 +199,21 @@ class DASStorageWorker(QThread):
         self.logger.info("DAS storage worker stopping, stats=%s", self.stats)
 
     def _save(self, request: DASStorageRequest) -> None:
-        """执行实际的 npz 写盘操作（在存储线程中调用）。
+        """Execute the joint write on the configured backend (storage thread).
 
-        Args:
-            request: 包含帧列表和输出目录的存储请求。
-
-        文件命名：FIPeDAS-YYYYMMDD-HHMMSS.mmm.npz
+        On success the request_finished(end_comm, True) signal lets the manager
+        advance its snapshot cursor; on failure end_comm is NOT advanced so the
+        frames are re-collected on the next timer tick (cursor-bug fix).
         """
         started = time.perf_counter()
         try:
             frames = request.frames
             if not frames:
                 return
-            if request.estimated_bytes > self.MAX_SINGLE_REQUEST_BYTES:
+            max_request_bytes = (
+                self.MAX_BIN_REQUEST_BYTES if self._format == "bin" else self.MAX_SINGLE_REQUEST_BYTES
+            )
+            if request.estimated_bytes > max_request_bytes:
                 message = (
                     "error: joint FIP+eDAS request too large "
                     f"({request.estimated_bytes / (1024 * 1024):.1f} MB); "
@@ -213,128 +221,52 @@ class DASStorageWorker(QThread):
                 )
                 self.stats["save_failures"] += 1
                 self.storage_saved.emit(message)
+                self.request_finished.emit(request.end_comm, False)
                 self.logger.error("TAB3_NODE storage.joint_too_large end_comm=%s %s", request.end_comm, message)
                 return
 
-            output_path = Path(request.output_dir)
-            output_path.mkdir(parents=True, exist_ok=True)
-            now = datetime.now()
-            file_path = output_path / f"FIPeDAS-{now.strftime('%Y%m%d-%H%M%S.%f')[:-3]}.npz"
-
-            # 构建 payload：结构与原实现保持兼容，增加 incremental=True 标记
-            payload = {
-                "comm_counts": np.array([f.comm_count for f in frames], dtype=np.int32),
-                "packet_start_times": np.array(
-                    [f.packet_start_time for f in frames], dtype=np.float64
-                ),
-                "packet_duration_seconds": np.array(
-                    [f.packet_duration_seconds for f in frames], dtype=np.float64
-                ),
-                "fip_present": np.array([not f.fip_missing for f in frames], dtype=bool),
-                "das_present": np.array([not f.das_missing for f in frames], dtype=bool),
-                "fip_sensor_count": np.array(
-                    [
-                        f.fip_packet.sensor_count
-                        if f.fip_packet is not None
-                        else 0
-                        for f in frames
-                    ],
-                    dtype=np.int32,
-                ),
-                "fip_selected_sensor": np.array(
-                    [
-                        f.fip_packet.selected_sensor
-                        if f.fip_packet is not None
-                        else 0
-                        for f in frames
-                    ],
-                    dtype=np.int32,
-                ),
-                "fip1_raw_data": np.array(
-                    [
-                        _get_fip_sensor_array(f.fip_packet, "unwrapped_by_sensor", "unwrapped_data", 1)
-                        for f in frames
-                    ],
-                    dtype=object,
-                ),
-                "fip2_raw_data": np.array(
-                    [
-                        _get_fip_sensor_array(f.fip_packet, "unwrapped_by_sensor", "unwrapped_data", 2)
-                        for f in frames
-                    ],
-                    dtype=object,
-                ),
-                "das_raw_matrix": np.array(
-                    [
-                        f.das_packet.matrix
-                        if f.das_packet is not None
-                        else np.array([], dtype=np.float64)
-                        for f in frames
-                    ],
-                    dtype=object,
-                ),
-                "fip_sample_rate_hz": np.array(
-                    [
-                        f.fip_packet.sample_rate_hz
-                        if f.fip_packet is not None
-                        else np.nan
-                        for f in frames
-                    ],
-                    dtype=np.float64,
-                ),
-                "das_sample_rate_hz": np.array(
-                    [
-                        f.das_packet.sample_rate_hz
-                        if f.das_packet is not None
-                        else np.nan
-                        for f in frames
-                    ],
-                    dtype=np.float64,
-                ),
-                "das_channel_count": np.array(
-                    [
-                        f.das_packet.channel_count
-                        if f.das_packet is not None
-                        else 0
-                        for f in frames
-                    ],
-                    dtype=np.int32,
-                ),
-                # incremental=True 表示本文件是增量 chunk，不是全量快照（T3-02）
-                "incremental": np.bool_(True),
-                "format_version": np.array("wb-monitor-joint-v6"),
-                "created_at": np.array(now.isoformat(timespec="milliseconds")),
-            }
-
-            np.savez_compressed(file_path, **payload)
+            created_at = datetime.now().isoformat(timespec="milliseconds")
+            file_path = save_joint(
+                self._format,
+                frames,
+                request.output_dir,
+                created_at=created_at,
+                wall_clock_start=request.wall_clock_start,
+                h5_compression=self._h5_compression,
+                h5_compression_level=self._h5_compression_level,
+            )
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self.stats["requests_saved"] += 1
             self.storage_saved.emit(str(file_path))
+            self.request_finished.emit(request.end_comm, True)
             self.logger.info(
                 "DAS storage saved %d frames to %s in %.2f ms",
                 len(frames),
-                file_path.name,
+                Path(file_path).name,
                 elapsed_ms,
             )
             self.logger.debug(
-                "TAB3_NODE storage.joint_saved frames=%d end_comm=%s file=%s elapsed_ms=%.2f saved=%d failures=%d",
+                "TAB3_NODE storage.joint_saved fmt=%s frames=%d end_comm=%s file=%s elapsed_ms=%.2f saved=%d failures=%d",
+                self._format,
                 len(frames),
                 request.end_comm,
-                file_path.name,
+                Path(file_path).name,
                 elapsed_ms,
                 self.stats["requests_saved"],
                 self.stats["save_failures"],
             )
             if elapsed_ms > 300.0:
                 self.logger.warning(
-                    "TAB3_NODE storage.joint_slow frames=%d end_comm=%s elapsed_ms=%.2f file=%s",
+                    "TAB3_NODE storage.joint_slow fmt=%s frames=%d end_comm=%s elapsed_ms=%.2f file=%s",
+                    self._format,
                     len(frames),
                     request.end_comm,
                     elapsed_ms,
-                    file_path.name,
+                    Path(file_path).name,
                 )
         except Exception as exc:
             self.stats["save_failures"] += 1
+            self.request_finished.emit(request.end_comm, False)
             self.logger.error("DAS storage _save failed: %s", exc)
 
 

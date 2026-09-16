@@ -116,7 +116,7 @@ class MainWindow(QMainWindow):
         self._connect_auto_persist_signals()
 
     def _apply_global_focus_style(self) -> None:
-        """Remove the dashed focus rectangle that appears on tabs and dropdowns."""
+        """Apply the global GUI theme (focus outline removal + light professional QSS)."""
         app = QApplication.instance()
         if app is None:
             return
@@ -135,6 +135,147 @@ class MainWindow(QMainWindow):
             }
             QTabBar::tab:focus {
                 border: none;
+            }
+            * {
+                font-family: 'Microsoft YaHei', '微软雅黑';
+            }
+            QMainWindow, QWidget {
+                background: #f2f5f9;
+                color: #1f2937;
+            }
+            QGroupBox {
+                border: 1px solid #d8dee9;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding-top: 4px;
+                background: #ffffff;
+                font-weight: bold;
+                color: #374151;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 10px;
+                padding: 2px 8px;
+                color: #2563eb;
+                background: transparent;
+            }
+            QPushButton {
+                background: #ffffff;
+                border: 1px solid #c9d4e3;
+                border-radius: 6px;
+                padding: 6px 12px;
+                color: #1f2937;
+            }
+            QPushButton:hover {
+                background: #eef3fb;
+                border-color: #2563eb;
+            }
+            QPushButton:pressed {
+                background: #dce7f7;
+            }
+            QPushButton:checked {
+                background: #2563eb;
+                color: #ffffff;
+                border-color: #2563eb;
+            }
+            QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+                background: #ffffff;
+                border: 1px solid #c9d4e3;
+                border-radius: 4px;
+                padding: 3px 6px;
+                color: #1f2937;
+                selection-background-color: #2563eb;
+            }
+            QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
+                border: 1px solid #2563eb;
+                background: #fbfdff;
+            }
+            QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
+                background: #eef1f5;
+                color: #9ca3af;
+            }
+            QComboBox QAbstractItemView {
+                background: #ffffff;
+                border: 1px solid #c9d4e3;
+                selection-background-color: #dbeafe;
+                selection-color: #1d4ed8;
+            }
+            QTabWidget::pane {
+                border: 1px solid #d8dee9;
+                background: #f2f5f9;
+                border-radius: 6px;
+            }
+            QTabBar::tab {
+                background: #e6ebf2;
+                color: #4b5563;
+                padding: 8px 24px;
+                margin: 2px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #2563eb;
+                font-weight: bold;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #f0f4fa;
+            }
+            QHeaderView::section {
+                background: #eef1f6;
+                border: 1px solid #d8dee9;
+                padding: 4px;
+                color: #374151;
+            }
+            QTableWidget, QTableView {
+                background: #ffffff;
+                gridline-color: #e2e8f0;
+                selection-background-color: #dbeafe;
+                selection-color: #1d4ed8;
+            }
+            QStatusBar {
+                background: #ffffff;
+                border-top: 1px solid #d8dee9;
+                color: #374151;
+            }
+            QCheckBox {
+                spacing: 6px;
+            }
+            QToolTip {
+                background: #1f2937;
+                color: #ffffff;
+                border: none;
+                padding: 4px;
+            }
+            QSplitter::handle {
+                background: #d8dee9;
+            }
+            QSplitter::handle:hover {
+                background: #2563eb;
+            }
+            QScrollBar:vertical {
+                background: #f2f5f9;
+                width: 12px;
+            }
+            QScrollBar::handle:vertical {
+                background: #c9d4e3;
+                border-radius: 5px;
+                min-height: 24px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #9fb0c6;
+            }
+            QScrollBar:horizontal {
+                background: #f2f5f9;
+                height: 12px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #c9d4e3;
+                border-radius: 5px;
+                min-width: 24px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #9fb0c6;
             }
             """
         )
@@ -175,17 +316,27 @@ class MainWindow(QMainWindow):
         # 设置Tab字体大小
         self.tab_widget.setStyleSheet("""
             QTabWidget::pane {
-                border: 1px solid #cccccc;
+                border: 1px solid #d8dee9;
+                border-radius: 6px;
             }
             QTabBar::tab {
-                font-size: 18px;
-                min-width: 128px;
+                font-size: 16px;
+                min-width: 120px;
                 padding: 8px 22px;
                 margin: 2px;
+                background: #e6ebf2;
+                color: #4b5563;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
             }
             QTabBar::tab:selected {
-                background-color: #e3f2fd;
-                border-bottom: 2px solid #2196f3;
+                background: #ffffff;
+                color: #2563eb;
+                font-weight: bold;
+                border-bottom: 2px solid #2563eb;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #f0f4fa;
             }
         """)
         main_layout.addWidget(self.tab_widget)
@@ -201,7 +352,7 @@ class MainWindow(QMainWindow):
         """创建标题栏"""
         header_widget = QWidget()
         header_widget.setFixedHeight(80)
-        header_widget.setStyleSheet("background-color: #f8f9fa; border-bottom: 2px solid #dee2e6;")
+        header_widget.setStyleSheet("background-color: #ffffff; border-bottom: 2px solid #2563eb;")
 
         header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(20, 10, 20, 10)
@@ -266,8 +417,8 @@ class MainWindow(QMainWindow):
         self._tab3_logger = logging.getLogger(f"{__name__}.ViewUI")
         self._tab3_last_fip_plot_monotonic = 0.0
         self._tab3_last_das_plot_monotonic = 0.0
-        self._tab3_fip_plot_min_interval_seconds = 0.5
-        self._tab3_das_plot_min_interval_seconds = 0.5
+        self._tab3_fip_plot_min_interval_seconds = 1.0
+        self._tab3_das_plot_min_interval_seconds = 1.0
         self._tab3_curve_max_points = 5000
         self._tab3_space_time_max_pixels = 120000
         self._tab3_ui_slow_threshold_ms = 80.0
@@ -403,7 +554,7 @@ class MainWindow(QMainWindow):
         self.time_display_duration_spin = QDoubleSpinBox()
         self.time_display_duration_spin.setToolTip("时域图滚动窗口长度：显示最近多少秒的数据")
         self.time_display_duration_spin.setRange(0.1, 60.0)
-        self.time_display_duration_spin.setValue(1.0)
+        self.time_display_duration_spin.setValue(2.0)
         self.time_display_duration_spin.setSingleStep(0.1)
         self.time_display_duration_spin.setSuffix(" s")
         layout.addWidget(self.time_display_duration_spin, 0, 1)
@@ -537,7 +688,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("总时间长度(s)"), 0, 2)
         self.tab3_space_time_total_seconds_spin = QDoubleSpinBox()
         self.tab3_space_time_total_seconds_spin.setRange(0.5, 120.0)
-        self.tab3_space_time_total_seconds_spin.setValue(5.0)
+        self.tab3_space_time_total_seconds_spin.setValue(2.0)
         self.tab3_space_time_total_seconds_spin.setDecimals(1)
         self.tab3_space_time_total_seconds_spin.setSingleStep(0.5)
         layout.addWidget(self.tab3_space_time_total_seconds_spin, 0, 3)
@@ -967,7 +1118,18 @@ class MainWindow(QMainWindow):
         return group
 
     def _create_data_storage_group(self) -> QGroupBox:
-        group = QGroupBox("存储控制与日志")
+        """存储控制与日志（拆分为三个子框：开关/参数/状态）。"""
+        wrapper = QGroupBox("存储控制与日志")
+        wrapper_layout = QVBoxLayout(wrapper)
+        wrapper_layout.setContentsMargins(4, 8, 4, 4)
+        wrapper_layout.setSpacing(6)
+        wrapper_layout.addWidget(self._create_storage_switch_group())
+        wrapper_layout.addWidget(self._create_storage_param_group())
+        wrapper_layout.addWidget(self._create_storage_status_group())
+        return wrapper
+
+    def _create_storage_switch_group(self) -> QGroupBox:
+        group = QGroupBox("存储开关与路径")
         layout = QGridLayout(group)
         for column in range(6):
             layout.setColumnStretch(column, 1)
@@ -994,59 +1156,88 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("eDAS路径"), 3, 0)
         self.tab3_edas_storage_path_edit = QLineEdit("D:/PCCP/eDASDATA")
         layout.addWidget(self.tab3_edas_storage_path_edit, 3, 1, 1, 5)
-        layout.addWidget(QLabel("FIP间隔(s)"), 4, 0)
+        return group
+
+    def _create_storage_param_group(self) -> QGroupBox:
+        group = QGroupBox("存储参数")
+        layout = QGridLayout(group)
+        for column in range(6):
+            layout.setColumnStretch(column, 1)
+        layout.addWidget(QLabel("FIP间隔(s)"), 0, 0)
         self.storage_interval_spin = QSpinBox()
-        self.storage_interval_spin.setRange(10, 300)
-        self.storage_interval_spin.setValue(10)
-        layout.addWidget(self.storage_interval_spin, 4, 1)
-        layout.addWidget(QLabel("联合间隔(s)"), 4, 2)
+        self.storage_interval_spin.setRange(1, 300)
+        self.storage_interval_spin.setValue(2)
+        layout.addWidget(self.storage_interval_spin, 0, 1)
+        layout.addWidget(QLabel("联合间隔(s)"), 0, 2)
         self.tab3_storage_interval_spin = QDoubleSpinBox()
         self.tab3_storage_interval_spin.setRange(1.0, 60.0)
-        self.tab3_storage_interval_spin.setValue(10.0)
+        self.tab3_storage_interval_spin.setValue(2.0)
         self.tab3_storage_interval_spin.setDecimals(1)
-        layout.addWidget(self.tab3_storage_interval_spin, 4, 3)
-        layout.addWidget(QLabel("缓存(s)"), 4, 4)
+        layout.addWidget(self.tab3_storage_interval_spin, 0, 3)
+        layout.addWidget(QLabel("缓存(s)"), 0, 4)
         self.tab3_cache_seconds_spin = QDoubleSpinBox()
         self.tab3_cache_seconds_spin.setRange(5.0, 120.0)
         self.tab3_cache_seconds_spin.setValue(10.0)
         self.tab3_cache_seconds_spin.setDecimals(1)
-        layout.addWidget(self.tab3_cache_seconds_spin, 4, 5)
-        layout.addWidget(QLabel("eDAS块/文件"), 5, 0)
+        layout.addWidget(self.tab3_cache_seconds_spin, 0, 5)
+        layout.addWidget(QLabel("eDAS块/文件"), 1, 0)
         self.tab3_edas_blocks_per_file_spin = QSpinBox()
         self.tab3_edas_blocks_per_file_spin.setRange(1, 100000)
         self.tab3_edas_blocks_per_file_spin.setValue(50)
-        layout.addWidget(self.tab3_edas_blocks_per_file_spin, 5, 1)
-        layout.addWidget(QLabel("eDAS队列"), 5, 2)
+        layout.addWidget(self.tab3_edas_blocks_per_file_spin, 1, 1)
+        layout.addWidget(QLabel("eDAS队列"), 1, 2)
         self.tab3_edas_queue_packets_spin = QSpinBox()
         self.tab3_edas_queue_packets_spin.setRange(1, 4096)
         self.tab3_edas_queue_packets_spin.setValue(200)
-        layout.addWidget(self.tab3_edas_queue_packets_spin, 5, 3)
-        layout.addWidget(QLabel("FIP降采样"), 5, 4)
+        layout.addWidget(self.tab3_edas_queue_packets_spin, 1, 3)
+        layout.addWidget(QLabel("FIP降采样"), 1, 4)
         self.storage_downsample_spin = QSpinBox()
         self.storage_downsample_spin.setRange(1, 100)
         self.storage_downsample_spin.setValue(1)
-        layout.addWidget(self.storage_downsample_spin, 5, 5)
-        layout.addWidget(QLabel("预计文件"), 6, 0)
+        layout.addWidget(self.storage_downsample_spin, 1, 5)
+        layout.addWidget(QLabel("联合格式"), 2, 0)
+        self.tab3_joint_format_combo = QComboBox()
+        self.tab3_joint_format_combo.addItem("bin (裸二进制流式)", "bin")
+        self.tab3_joint_format_combo.addItem("npz (压缩归档)", "npz")
+        self.tab3_joint_format_combo.addItem("h5 (HDF5)", "h5")
+        self.tab3_joint_format_combo.setCurrentIndex(1)
+        self.tab3_joint_format_combo.setToolTip("bin: 裸二进制流式写盘，支持最高吞吐(500MB/s+); npz: 压缩归档(修复游标丢帧); h5: HDF5 可选gzip压缩")
+        layout.addWidget(self.tab3_joint_format_combo, 2, 1, 1, 2)
+        layout.addWidget(QLabel("H5压缩"), 2, 3)
+        self.tab3_joint_h5_compress_combo = QComboBox()
+        self.tab3_joint_h5_compress_combo.addItem("none (最快)", "none")
+        self.tab3_joint_h5_compress_combo.addItem("gzip", "gzip")
+        self.tab3_joint_h5_compress_combo.setCurrentIndex(0)
+        self.tab3_joint_h5_compress_combo.setToolTip("仅对 h5 格式生效; gzip 压缩会降低写盘吞吐，高数据率建议 none")
+        layout.addWidget(self.tab3_joint_h5_compress_combo, 2, 4, 1, 2)
+        return group
+
+    def _create_storage_status_group(self) -> QGroupBox:
+        group = QGroupBox("存储状态与日志")
+        layout = QGridLayout(group)
+        for column in range(6):
+            layout.setColumnStretch(column, 1)
+        layout.addWidget(QLabel("预计文件"), 0, 0)
         self.data_fip_size_label = QLabel("FIP: -")
-        layout.addWidget(self.data_fip_size_label, 6, 1, 1, 2)
+        layout.addWidget(self.data_fip_size_label, 0, 1, 1, 2)
         self.data_edas_size_label = QLabel("eDAS: -")
-        layout.addWidget(self.data_edas_size_label, 6, 3, 1, 2)
+        layout.addWidget(self.data_edas_size_label, 0, 3, 1, 2)
         self.data_joint_size_label = QLabel("联合: -")
-        layout.addWidget(self.data_joint_size_label, 6, 5)
-        layout.addWidget(QLabel("FIP成功/失败"), 7, 0)
+        layout.addWidget(self.data_joint_size_label, 0, 5)
+        layout.addWidget(QLabel("FIP成功/失败"), 1, 0)
         self.data_fip_storage_count_label = QLabel("0 / 0")
-        layout.addWidget(self.data_fip_storage_count_label, 7, 1, 1, 2)
-        layout.addWidget(QLabel("eDAS成功/失败"), 7, 3)
+        layout.addWidget(self.data_fip_storage_count_label, 1, 1, 1, 2)
+        layout.addWidget(QLabel("eDAS成功/失败"), 1, 3)
         self.data_edas_storage_count_label = QLabel("0 / 0")
-        layout.addWidget(self.data_edas_storage_count_label, 7, 4, 1, 2)
-        layout.addWidget(QLabel("联合Last"), 8, 0)
+        layout.addWidget(self.data_edas_storage_count_label, 1, 4, 1, 2)
+        layout.addWidget(QLabel("联合Last"), 2, 0)
         self.tab3_last_storage_label = QLabel("-")
         self.tab3_last_storage_label.setWordWrap(False)
-        layout.addWidget(self.tab3_last_storage_label, 8, 1, 1, 5)
-        layout.addWidget(QLabel("eDAS Last"), 9, 0)
+        layout.addWidget(self.tab3_last_storage_label, 2, 1, 1, 5)
+        layout.addWidget(QLabel("eDAS Last"), 3, 0)
         self.tab3_edas_last_storage_label = QLabel("-")
         self.tab3_edas_last_storage_label.setWordWrap(False)
-        layout.addWidget(self.tab3_edas_last_storage_label, 9, 1, 1, 5)
+        layout.addWidget(self.tab3_edas_last_storage_label, 3, 1, 1, 5)
         return group
 
     def _create_config_group(self) -> QGroupBox:
@@ -2100,6 +2291,8 @@ class MainWindow(QMainWindow):
         self._set_line_text(getattr(self, "tab3_storage_path_edit", None), storage.get("path"))
         self._set_spin_value(getattr(self, "tab3_storage_interval_spin", None), storage.get("interval_seconds"))
         self._set_spin_value(getattr(self, "tab3_cache_seconds_spin", None), storage.get("cache_seconds"))
+        self._set_combo_value(getattr(self, "tab3_joint_format_combo", None), storage.get("format", "npz"))
+        self._set_combo_value(getattr(self, "tab3_joint_h5_compress_combo", None), storage.get("h5_compression", "none"))
         self._set_checked(getattr(self, "tab3_edas_storage_toggle_btn", None), storage.get("edas_enabled"))
         self._set_line_text(getattr(self, "tab3_edas_storage_path_edit", None), storage.get("edas_path"))
         self._set_spin_value(getattr(self, "tab3_edas_blocks_per_file_spin", None), storage.get("edas_blocks_per_file"))
@@ -2189,6 +2382,7 @@ class MainWindow(QMainWindow):
             self.tab3_colormap_combo, self.tab3_v_range_edit,
             self.tab3_joint_storage_toggle_btn, self.tab3_storage_path_edit,
             self.tab3_storage_interval_spin, self.tab3_cache_seconds_spin,
+            self.tab3_joint_format_combo, self.tab3_joint_h5_compress_combo,
             self.tab3_edas_storage_toggle_btn, self.tab3_edas_storage_path_edit,
             self.tab3_edas_blocks_per_file_spin, self.tab3_edas_queue_packets_spin,
             self.setting_gui_font_spin, self.setting_plot_title_font_spin,
@@ -2426,6 +2620,9 @@ class MainWindow(QMainWindow):
                 "path": self.tab3_storage_path_edit.text(),
                 "interval_seconds": self.tab3_storage_interval_spin.value(),
                 "cache_seconds": self.tab3_cache_seconds_spin.value(),
+                "format": self.tab3_joint_format_combo.currentData(),
+                "h5_compression": self.tab3_joint_h5_compress_combo.currentData(),
+                "h5_compression_level": 4,
                 "edas_enabled": self.tab3_edas_storage_toggle_btn.isChecked(),
                 "edas_path": self.tab3_edas_storage_path_edit.text(),
                 "edas_blocks_per_file": self.tab3_edas_blocks_per_file_spin.value(),
@@ -3153,8 +3350,9 @@ class MainWindow(QMainWindow):
 
         The View time-domain curves receive only one packet per update. Without a
         rolling buffer the x-axis uses cumulative packet time, so the trace scrolls
-        right and falls out of view. Keeping a per-curve/per-sensor deque and
-        trimming to the display window makes the latest waveform stay on screen.
+        right and falls out of view. Keeping a per-curve/per-sensor deque of numpy
+        segments and trimming to the display window makes the latest waveform stay
+        on screen (right-to-left rolling) while bounding memory to the window size.
         """
         key = (int(curve_index), int(sensor_index))
         state = self._fip_curve_rolling.get(key)
@@ -3169,15 +3367,29 @@ class MainWindow(QMainWindow):
             values_arr = values_arr[:count]
         if times_arr.size == 0:
             return np.array([], dtype=np.float64), np.array([], dtype=np.float32)
-        state["times"].extend(times_arr.tolist())
-        state["values"].extend(values_arr.tolist())
+        state["times"].append(times_arr)
+        state["values"].append(values_arr)
         window = self._time_window_seconds()
         latest = float(times_arr[-1])
         cutoff = latest - window
-        while state["times"] and state["times"][0] < cutoff:
+        while state["times"]:
+            seg = state["times"][0]
+            if len(seg) and seg[-1] >= cutoff:
+                break
             state["times"].popleft()
             state["values"].popleft()
-        return np.asarray(state["times"], dtype=np.float64), np.asarray(state["values"], dtype=np.float32)
+        if state["times"]:
+            first_t = state["times"][0]
+            if first_t[0] < cutoff:
+                idx = int(np.searchsorted(first_t, cutoff, side="right"))
+                state["times"][0] = first_t[idx:]
+                state["values"][0] = state["values"][0][idx:]
+        if not state["times"]:
+            return np.array([], dtype=np.float64), np.array([], dtype=np.float32)
+        return (
+            np.concatenate(state["times"]).astype(np.float64, copy=False),
+            np.concatenate(state["values"]).astype(np.float32, copy=False),
+        )
 
     def _follow_time_axis(self, curve_item, times: np.ndarray) -> None:
         """Slide the time-domain x-axis to keep the newest window in view."""
@@ -4119,6 +4331,8 @@ class MainWindow(QMainWindow):
                 getattr(self, 'tab3_storage_path_edit', None),
                 getattr(self, 'tab3_storage_interval_spin', None),
                 getattr(self, 'tab3_cache_seconds_spin', None),
+                getattr(self, 'tab3_joint_format_combo', None),
+                getattr(self, 'tab3_joint_h5_compress_combo', None),
                 getattr(self, 'tab3_edas_storage_path_edit', None),
                 getattr(self, 'tab3_edas_blocks_per_file_spin', None),
                 getattr(self, 'tab3_edas_queue_packets_spin', None),

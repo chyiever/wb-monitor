@@ -133,6 +133,16 @@ class AlignedSessionCoordinator(QObject):
             frames = [self._build_frame_locked(c) for c in new_counts]
         return frames
 
+    def latest_frame_bytes(self) -> int:
+        """Public estimate of one current aligned frame's in-memory size."""
+        with self._lock:
+            return self._latest_frame_bytes_locked()
+
+    def latest_packet_duration_seconds(self) -> float:
+        """Public latest packet duration; falls back to the session default."""
+        with self._lock:
+            return self._latest_packet_duration_locked()
+
     def snapshot_status(self) -> AlignmentStatusSnapshot:
         """Return a copy of the latest status for storage or UI use."""
         with self._lock:

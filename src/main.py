@@ -260,7 +260,7 @@ class PCCPMonitorApp:
             "storage": {
                 "realtime": {
                     "enabled": False,
-                    "interval": 10,
+                    "interval": 2,
                     "downsample_factor": 1,
                     "path": "D:/PCCP/FIPdata"
                 },
