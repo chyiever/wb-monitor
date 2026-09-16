@@ -70,7 +70,9 @@ python .\fipedasREAD\run.py D:\PCCP\FIPeDASDATA\FIPeDAS-20260916-120000.000.npz
 - 第二张时域波形图。
 - DAS timespace 图和色标。
 
-timespace 颜色图默认使用 `Seismic`，也可切换为 `Viridis`、`Plasma`、`Inferno`、`Magma`、`Gray` 或 `Jet`。两张时域图右侧保留与 timespace 色标等宽的空白区，保证三张图的真实绘图区宽度一致，横轴刻度可上下对齐。
+timespace 颜色图默认使用 `Seismic`，也可切换为 `RdBu`、`CoolWarm`、`Viridis`、`Plasma`、`Inferno`、`Magma`、`Gray` 或 `Jet`。两张时域图右侧保留与 timespace 色标等宽的空白区，保证三张图的真实绘图区宽度一致，横轴刻度可上下对齐。
+
+曲线配色采用色盲安全的蓝(`#0072B2`)/朱红(`#D55E00`)组合；界面通过统一 QSS 提供圆角分组框、聚焦高亮、按钮反馈与选中高亮，开「自动色阶」时 Vmin/Vmax 输入框自动置灰提示不可编辑。
 
 三张图放在垂直分割器中，默认高度比例为 `1:1:2`。用户可以拖动图之间的分割条手动调整每张图的高度。
 

@@ -55,14 +55,63 @@ pg.setConfigOption("foreground", "k")
 class ReplayWindow(QMainWindow):
     """Simple joint NPZ replay window."""
 
-    COLOR_MAPS = ("Seismic", "Viridis", "Plasma", "Inferno", "Magma", "Gray", "Jet")
+    COLOR_MAPS = ("Seismic", "RdBu", "CoolWarm", "Viridis", "Plasma", "Inferno", "Magma", "Gray", "Jet")
     COLOR_BAR_WIDTH = 100
     REDRAW_DEBOUNCE_MS = 120
+    CURVE1_COLOR = "#0072B2"
+    CURVE2_COLOR = "#D55E00"
+    APP_STYLE = """
+        QGroupBox {
+            border: 1px solid #cfd8dc;
+            border-radius: 6px;
+            margin-top: 14px;
+            padding-top: 2px;
+            font-weight: 600;
+            background: #f7f9fa;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px;
+            color: #37474f;
+        }
+        QPushButton {
+            background: #eef2f5;
+            border: 1px solid #b0bec5;
+            border-radius: 4px;
+            padding: 4px 10px;
+        }
+        QPushButton:hover { background: #e0e8ed; }
+        QPushButton:pressed { background: #d0dbe3; }
+        QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {
+            border: 1px solid #b0bec5;
+            border-radius: 4px;
+            padding: 2px 4px;
+            background: #ffffff;
+        }
+        QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {
+            border: 1px solid #0072b2;
+        }
+        QListWidget {
+            border: 1px solid #cfd8dc;
+            border-radius: 6px;
+            background: #ffffff;
+            outline: none;
+        }
+        QListWidget::item { padding: 2px 4px; }
+        QListWidget::item:selected {
+            background: #d6e9fb;
+            color: #0b3d6e;
+        }
+        QStatusBar { background: #eceff1; }
+        QStatusBar::item { border: none; }
+    """
 
     def __init__(self, initial_path: Path) -> None:
         super().__init__()
         self.setWindowTitle("FIP/eDAS Joint NPZ Replay")
-        self.resize(1500, 900)
+        self.resize(1600, 960)
+        self.setStyleSheet(self.APP_STYLE)
         self._data_dir = initial_path if initial_path.is_dir() else initial_path.parent
         self._initial_file = initial_path if initial_path.is_file() else None
         self._syncing_x_range = False
@@ -111,9 +160,14 @@ class ReplayWindow(QMainWindow):
         splitter.addWidget(self._build_plot_panel())
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
-        splitter.setSizes([390, 1110])
+        splitter.setSizes([410, 1190])
         self.setCentralWidget(central)
         self.setStatusBar(QStatusBar(self))
+
+    def _update_manual_levels_state(self) -> None:
+        auto = self.auto_levels_check.isChecked()
+        self.space_vmin_spin.setEnabled(not auto)
+        self.space_vmax_spin.setEnabled(not auto)
 
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
@@ -284,6 +338,7 @@ class ReplayWindow(QMainWindow):
         layout.addWidget(self.space_baseline_check, 3, 0, 1, 2)
         self.auto_levels_check = QCheckBox("自动色阶")
         self.auto_levels_check.setChecked(True)
+        self.auto_levels_check.setToolTip("勾选时自动按 2%~98% 百分位计算色阶；取消后可手动设置 Vmin/Vmax")
         layout.addWidget(self.auto_levels_check, 3, 2, 1, 2)
         layout.addWidget(QLabel("Vmin"), 4, 0)
         self.space_vmin_spin = QDoubleSpinBox()
@@ -291,6 +346,7 @@ class ReplayWindow(QMainWindow):
         self.space_vmin_spin.setDecimals(3)
         self.space_vmin_spin.setValue(-1.0)
         self.space_vmin_spin.setMaximumWidth(120)
+        self.space_vmin_spin.setToolTip("手动色阶下限（需取消自动色阶）")
         layout.addWidget(self.space_vmin_spin, 4, 1)
         layout.addWidget(QLabel("Vmax"), 4, 2)
         self.space_vmax_spin = QDoubleSpinBox()
@@ -298,7 +354,9 @@ class ReplayWindow(QMainWindow):
         self.space_vmax_spin.setDecimals(3)
         self.space_vmax_spin.setValue(1.0)
         self.space_vmax_spin.setMaximumWidth(120)
+        self.space_vmax_spin.setToolTip("手动色阶上限（需取消自动色阶）")
         layout.addWidget(self.space_vmax_spin, 4, 3)
+        self._update_manual_levels_state()
         return group
 
     def _build_plot_panel(self) -> QWidget:
@@ -309,11 +367,11 @@ class ReplayWindow(QMainWindow):
         self.curve1_plot = self._new_plot("Waveform 1")
         self.curve1_plot.setLabel("bottom", "Time", units="s")
         self.curve1_plot.setLabel("left", "Amplitude")
-        self.curve1 = self.curve1_plot.plot(pen=pg.mkPen("#006d77", width=1.4), name="Waveform 1")
+        self.curve1 = self.curve1_plot.plot(pen=pg.mkPen(self.CURVE1_COLOR, width=1.6), name="Waveform 1")
         self.curve2_plot = self._new_plot("Waveform 2")
         self.curve2_plot.setLabel("bottom", "Time", units="s")
         self.curve2_plot.setLabel("left", "Amplitude")
-        self.curve2 = self.curve2_plot.plot(pen=pg.mkPen("#c1121f", width=1.4), name="Waveform 2")
+        self.curve2 = self.curve2_plot.plot(pen=pg.mkPen(self.CURVE2_COLOR, width=1.6), name="Waveform 2")
         self.space_plot = self._new_plot("DAS Timespace")
         self.space_plot.setLabel("bottom", "Time", units="s")
         self.space_plot.setLabel("left", "Channel")
@@ -427,6 +485,7 @@ class ReplayWindow(QMainWindow):
         self.fip_filter_band_edit.returnPressed.connect(self._schedule_redraw)
         self.edas_filter_band_edit.returnPressed.connect(self._schedule_redraw)
         self.channel_range_edit.returnPressed.connect(self._schedule_redraw)
+        self.auto_levels_check.toggled.connect(self._update_manual_levels_state)
 
     def _browse(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "选择 FIPeDAS joint NPZ 目录", self.path_edit.text())
@@ -662,6 +721,20 @@ def _build_colormap(name: str) -> pg.ColorMap:
             [255, 255, 255],
             [255, 0, 0],
             [128, 0, 0],
+        ],
+        "rdbu": [
+            [103, 0, 31],
+            [178, 24, 43],
+            [247, 247, 247],
+            [33, 102, 172],
+            [5, 48, 97],
+        ],
+        "coolwarm": [
+            [59, 76, 192],
+            [154, 165, 222],
+            [238, 240, 251],
+            [244, 123, 123],
+            [180, 4, 38],
         ],
         "viridis": [
             [68, 1, 84],
