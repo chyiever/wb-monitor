@@ -35,7 +35,7 @@ from processing.downsampling import Downsampler
 from fip import OptimizedTab1ThreadManager, PSDCalculator, RawDataPacket
 from detection import FIPTab2Manager
 from alignment import AlignedSessionCoordinator
-from das import DASTab3Manager
+from das import EDASManager
 
 # Import system configuration
 from constants import (
@@ -150,7 +150,7 @@ class PCCPMonitorApp:
         # Independent Tab2 manager
         self.fip_tab2_manager = None
         self.alignment_coordinator = None
-        self.tab3_manager = None
+        self.edas_manager = None
         self.fip_monitoring_active = False
         self.das_monitoring_active = False
         self._fip_packet_sample_rate_override_hz = None
@@ -419,8 +419,8 @@ class PCCPMonitorApp:
             self._sync_tab2_settings()
 
             self.alignment_coordinator = AlignedSessionCoordinator(cache_seconds=10.0)
-            self.tab3_manager = DASTab3Manager(self.main_window, coordinator=self.alignment_coordinator)
-            self.tab1_manager.data_processor.data_processed.connect(self.tab3_manager.process_fip_processed_data)
+            self.edas_manager = EDASManager(self.main_window, coordinator=self.alignment_coordinator)
+            self.tab1_manager.data_processor.data_processed.connect(self.edas_manager.process_fip_processed_data)
             self._sync_tab3_settings()
 
             self.logger.info("All processors initialized successfully")
@@ -978,7 +978,7 @@ class PCCPMonitorApp:
                     sample_rate_hz=sample_rate_hz,
                     phase_unwrap_enabled=phase_unwrap_enabled,
                 )
-            if self.tab3_manager:
+            if self.edas_manager:
                 self._sync_tab3_settings()
             self.logger.info(
                 "FIP input settings updated: sensor_count=%d selected=FIP%d duration=%.6fs sample_rate=%.1fHz unwrap=%s",
@@ -994,13 +994,13 @@ class PCCPMonitorApp:
     def _start_tab3_monitoring(self):
         """Start the independent DAS monitoring pipeline."""
         try:
-            self.logger.info("Starting Tab3 DAS monitoring...")
+            self.logger.info("Starting eDAS monitoring...")
             self.logger.debug("TAB3_NODE main.start requested")
             self._ensure_alignment_session_started()
-            if self.tab3_manager:
-                self.tab3_manager.reset()
+            if self.edas_manager:
+                self.edas_manager.reset()
                 self._sync_tab3_settings()
-                if not self.tab3_manager.start():
+                if not self.edas_manager.start():
                     raise RuntimeError("Failed to start DAS TCP server")
             self.das_monitoring_active = True
             if hasattr(self.main_window, 'set_tab3_monitoring_active'):
@@ -1018,10 +1018,10 @@ class PCCPMonitorApp:
     def _stop_tab3_monitoring(self):
         """Stop the independent DAS monitoring pipeline."""
         try:
-            self.logger.info("Stopping Tab3 DAS monitoring...")
+            self.logger.info("Stopping eDAS monitoring...")
             self.logger.debug("TAB3_NODE main.stop requested")
-            if self.tab3_manager:
-                self.tab3_manager.stop()
+            if self.edas_manager:
+                self.edas_manager.stop()
             self.das_monitoring_active = False
             if hasattr(self.main_window, 'set_tab3_monitoring_active'):
                 self.main_window.set_tab3_monitoring_active(False)
@@ -1062,13 +1062,13 @@ class PCCPMonitorApp:
             self.logger.error(f"Error syncing Tab2 settings: {e}")
 
     def _sync_tab3_settings(self):
-        """Push the latest Tab3 UI settings into the independent Tab3 manager."""
+        """Push the latest eDAS/Data page settings into the eDAS manager."""
         try:
-            if self.tab3_manager:
+            if self.edas_manager:
                 self.logger.debug("TAB3_NODE main.sync_settings")
-                self.tab3_manager.sync_from_ui()
+                self.edas_manager.sync_from_ui()
         except Exception as e:
-            self.logger.error(f"Error syncing Tab3 settings: {e}")
+            self.logger.error(f"Error syncing eDAS settings: {e}")
 
     def _clear_tab2_alarms(self):
         """Clear the Tab2 alarm table."""
@@ -1264,8 +1264,8 @@ class PCCPMonitorApp:
             if self.tab1_manager:
                 self.tab1_manager.stop()
 
-            if self.tab3_manager:
-                self.tab3_manager.stop()
+            if self.edas_manager:
+                self.edas_manager.stop()
 
             if self.tcp_server:
                 self.tcp_server.stop_server()

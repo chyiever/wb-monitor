@@ -1,4 +1,4 @@
-"""Manager for the independent Tab3 DAS pipeline."""
+"""Manager for the independent eDAS communication, plotting, and storage pipeline."""
 
 from __future__ import annotations
 
@@ -21,12 +21,12 @@ from .tcp_server import DASTCPServer
 from .types import DASParsedPacket, DASRawPacket
 
 
-class DASTab3Manager(QObject):
-    """Own the Tab3 DAS server, plotting pipeline, and raw joint storage."""
+class EDASManager(QObject):
+    """Own the eDAS server, plotting pipeline, and raw joint storage."""
 
     def __init__(self, main_window, coordinator: AlignedSessionCoordinator) -> None:
         super().__init__()
-        self.logger = logging.getLogger(f"{__name__}.DASTab3Manager")
+        self.logger = logging.getLogger(f"{__name__}.EDASManager")
         self.main_window = main_window
         self.coordinator = coordinator
         settings = self.main_window.get_tab3_settings()

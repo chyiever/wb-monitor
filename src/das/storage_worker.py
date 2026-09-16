@@ -1,4 +1,4 @@
-"""独立存储线程，将 DASTab3Manager 的写盘操作从主线程 QTimer 中解耦。
+"""独立存储线程，将 EDASManager 的写盘操作从主线程 QTimer 中解耦。
 
 设计背景（T3-01）：
     原实现中 _maybe_store_snapshot 由 QTimer（主线程）每秒触发并直接调用
