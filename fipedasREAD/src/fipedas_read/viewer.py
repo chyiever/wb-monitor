@@ -7,7 +7,7 @@ from typing import Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QThread, QTimer
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QFileDialog,
@@ -32,21 +32,18 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from .data_loader import (
-    JointReplayData,
-    build_space_time_matrix,
-    concatenate_das_channel,
-    concatenate_fip_frames,
-    iter_joint_npz_files,
-    load_joint_npz,
-)
+from .data_loader import iter_joint_npz_files
 from .preprocess import (
     FilterSpec,
     PreprocessSpec,
-    decimate_for_plot,
     parse_band_text,
-    preprocess_waveform,
-    robust_levels,
+)
+from .worker import (
+    CurveRequest,
+    RedrawRequest,
+    RedrawResult,
+    ReplayWorker,
+    SpaceRequest,
 )
 
 
@@ -60,6 +57,7 @@ class ReplayWindow(QMainWindow):
 
     COLOR_MAPS = ("Seismic", "Viridis", "Plasma", "Inferno", "Magma", "Gray", "Jet")
     COLOR_BAR_WIDTH = 100
+    REDRAW_DEBOUNCE_MS = 120
 
     def __init__(self, initial_path: Path) -> None:
         super().__init__()
@@ -67,16 +65,39 @@ class ReplayWindow(QMainWindow):
         self.resize(1500, 900)
         self._data_dir = initial_path if initial_path.is_dir() else initial_path.parent
         self._initial_file = initial_path if initial_path.is_file() else None
-        self._current_data: Optional[JointReplayData] = None
         self._syncing_x_range = False
         self._auto_range_pending = True
+        self._worker_seq = 0
+        self._pending_request: Optional[RedrawRequest] = None
+        self._current_path: Optional[Path] = None
+
+        self._redraw_timer = QTimer(self)
+        self._redraw_timer.setSingleShot(True)
+        self._redraw_timer.setInterval(self.REDRAW_DEBOUNCE_MS)
+        self._redraw_timer.timeout.connect(self._flush_requests)
 
         font = QFont()
         font.setPointSize(9)
         self.setFont(font)
         self._build_ui()
         self._connect_signals()
+        self._start_worker()
         self._scan_files(select_file=self._initial_file)
+
+    def _start_worker(self) -> None:
+        self._worker_thread = QThread(self)
+        self._worker_thread.setObjectName("replay-worker")
+        self._worker = ReplayWorker()
+        self._worker.moveToThread(self._worker_thread)
+        self._worker.redrawDone.connect(self._on_redraw_done)
+        self._worker.failed.connect(self._on_worker_failed)
+        self._worker_thread.start()
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._redraw_timer.stop()
+        self._worker_thread.quit()
+        self._worker_thread.wait(3000)
+        super().closeEvent(event)
 
     def _build_ui(self) -> None:
         central = QWidget()
@@ -264,6 +285,20 @@ class ReplayWindow(QMainWindow):
         self.auto_levels_check = QCheckBox("自动色阶")
         self.auto_levels_check.setChecked(True)
         layout.addWidget(self.auto_levels_check, 3, 2, 1, 2)
+        layout.addWidget(QLabel("Vmin"), 4, 0)
+        self.space_vmin_spin = QDoubleSpinBox()
+        self.space_vmin_spin.setRange(-1e12, 1e12)
+        self.space_vmin_spin.setDecimals(3)
+        self.space_vmin_spin.setValue(-1.0)
+        self.space_vmin_spin.setMaximumWidth(120)
+        layout.addWidget(self.space_vmin_spin, 4, 1)
+        layout.addWidget(QLabel("Vmax"), 4, 2)
+        self.space_vmax_spin = QDoubleSpinBox()
+        self.space_vmax_spin.setRange(-1e12, 1e12)
+        self.space_vmax_spin.setDecimals(3)
+        self.space_vmax_spin.setValue(1.0)
+        self.space_vmax_spin.setMaximumWidth(120)
+        layout.addWidget(self.space_vmax_spin, 4, 3)
         return group
 
     def _build_plot_panel(self) -> QWidget:
@@ -289,16 +324,31 @@ class ReplayWindow(QMainWindow):
         self.histogram.setMaximumWidth(120)
         self.histogram.setImageItem(self.space_image)
 
-        layout.addWidget(self._plot_row(self.curve1_plot, add_colorbar_space=True), 1)
-        layout.addWidget(self._plot_row(self.curve2_plot, add_colorbar_space=True), 1)
+        self.plot_height_splitter = QSplitter(Qt.Vertical)
+        self.plot_height_splitter.setChildrenCollapsible(False)
+        self.plot_height_splitter.setHandleWidth(7)
+        layout.addWidget(self.plot_height_splitter, 1)
+
+        curve1_row = self._plot_row(self.curve1_plot, add_colorbar_space=True)
+        curve2_row = self._plot_row(self.curve2_plot, add_colorbar_space=True)
+        curve1_row.setMinimumHeight(120)
+        curve2_row.setMinimumHeight(120)
         space_row = QWidget()
+        space_row.setMinimumHeight(180)
         space_layout = QHBoxLayout(space_row)
         space_layout.setContentsMargins(0, 0, 0, 0)
         space_layout.setSpacing(6)
         space_layout.addWidget(self.space_plot, 1)
         self.histogram.setFixedWidth(self.COLOR_BAR_WIDTH)
         space_layout.addWidget(self.histogram, 0)
-        layout.addWidget(space_row, 1)
+
+        self.plot_height_splitter.addWidget(curve1_row)
+        self.plot_height_splitter.addWidget(curve2_row)
+        self.plot_height_splitter.addWidget(space_row)
+        self.plot_height_splitter.setStretchFactor(0, 1)
+        self.plot_height_splitter.setStretchFactor(1, 1)
+        self.plot_height_splitter.setStretchFactor(2, 2)
+        self.plot_height_splitter.setSizes([220, 220, 440])
 
         self._set_axis_widths()
         self._configure_image_colormap()
@@ -346,7 +396,7 @@ class ReplayWindow(QMainWindow):
         self.refresh_btn.clicked.connect(lambda: self._scan_files())
         self.path_edit.returnPressed.connect(lambda: self._scan_files())
         self.file_list.currentItemChanged.connect(self._on_file_selected)
-        self.apply_btn.clicked.connect(self._redraw_current)
+        self.apply_btn.clicked.connect(self._schedule_redraw)
         self.reset_view_btn.clicked.connect(self._reset_view)
         for widget in (
             self.curve1_combo,
@@ -368,13 +418,15 @@ class ReplayWindow(QMainWindow):
             self.colormap_combo,
             self.space_baseline_check,
             self.auto_levels_check,
+            self.space_vmin_spin,
+            self.space_vmax_spin,
         ):
             signal = getattr(widget, "valueChanged", None) or getattr(widget, "currentTextChanged", None) or getattr(widget, "toggled", None)
             if signal is not None:
-                signal.connect(lambda *_args: self._redraw_current())
-        self.fip_filter_band_edit.returnPressed.connect(self._redraw_current)
-        self.edas_filter_band_edit.returnPressed.connect(self._redraw_current)
-        self.channel_range_edit.returnPressed.connect(self._redraw_current)
+                signal.connect(lambda *_args: self._schedule_redraw())
+        self.fip_filter_band_edit.returnPressed.connect(self._schedule_redraw)
+        self.edas_filter_band_edit.returnPressed.connect(self._schedule_redraw)
+        self.channel_range_edit.returnPressed.connect(self._schedule_redraw)
 
     def _browse(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "选择 FIPeDAS joint NPZ 目录", self.path_edit.text())
@@ -407,58 +459,70 @@ class ReplayWindow(QMainWindow):
         self.file_list.blockSignals(False)
         self.statusBar().showMessage(f"发现 {self.file_list.count()} 个 npz 文件")
         if current is not None:
-            self._load_file(Path(current.data(Qt.UserRole)))
+            self._select_path(Path(current.data(Qt.UserRole)))
         else:
-            self._current_data = None
+            self._current_path = None
             self.file_info_label.setText("未找到 .npz 文件")
             self._clear_plots()
 
     def _on_file_selected(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
         if current is None:
             return
-        self._load_file(Path(current.data(Qt.UserRole)))
+        self._select_path(Path(current.data(Qt.UserRole)))
 
-    def _load_file(self, path: Path) -> None:
-        try:
-            self._current_data = load_joint_npz(path)
-        except Exception as exc:
-            QMessageBox.critical(self, "读取失败", f"{path}\n\n{exc}")
-            self._current_data = None
-            self._clear_plots()
-            return
+    def _select_path(self, path: Path) -> None:
+        self._current_path = path
         self._auto_range_pending = True
-        self._update_file_info()
-        self._redraw_current()
+        self._schedule_redraw()
 
-    def _update_file_info(self) -> None:
-        data = self._current_data
-        if data is None:
-            self.file_info_label.setText("未加载")
+    def _schedule_redraw(self) -> None:
+        if self._current_path is None:
             return
-        fip_rate = _median_text(data.fip_rates_hz, "Hz")
-        das_rate = _median_text(data.das_rates_hz, "Hz")
-        das_channels = int(np.nanmax(data.das_channel_counts)) if data.das_channel_counts.size else 0
-        self.file_info_label.setText(
-            f"{data.format_version}\n"
-            f"frames={data.frame_count}, time={data.start_time:.3f}-{data.end_time:.3f}s\n"
-            f"FIP rate={fip_rate}, DAS rate={das_rate}, channels={das_channels}"
+        request = self._build_request()
+        if request is None:
+            return
+        self._worker_seq += 1
+        self._pending_request = request
+        self._redraw_timer.start()
+
+    def _flush_requests(self) -> None:
+        if self._pending_request is not None:
+            request = self._pending_request
+            self._pending_request = None
+            self._worker.redraw(request)
+
+    def _build_request(self) -> Optional[RedrawRequest]:
+        if self._current_path is None:
+            return None
+        ch0, ch1 = _parse_range(self.channel_range_edit.text(), 0, 199)
+        curve1_source = self.curve1_combo.currentText()
+        curve2_source = self.curve2_combo.currentText()
+        return RedrawRequest(
+            seq=self._worker_seq + 1,
+            path=str(self._current_path),
+            curve1=CurveRequest(
+                source=curve1_source,
+                das_channel=self.das_channel_spin.value(),
+                preprocess=self._preprocess_spec(curve1_source),
+                max_points=self.max_points_spin.value(),
+            ),
+            curve2=CurveRequest(
+                source=curve2_source,
+                das_channel=self.das_channel_spin.value(),
+                preprocess=self._preprocess_spec(curve2_source),
+                max_points=self.max_points_spin.value(),
+            ),
+            space=SpaceRequest(
+                channel_start=ch0,
+                channel_end=ch1,
+                time_downsample=self.space_time_downsample_spin.value(),
+                space_downsample=self.space_downsample_spin.value(),
+                remove_baseline=self.space_baseline_check.isChecked(),
+                auto_levels=self.auto_levels_check.isChecked(),
+                vmin=self.space_vmin_spin.value(),
+                vmax=self.space_vmax_spin.value(),
+            ),
         )
-        self.statusBar().showMessage(f"已加载 {data.path.name}")
-
-    def _redraw_current(self) -> None:
-        data = self._current_data
-        if data is None:
-            return
-        try:
-            self._configure_image_colormap()
-            self._draw_curve(1, self.curve1_combo.currentText())
-            self._draw_curve(2, self.curve2_combo.currentText())
-            self._draw_space_time()
-            if self._auto_range_pending:
-                self._reset_view()
-                self._auto_range_pending = False
-        except Exception as exc:
-            QMessageBox.warning(self, "绘图失败", str(exc))
 
     def _preprocess_spec(self, source: str) -> PreprocessSpec:
         is_fip = source in ("FIP1", "FIP2")
@@ -488,66 +552,40 @@ class ReplayWindow(QMainWindow):
             ),
         )
 
-    def _draw_curve(self, curve_index: int, source: str) -> None:
-        data = self._current_data
-        if data is None:
+    def _on_redraw_done(self, result: RedrawResult) -> None:
+        if result.seq != self._worker_seq:
             return
-        if source == "FIP1":
-            raw_t, raw_y, rate = concatenate_fip_frames(
-                data.fip1_frames, data.packet_start_times, data.packet_duration_seconds, data.fip_rates_hz
-            )
-        elif source == "FIP2":
-            raw_t, raw_y, rate = concatenate_fip_frames(
-                data.fip2_frames, data.packet_start_times, data.packet_duration_seconds, data.fip_rates_hz
-            )
-        else:
-            raw_t, raw_y, rate = concatenate_das_channel(
-                data.das_frames,
-                data.packet_start_times,
-                data.packet_duration_seconds,
-                data.das_rates_hz,
-                self.das_channel_spin.value(),
-            )
-        spec = self._preprocess_spec(source)
-        rel_t, y, effective_rate = preprocess_waveform(raw_y, rate, spec)
-        if raw_t.size == raw_y.size and y.size:
-            step = max(1, int(spec.downsample))
-            times = raw_t[::step][: y.size]
-        elif raw_t.size and rel_t.size:
-            t0 = float(raw_t[0])
-            times = t0 + np.arange(y.size, dtype=np.float64) / effective_rate
-        else:
-            times = rel_t
-        plot_times, plot_values = decimate_for_plot(times, y, self.max_points_spin.value())
-        curve = self.curve1 if curve_index == 1 else self.curve2
-        plot = self.curve1_plot if curve_index == 1 else self.curve2_plot
-        curve.setData(plot_times, plot_values)
-        plot.setTitle(f"Waveform {curve_index}: {source}")
+        self._apply_result(result)
 
-    def _draw_space_time(self) -> None:
-        data = self._current_data
-        if data is None:
+    def _apply_result(self, result: RedrawResult) -> None:
+        self._configure_image_colormap()
+        self.file_info_label.setText(result.file_info)
+        self.statusBar().showMessage(f"已加载 {Path(result.path).name}")
+        self.curve1.setData(result.curve1.times, result.curve1.values)
+        self.curve1_plot.setTitle(result.curve1.title)
+        self.curve2.setData(result.curve2.times, result.curve2.values)
+        self.curve2_plot.setTitle(result.curve2.title)
+        self.space_image.setImage(result.space_matrix, autoLevels=False, levels=result.space_levels)
+        self.space_image.setRect(*result.space_rect)
+        self.histogram.setLevels(*result.space_levels)
+        if self.auto_levels_check.isChecked():
+            self.space_vmin_spin.blockSignals(True)
+            self.space_vmin_spin.setValue(result.space_levels[0])
+            self.space_vmin_spin.blockSignals(False)
+            self.space_vmax_spin.blockSignals(True)
+            self.space_vmax_spin.setValue(result.space_levels[1])
+            self.space_vmax_spin.blockSignals(False)
+        if self._auto_range_pending:
+            self._auto_range_pending = False
+            self._reset_view()
+
+    def _on_worker_failed(self, message: str, seq: int) -> None:
+        if seq != self._worker_seq:
             return
-        ch0, ch1 = _parse_range(self.channel_range_edit.text(), 0, 199)
-        matrix, rect = build_space_time_matrix(
-            frames=data.das_frames,
-            starts=data.packet_start_times,
-            durations=data.packet_duration_seconds,
-            rates=data.das_rates_hz,
-            channel_start=ch0,
-            channel_end=ch1,
-            time_downsample=self.space_time_downsample_spin.value(),
-            space_downsample=self.space_downsample_spin.value(),
-            remove_baseline=self.space_baseline_check.isChecked(),
-        )
-        if matrix.size == 0:
-            matrix = np.zeros((1, 1), dtype=np.float32)
-            rect = (0.0, float(ch0), 1.0, 1.0)
-        levels = robust_levels(matrix) if self.auto_levels_check.isChecked() else self.histogram.getLevels()
-        self.space_image.setImage(matrix, autoLevels=False, levels=levels)
-        self.space_image.setRect(*rect)
-        self.histogram.setLevels(*levels)
-        self.space_plot.setTitle("DAS Timespace")
+        self._clear_plots()
+        self.file_info_label.setText("加载失败")
+        self.statusBar().showMessage("加载失败")
+        QMessageBox.critical(self, "读取失败", message)
 
     def _clear_plots(self) -> None:
         self.curve1.setData([], [])
@@ -668,15 +706,3 @@ def _build_colormap(name: str) -> pg.ColorMap:
     }
     colors = np.asarray(palettes.get(normalized, palettes["seismic"]), dtype=np.ubyte)
     return pg.ColorMap(np.linspace(0.0, 1.0, len(colors)), colors)
-
-
-def _median_text(values: np.ndarray, suffix: str) -> str:
-    finite = values[np.isfinite(values) & (values > 0)] if values.size else np.array([])
-    if finite.size == 0:
-        return "n/a"
-    value = float(np.nanmedian(finite))
-    if value >= 1_000_000:
-        return f"{value / 1_000_000:.3f} M{suffix}"
-    if value >= 1_000:
-        return f"{value / 1_000:.3f} k{suffix}"
-    return f"{value:.3f} {suffix}"

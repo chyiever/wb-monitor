@@ -1,0 +1,4 @@
+pyqt5==5.15.7
+pyqtgraph==0.13.3
+numpy==1.23.5
+scipy==1.9.3
