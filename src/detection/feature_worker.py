@@ -125,6 +125,11 @@ class FIPFeatureWorker(QThread):
             2. 将流时间原点推进到缺口结束后的正确位置，
                防止后续特征帧的时间戳出现系统偏移。
         """
+        packet_data = np.asarray(packet.data, dtype=np.float64)
+        if packet_data.size == 0:
+            self.logger.warning("Tab2 received empty packet #%s; skipping feature extraction", packet.comm_count)
+            return
+
         packet_rate = max(float(packet.sample_rate), 1.0)
         packet_duration = max(float(getattr(packet, "packet_duration_seconds", self.packet_duration_seconds)), 1e-6)
         if (
@@ -141,17 +146,26 @@ class FIPFeatureWorker(QThread):
 
         # --- 缺口检测（T2-03）---
         if self._last_comm_count is not None and packet.comm_count != self._last_comm_count + 1:
-            gap = packet.comm_count - self._last_comm_count - 1
-            self.logger.warning(
-                "comm_count gap detected in Tab2: last=%d, current=%d, missing=%d packets. "
-                "Resetting signal buffer to prevent cross-gap false windows.",
-                self._last_comm_count,
-                packet.comm_count,
-                gap,
-            )
+            if packet.comm_count > self._last_comm_count + 1:
+                gap = packet.comm_count - self._last_comm_count - 1
+                self.logger.warning(
+                    "comm_count gap detected in Tab2: last=%d, current=%d, missing=%d packets. "
+                    "Resetting signal buffer to prevent cross-gap false windows.",
+                    self._last_comm_count,
+                    packet.comm_count,
+                    gap,
+                )
+            else:
+                self.logger.warning(
+                    "comm_count reset/out-of-order detected in Tab2: last=%d, current=%d. "
+                    "Resetting signal buffer and window timeline.",
+                    self._last_comm_count,
+                    packet.comm_count,
+                )
             # 将时间原点推进到当前包应有的理论起始时间
             self._stream_time_origin = packet.comm_count * self.packet_duration_seconds
             self._stream_sample_index = 0
+            self._window_index = 0
             self._signal_buffer = np.array([], dtype=np.float64)
             self._buffer_start_sample_index = 0
             self._next_window_start_index = 0
@@ -159,7 +173,7 @@ class FIPFeatureWorker(QThread):
 
         self._last_comm_count = packet.comm_count
 
-        filtered = self._apply_bandpass(packet.data.astype(np.float64, copy=False))
+        filtered = self._apply_bandpass(packet_data)
 
         # Tab2 uses a sample-driven relative timeline.
         # The filtered packet and the later feature windows must share the same time base.
@@ -190,7 +204,9 @@ class FIPFeatureWorker(QThread):
             window = self._signal_buffer[local_start:local_end]
             feature_values = self._compute_feature_values(window)
             if feature_values:
-                start_time = self._stream_time_origin + self._window_index * (hop_samples / self.sample_rate)
+                start_time = self._stream_time_origin + (
+                    self._next_window_start_index / self.sample_rate
+                )
                 frame = FIPFeatureFrame(
                     window_index=self._window_index,
                     start_time=start_time,
@@ -215,6 +231,8 @@ class FIPFeatureWorker(QThread):
             self._buffer_start_sample_index = keep_from
 
     def _apply_bandpass(self, data: np.ndarray) -> np.ndarray:
+        if data.size == 0:
+            return data.copy()
         if not self.filter_enabled or self._sos is None:
             return data.copy()
 

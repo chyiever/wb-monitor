@@ -555,17 +555,25 @@ class DataProcessingThread(QThread):
                 self._last_comm_count is not None
                 and packet.comm_count != self._last_comm_count + 1
             ):
-                gap = packet.comm_count - self._last_comm_count - 1
                 gap_detected = True
-                self.logger.warning(
-                    'comm_count gap in DataProcessingThread: last=%d, current=%d, missing=%d. '
-                    'Resetting per-sensor processor state to prevent cross-gap phase error.',
-                    self._last_comm_count,
-                    packet.comm_count,
-                    gap,
-                )
+                if packet.comm_count > self._last_comm_count + 1:
+                    gap = packet.comm_count - self._last_comm_count - 1
+                    self.stats['gap_count'] += 1
+                    self.logger.warning(
+                        'comm_count gap in DataProcessingThread: last=%d, current=%d, missing=%d. '
+                        'Resetting per-sensor processor state to prevent cross-gap phase error.',
+                        self._last_comm_count,
+                        packet.comm_count,
+                        gap,
+                    )
+                else:
+                    self.logger.warning(
+                        'comm_count reset/out-of-order in DataProcessingThread: last=%d, current=%d. '
+                        'Resetting per-sensor processor state.',
+                        self._last_comm_count,
+                        packet.comm_count,
+                    )
                 self.reset_state(clear_queue=False)
-                self.stats['gap_count'] += 1
             self._last_comm_count = packet.comm_count
 
             sensor_inputs = split_fip_sensor_data(
@@ -701,22 +709,6 @@ class DataProcessingThread(QThread):
                         psd_sample_rate,
                         psd_downsample_factor,
                     )
-                if psd_data.size and abs(float(psd_data[0])) <= 1e-12 and log_packet_detail:
-                    self.logger.warning(
-                        "FIP_PROCESS_UNFILTERED_FIRST_ZERO comm=%s sensor=FIP%s value=%.9g",
-                        packet.comm_count,
-                        sensor_index,
-                        float(psd_data[0]),
-                    )
-                if downsampled.size and abs(float(downsampled[0])) <= 1e-12 and log_packet_detail:
-                    self.logger.warning(
-                        "FIP_PROCESS_DISPLAY_FIRST_ZERO comm=%s sensor=FIP%s filtered_path=%s value=%.9g",
-                        packet.comm_count,
-                        sensor_index,
-                        sensor_index == selected_sensor_for_filter,
-                        float(downsampled[0]),
-                    )
-
             if not downsampled_by_sensor:
                 return None
 
@@ -1384,7 +1376,7 @@ class DataStorageThread(QThread):
             raw_sample_rate_hz=normalize_fip_sample_rate(packet.sample_rate_hz),
         )
 
-    def _append_request(self, request: StorageRequest):
+    def _append_request(self, request: StorageRequest) -> bool:
         request_sensor_count = _data_sensor_count(request.data)
         if (
             self.buffered_requests
@@ -1438,16 +1430,34 @@ class DataStorageThread(QThread):
                 )
             elif request.comm_count <= self.last_buffered_comm_count:
                 self.stats['raw_packets_duplicate_or_out_of_order'] += 1
-                self.logger.warning(
-                    'Storage path received duplicate/out-of-order packet #%d after #%d',
-                    request.comm_count,
-                    self.last_buffered_comm_count,
-                )
+                if request.comm_count == 0:
+                    self.logger.warning(
+                        'Storage path detected comm_count reset after #%d; flushing current chunk '
+                        'and starting a new storage segment.',
+                        self.last_buffered_comm_count,
+                    )
+                    self._flush_buffered_data()
+                    self._clear_buffer()
+                    if self.current_chunk_start_comm_count is None:
+                        self.current_chunk_start_comm_count = request.comm_count
+                    if self.current_chunk_sensor_count is None:
+                        self.current_chunk_sensor_count = request_sensor_count
+                        self.current_chunk_sample_rate = float(request.sample_rate)
+                        self.current_chunk_packet_duration = float(request.packet_duration_seconds)
+                        self.current_chunk_data_type = str(request.data_type)
+                else:
+                    self.logger.warning(
+                        'Storage path dropped duplicate/out-of-order packet #%d after #%d',
+                        request.comm_count,
+                        self.last_buffered_comm_count,
+                    )
+                    return False
 
         self.current_chunk_last_comm_count = request.comm_count
         self.last_buffered_comm_count = request.comm_count
         self.buffered_requests.append(request)
         self.buffered_sample_count += _data_sample_count(request.data)
+        return True
 
     def begin_drain(self):
         """停止接受新包，进入排空模式（T1-09 两阶段停止第一阶段）。

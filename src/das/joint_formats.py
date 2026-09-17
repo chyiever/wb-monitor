@@ -85,8 +85,14 @@ def build_chunk_metadata(
         return {}
     first = frames[0]
     last = frames[-1]
-    fip_packet = getattr(first, "fip_packet", None)
-    das_packet = getattr(first, "das_packet", None)
+    fip_packet = next(
+        (getattr(frame, "fip_packet", None) for frame in frames if getattr(frame, "fip_packet", None) is not None),
+        None,
+    )
+    das_packet = next(
+        (getattr(frame, "das_packet", None) for frame in frames if getattr(frame, "das_packet", None) is not None),
+        None,
+    )
     packet_duration = float(getattr(first, "packet_duration_seconds", 1.0))
     fip_channel_count = int(getattr(fip_packet, "sensor_count", 0)) if fip_packet is not None else 0
     fip_sample_rate_hz = float(getattr(fip_packet, "sample_rate_hz", 0.0)) if fip_packet is not None else 0.0

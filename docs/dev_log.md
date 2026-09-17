@@ -983,3 +983,14 @@ View 页 DAS Space-Time 图长期以深蓝或深红为主，手动 V 范围从 `
 3. Tab3 DAS 管线验证通过：`python src/tools/validate_tab3_pipeline.py` → `VALIDATION_OK`。
 4. 时域滚动缓冲区测试：连续 1 s 包，2 s 窗口无重复边界点、严格递增。
 5. 编译检查通过、`PCCPMonitorApp` 离屏构建通过。
+## 2026-09-17 Tab1/Tab2 通信、绘图、时间对齐与存储风险排查
+
+- 更新范围：`src/detection/feature_worker.py`、`src/detection/trigger_storage.py`、`src/fip/manager.py`、`src/fip/tcp_server.py`、`src/das/joint_formats.py`、`src/das/manager.py`、`src/ui/main_window.py`、`docs/2026-09-17-Tab1-Tab2通信绘图时间对齐与存储风险排查优化.md`。
+- Tab2 特征时间轴：空包跳过；缺包和倒序/重启分开记录；丢包或重启后同步重置窗口编号、样本位置、滑窗缓存和滤波状态；窗口时间改为由样本绝对位置推导，避免告警和触发存储时间错位。
+- Tab2 触发存储：后触发窗口改为从 `event.end_time` 计算；停机 drain 时未等满后触发窗口也会保存当前已缓存数据并记录告警，避免活跃事件丢失。
+- Tab1 FIP 处理链路：正向跳跃才计入缺包；倒序/重启单独记录为 reset/out-of-order，避免负数 missing。
+- Tab1 FIP 存储：重复/倒序包不再进入当前 chunk；检测到 `comm_count == 0` 的新会话时先 flush 当前缓存，再开启新存储段。
+- 联合存储元数据：顶层 FIP/eDAS 参数改为从 chunk 内首个实际存在的数据包提取，避免块首帧缺一路时通道数/采样率写成 0。
+- 长时间运行：裁剪 UI 同步统计 `_sync_matched_counts`，保留首包和最近 2000 个匹配序号。
+- 清理：删除“首点为 0”的旧调试告警，删除 FIP TCP 未使用导入。
+- 验证：`python -m py_compile ...` 通过；`python src\tools\validate_tab3_pipeline.py` 输出 `VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve_points=2400`；Tab2 丢包时间轴内存级校验通过。

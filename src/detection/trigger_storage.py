@@ -143,8 +143,16 @@ class FIPTriggerStorageWorker(QThread):
         remaining: Deque[FIPTriggerSaveRequest] = deque()
         while self._pending_requests:
             request = self._pending_requests.popleft()
-            ready_time = request.event.start_time + request.post_trigger_seconds
-            if self._latest_time >= ready_time:
+            ready_time = request.event.end_time + request.post_trigger_seconds
+            if self._latest_time >= ready_time or self._drain_mode:
+                if self._latest_time < ready_time:
+                    self.logger.warning(
+                        "Saving trigger event %s before full post-trigger window is available during drain: "
+                        "latest=%.6f required=%.6f",
+                        request.event.event_id,
+                        self._latest_time,
+                        ready_time,
+                    )
                 self._save_request(request)
             else:
                 remaining.append(request)
@@ -153,7 +161,7 @@ class FIPTriggerStorageWorker(QThread):
     def _save_request(self, request: FIPTriggerSaveRequest) -> None:
         event = request.event
         start_time = event.start_time - request.pre_trigger_seconds
-        end_time = event.start_time + request.post_trigger_seconds
+        end_time = event.end_time + request.post_trigger_seconds
         merged_signal, merged_time, sample_rate = self._build_signal_snippet(start_time, end_time)
 
         feature_times = {name: [] for name in request.enabled_feature_names}

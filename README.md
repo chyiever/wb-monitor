@@ -1,5 +1,9 @@
 # PCCP Wire Break Monitoring Software
 
+## 最新维护记录
+
+- [2026-09-17 Tab1/Tab2 通信、绘图、时间对齐与存储风险排查优化](docs/2026-09-17-Tab1-Tab2通信绘图时间对齐与存储风险排查优化.md)
+
 ## 项目概述
 
 本项目是基于 `Python 3.9 + PyQt5 + PyQtGraph` 开发的 PCCP 断丝监测软件原型。

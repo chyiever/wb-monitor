@@ -319,13 +319,6 @@ class EDASManager(QObject):
             len(self._fip_recent_packets),
             float(selected_display[0]) if len(selected_display) else float("nan"),
         )
-        if len(selected_display) and abs(float(selected_display[0])) <= 1e-12 and processed_data.comm_count % 50 == 0:
-            self.logger.warning(
-                "TAB3_NODE manager.fip_first_zero comm=%s selected=FIP%s source=display_downsampled value=%.9g",
-                processed_data.comm_count,
-                selected_sensor,
-                float(selected_display[0]),
-            )
         if processed_data.comm_count % 50 == 0:
             display_min = float(np.min(selected_display)) if len(selected_display) else float("nan")
             display_max = float(np.max(selected_display)) if len(selected_display) else float("nan")

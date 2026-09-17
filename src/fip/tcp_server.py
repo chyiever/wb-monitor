@@ -15,8 +15,6 @@ import threading
 import time
 import logging
 import numpy as np
-import psutil
-import os
 from typing import Optional, Tuple
 from PyQt5.QtCore import QObject, pyqtSignal
 
@@ -424,14 +422,6 @@ class OptimizedTCPServer(QObject):
                     float(data_array[0]) if point_count else float("nan"),
                     float(np.min(data_array)) if point_count else float("nan"),
                     float(np.max(data_array)) if point_count else float("nan"),
-                )
-            if point_count and abs(float(data_array[0])) <= 1e-12 and comm_count % 50 == 0:
-                self.logger.warning(
-                    "FIP_TCP_FIRST_SAMPLE_ZERO comm=%s raw_comm=%s raw_first=%d decoded_first=%.9g",
-                    comm_count,
-                    raw_comm_count,
-                    int(raw_values[0]),
-                    float(data_array[0]),
                 )
 
             # timestamp 仅作为绘图缓冲区的起始提示（seconds），

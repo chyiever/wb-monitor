@@ -3796,6 +3796,11 @@ class MainWindow(QMainWindow):
                 continue
             for key in sorted(mapping)[:len(mapping) - limit]:
                 mapping.pop(key, None)
+        if len(self._sync_matched_counts) > limit:
+            keep = set(sorted(self._sync_matched_counts)[-limit:])
+            if self._sync_first_pair is not None:
+                keep.add(self._sync_first_pair[0])
+            self._sync_matched_counts.intersection_update(keep)
 
     def _update_sync_pair_for_key(self, key: int) -> None:
         if key in self._sync_matched_counts:
