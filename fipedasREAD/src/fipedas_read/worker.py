@@ -16,7 +16,7 @@ from .data_loader import (
     concatenate_fip_frames,
     load_data_file,
 )
-from .preprocess import PreprocessSpec, decimate_for_plot, preprocess_waveform, robust_levels
+from .preprocess import PreprocessSpec, decimate_for_plot, preprocess_space_matrix, preprocess_waveform, robust_levels
 
 
 @dataclass(frozen=True)
@@ -37,6 +37,8 @@ class SpaceRequest:
     auto_levels: bool
     vmin: float
     vmax: float
+    apply_preprocess: bool = False
+    preprocess: PreprocessSpec = PreprocessSpec()
 
 
 @dataclass(frozen=True)
@@ -166,6 +168,11 @@ def _compute_space(request: SpaceRequest, data: JointReplayData) -> tuple[np.nda
     if matrix.size == 0:
         matrix = np.zeros((1, 1), dtype=np.float32)
         rect = (0.0, float(request.channel_start), 1.0, 1.0)
+    if request.apply_preprocess:
+        rates = data.das_rates_hz[np.isfinite(data.das_rates_hz) & (data.das_rates_hz > 0)]
+        rate = float(np.nanmedian(rates)) if rates.size else 0.0
+        eff_rate = rate / max(1, int(request.time_downsample))
+        matrix = preprocess_space_matrix(matrix, eff_rate, request.preprocess)
     if request.auto_levels:
         levels = robust_levels(matrix)
     else:

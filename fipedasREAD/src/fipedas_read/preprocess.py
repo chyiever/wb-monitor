@@ -53,9 +53,9 @@ def parse_band_text(text: str) -> tuple[Optional[float], Optional[float]]:
     return low, high
 
 
-def _apply_filter(values: np.ndarray, sample_rate_hz: float, spec: FilterSpec) -> np.ndarray:
-    if not spec.enabled or values.size < 8 or sample_rate_hz <= 0:
-        return values
+def _build_sos(sample_rate_hz: float, spec: FilterSpec) -> Optional[np.ndarray]:
+    if not spec.enabled or sample_rate_hz <= 0:
+        return None
     nyquist = sample_rate_hz * 0.5
     order = max(1, min(10, int(spec.order)))
     low = spec.low_hz
@@ -64,18 +64,59 @@ def _apply_filter(values: np.ndarray, sample_rate_hz: float, spec: FilterSpec) -
         if low is not None and high is not None:
             low = max(0.1, min(float(low), nyquist * 0.95))
             high = max(low + 0.1, min(float(high), nyquist * 0.98))
-            sos = butter(order, [low, high], btype="bandpass", fs=sample_rate_hz, output="sos")
-        elif low is not None:
+            return butter(order, [low, high], btype="bandpass", fs=sample_rate_hz, output="sos")
+        if low is not None:
             low = max(0.1, min(float(low), nyquist * 0.95))
-            sos = butter(order, low, btype="highpass", fs=sample_rate_hz, output="sos")
-        elif high is not None:
+            return butter(order, low, btype="highpass", fs=sample_rate_hz, output="sos")
+        if high is not None:
             high = max(0.1, min(float(high), nyquist * 0.98))
-            sos = butter(order, high, btype="lowpass", fs=sample_rate_hz, output="sos")
-        else:
-            return values
+            return butter(order, high, btype="lowpass", fs=sample_rate_hz, output="sos")
+    except Exception:
+        return None
+    return None
+
+
+def _apply_filter(values: np.ndarray, sample_rate_hz: float, spec: FilterSpec) -> np.ndarray:
+    if values.size < 8:
+        return values
+    sos = _build_sos(sample_rate_hz, spec)
+    if sos is None:
+        return values
+    try:
         return np.asarray(sosfiltfilt(sos, values), dtype=np.float64)
     except Exception:
         return values
+
+
+def preprocess_space_matrix(
+    matrix: np.ndarray,
+    sample_rate_hz: float,
+    spec: PreprocessSpec,
+) -> np.ndarray:
+    """Apply remove-mean / bandpass / normalize to a space-time matrix (row = channel)."""
+    arr = np.asarray(matrix, dtype=np.float32)
+    if arr.ndim != 2 or arr.size == 0:
+        return arr
+    if spec.remove_mean:
+        arr = arr - np.nanmean(arr, axis=1, keepdims=True)
+    sos = _build_sos(sample_rate_hz, spec.filter_spec)
+    if sos is not None and arr.shape[1] >= 8:
+        try:
+            if np.isfinite(arr).all():
+                arr = np.asarray(sosfiltfilt(sos, arr, axis=1), dtype=np.float32)
+            else:
+                out = np.empty_like(arr)
+                for i in range(arr.shape[0]):
+                    row = arr[i]
+                    out[i] = sosfiltfilt(sos, row) if np.isfinite(row).all() else row
+                arr = out
+        except Exception:
+            pass
+    if spec.normalize and arr.size:
+        peak = float(np.nanmax(np.abs(arr)))
+        if peak > 0:
+            arr = arr / peak
+    return np.asarray(arr, dtype=np.float32)
 
 
 def preprocess_waveform(

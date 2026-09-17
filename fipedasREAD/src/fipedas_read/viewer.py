@@ -377,6 +377,10 @@ class ReplayWindow(QMainWindow):
         self.space_vmax_spin.setMaximumWidth(120)
         self.space_vmax_spin.setToolTip("手动色阶上限（需取消自动色阶）")
         layout.addWidget(self.space_vmax_spin, 4, 3)
+        self.space_preprocess_check = QCheckBox("应用EDAS预处理")
+        self.space_preprocess_check.setChecked(True)
+        self.space_preprocess_check.setToolTip("对 timespace 矩阵逐通道应用 EDAS 预处理中的去均值、归一化与滤波（降采样除外）")
+        layout.addWidget(self.space_preprocess_check, 5, 0, 1, 2)
         self._update_manual_levels_state()
         return group
 
@@ -499,6 +503,7 @@ class ReplayWindow(QMainWindow):
             self.auto_levels_check,
             self.space_vmin_spin,
             self.space_vmax_spin,
+            self.space_preprocess_check,
         ):
             signal = getattr(widget, "valueChanged", None) or getattr(widget, "currentTextChanged", None) or getattr(widget, "toggled", None)
             if signal is not None:
@@ -602,6 +607,8 @@ class ReplayWindow(QMainWindow):
                 auto_levels=self.auto_levels_check.isChecked(),
                 vmin=self.space_vmin_spin.value(),
                 vmax=self.space_vmax_spin.value(),
+                apply_preprocess=self.space_preprocess_check.isChecked(),
+                preprocess=self._edas_preprocess_spec(),
             ),
         )
 
@@ -620,6 +627,9 @@ class ReplayWindow(QMainWindow):
                     order=self.fip_filter_order_spin.value(),
                 ),
             )
+        return self._edas_preprocess_spec()
+
+    def _edas_preprocess_spec(self) -> PreprocessSpec:
         low, high = parse_band_text(self.edas_filter_band_edit.text())
         return PreprocessSpec(
             remove_mean=self.edas_remove_mean_check.isChecked(),

@@ -140,3 +140,21 @@
 - `requirements.txt` 新增 `h5py`（读取联合 `.h5` 需要）。
 
 **验证**：对五种格式各生成样例文件，`load_data_file` 全部正确读取（帧数、FIP/eDAS 存在标志、矩阵形状正确）；GUI 全流程逐文件切换冒烟测试通过。
+
+### 6. timespace 图接入 EDAS 预处理（去均值/归一化/滤波）
+
+**问题**：DAS time-space 图此前只有通道截取、时间/空间降采样、逐通道去基线（中值）与色阶，未使用 EDAS 预处理中的去均值、归一化、滤波。
+
+**修改**：
+
+- `src/fipedas_read/preprocess.py`
+  - 抽出 `_build_sos()`（按频带/阶数构造 Butterworth SOS，`_apply_filter` 复用它）。
+  - 新增 `preprocess_space_matrix()`：对 space-time 矩阵逐通道（axis=1，全矩阵向量化 `sosfiltfilt`）依次执行去均值 → 带通滤波 → 全局归一化；含 NaN 时回退逐行滤波。
+- `src/fipedas_read/worker.py`
+  - `SpaceRequest` 新增 `apply_preprocess` / `preprocess` 字段。
+  - `_compute_space()`：`apply_preprocess` 开启时按「DAS 中值采样率 / 时间降采样」计算有效采样率，调用 `preprocess_space_matrix`；再计算色阶。
+- `src/fipedas_read/viewer.py`
+  - Timespace 参数区新增「应用EDAS预处理」复选框（默认开启），复用 EDAS 预处理组中的去均值/归一化/滤波与频带/阶数（降采样除外）。
+  - 新增 `_edas_preprocess_spec()`，`_preprocess_spec()` 的非 FIP 分支复用它。
+
+**验证**：`preprocess_space_matrix` 单元验证——去均值后均值≈0、归一化后峰值=1、带通滤波确实改变数据；GUI 冒烟测试预处理开关切换正常，无异常。

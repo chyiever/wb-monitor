@@ -82,8 +82,9 @@ python .\fipedasREAD\run.py D:\PCCP\FIPeDASDATA\FIPeDAS-20260916-120000.000.npz
 - EDAS 预处理：去均值、归一化、Butterworth 滤波、频带、阶数、降采样。
 - FIP 和 EDAS 滤波频带格式均支持 `500-6000`、`100-`、`-1000`。
 - 时域曲线最大绘图点数。
-- timespace 通道范围、时间降采样、空间降采样、颜色图、逐通道去基线、自动色阶。
+- timespace 通道范围、时间降采样、空间降采样、颜色图、逐通道去基线、自动色阶、应用EDAS预处理。
 - 取消「自动色阶」后可手动输入 Vmin/Vmax 固定 timespace 色标范围。
+- timespace 可复用 EDAS 预处理（去均值/归一化/滤波）：勾选「应用EDAS预处理」后逐通道应用，滤波按降采样后的有效采样率计算。
 
 右侧区域：
 
