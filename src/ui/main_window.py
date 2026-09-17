@@ -428,6 +428,17 @@ class MainWindow(QMainWindow):
         self._view_curve_cache: Dict[int, Dict[str, Any]] = {1: {}, 2: {}}
         self._fip_curve_rolling: Dict[Tuple[int, int], Dict[str, Any]] = {}
         self._view_user_range_active = False
+        # FIP/eDAS 联合刷新状态：两路 payload 分别缓存，由统一渲染器对齐后一起更新。
+        self._view_fip_payload: Optional[Dict[str, Any]] = None
+        self._view_das_payload: Optional[Dict[str, Any]] = None
+        self._view_plot_render_pending = False
+        self._view_last_plot_render_monotonic = 0.0
+        self._view_x_link_enabled = True
+        self._view_fip_online = False
+        self._view_das_online = False
+        self._view_payload_ttl_seconds = 3.0
+        # 两路最新 comm_count 超过此阈值时视为未对齐，暂缓联合刷新。
+        self._view_alignment_drift_tolerance = 5
         self._view_psd_update_interval_seconds = 1.0
         self._view_last_psd_update_monotonic = 0.0
         self._view_psd_update_pending = False
@@ -740,23 +751,21 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
-        view_splitter = QSplitter(Qt.Vertical)
-        view_splitter.setChildrenCollapsible(False)
-        layout.addWidget(view_splitter)
-        self.view_vertical_splitter = view_splitter
 
-        # 用单一 QGridLayout 承载 Curve1/PSD1 与 Curve2/PSD2：
-        # 左右时域图与 PSD 图列对齐，两行时域图等高，且两行高度之和与下方 Space-Time 等高。
-        upper_widget = QWidget()
-        upper_layout = QGridLayout(upper_widget)
-        upper_layout.setContentsMargins(0, 0, 0, 0)
-        upper_layout.setSpacing(6)
-        upper_layout.setColumnStretch(0, 7)
-        upper_layout.setColumnStretch(1, 3)
-        upper_layout.setRowStretch(0, 1)
-        upper_layout.setRowStretch(1, 1)
-        upper_widget.setMinimumHeight(300)
-        view_splitter.addWidget(upper_widget)
+        # 单一 QGridLayout 承载 Curve1/PSD1、Curve2/PSD2 与 Space-Time/颜色条：
+        # 第 0 列放 Curve1/Curve2/Space-Time，三个时域图同列、天然等宽（时间轴上下对齐）；
+        # 第 1 列放 PSD1/PSD2/颜色条，不参与宽度对齐。
+        view_grid_widget = QWidget()
+        view_layout = QGridLayout(view_grid_widget)
+        view_layout.setContentsMargins(0, 0, 0, 0)
+        view_layout.setSpacing(6)
+        view_layout.setColumnStretch(0, 7)
+        view_layout.setColumnStretch(1, 3)
+        view_layout.setRowStretch(0, 1)
+        view_layout.setRowStretch(1, 1)
+        # 时空图高度与上方两个时域图高度之和相当（2 = 1 + 1）。
+        view_layout.setRowStretch(2, 2)
+        layout.addWidget(view_grid_widget)
 
         self.tab3_curve1_plot = pg.PlotWidget()
         self.tab3_curve1_plot.showGrid(x=True, y=True)
@@ -768,7 +777,7 @@ class MainWindow(QMainWindow):
         self.tab3_curve1_fip_curve = self.tab3_curve1_plot.plot(pen=pg.mkPen("#d62728", width=2))
         self._configure_tab3_curve_item(self.tab3_curve1_das_curve)
         self._configure_tab3_curve_item(self.tab3_curve1_fip_curve)
-        upper_layout.addWidget(self.tab3_curve1_plot, 0, 0)
+        view_layout.addWidget(self.tab3_curve1_plot, 0, 0)
 
         self.view_psd1_plot = pg.PlotWidget()
         self.view_psd1_plot.showGrid(x=True, y=True)
@@ -779,7 +788,7 @@ class MainWindow(QMainWindow):
         self.view_psd1_plot.addLegend(offset=(8, 8))
         self._configure_interactive_plot(self.view_psd1_plot)
         self.view_psd1_curve = self.view_psd1_plot.plot(pen=pg.mkPen("#d62728", width=2), name="PSD1")
-        upper_layout.addWidget(self.view_psd1_plot, 0, 1)
+        view_layout.addWidget(self.view_psd1_plot, 0, 1)
 
         self.tab3_curve2_plot = pg.PlotWidget()
         self.tab3_curve2_plot.showGrid(x=True, y=True)
@@ -791,7 +800,7 @@ class MainWindow(QMainWindow):
         self.tab3_curve2_fip_curve = self.tab3_curve2_plot.plot(pen=pg.mkPen("#ff7f0e", width=2))
         self._configure_tab3_curve_item(self.tab3_curve2_das_curve)
         self._configure_tab3_curve_item(self.tab3_curve2_fip_curve)
-        upper_layout.addWidget(self.tab3_curve2_plot, 1, 0)
+        view_layout.addWidget(self.tab3_curve2_plot, 1, 0)
 
         self.view_psd2_plot = pg.PlotWidget()
         self.view_psd2_plot.showGrid(x=True, y=True)
@@ -802,7 +811,7 @@ class MainWindow(QMainWindow):
         self.view_psd2_plot.addLegend(offset=(8, 8))
         self._configure_interactive_plot(self.view_psd2_plot)
         self.view_psd2_curve = self.view_psd2_plot.plot(pen=pg.mkPen("#1f77b4", width=2), name="PSD2")
-        upper_layout.addWidget(self.view_psd2_plot, 1, 1)
+        view_layout.addWidget(self.view_psd2_plot, 1, 1)
 
         self.time_plot = self.tab3_curve1_plot
         self.psd_plot = self.view_psd1_plot
@@ -810,27 +819,25 @@ class MainWindow(QMainWindow):
 
         self.tab3_space_time_panel = QWidget()
         self.tab3_space_time_panel.setMinimumHeight(280)
-        tab3_space_time_layout = QHBoxLayout(self.tab3_space_time_panel)
-        tab3_space_time_layout.setContentsMargins(0, 0, 0, 0)
-        tab3_space_time_layout.setSpacing(6)
+        space_time_layout = QVBoxLayout(self.tab3_space_time_panel)
+        space_time_layout.setContentsMargins(0, 0, 0, 0)
+        space_time_layout.setSpacing(0)
         self.tab3_space_time_plot = pg.PlotWidget(title="DAS Space-Time")
         self.tab3_space_time_plot.setLabel("bottom", "Time", units="s")
         self.tab3_space_time_plot.setLabel("left", "Channel")
         self._configure_interactive_plot(self.tab3_space_time_plot)
         self.tab3_space_time_image = pg.ImageItem(axisOrder="row-major")
         self.tab3_space_time_plot.addItem(self.tab3_space_time_image)
-        tab3_space_time_layout.addWidget(self.tab3_space_time_plot, 1)
+        space_time_layout.addWidget(self.tab3_space_time_plot)
+        view_layout.addWidget(self.tab3_space_time_panel, 2, 0)
         self.tab3_space_time_histogram = pg.HistogramLUTWidget(orientation="vertical", gradientPosition="right")
         self.tab3_space_time_histogram.setMinimumWidth(84)
         self.tab3_space_time_histogram.setMaximumWidth(120)
         self.tab3_space_time_histogram.setImageItem(self.tab3_space_time_image)
-        tab3_space_time_layout.addWidget(self.tab3_space_time_histogram, 0)
-        view_splitter.addWidget(self.tab3_space_time_panel)
-        view_splitter.setStretchFactor(0, 1)
-        view_splitter.setStretchFactor(1, 1)
-        view_splitter.setSizes([1, 1])
+        view_layout.addWidget(self.tab3_space_time_histogram, 2, 1)
         self._apply_tab3_space_time_colormap()
         self._apply_tab3_space_time_levels()
+        self._link_view_x_axes()
         self._align_view_axis_widths()
         self._apply_psd_axis_tick_limit()
         self._update_view_psd_curves(force=True)
@@ -841,6 +848,7 @@ class MainWindow(QMainWindow):
         for plot, width in (
             (getattr(self, "tab3_curve1_plot", None), 88),
             (getattr(self, "tab3_curve2_plot", None), 88),
+            (getattr(self, "tab3_space_time_plot", None), 88),
             (getattr(self, "view_psd1_plot", None), 64),
             (getattr(self, "view_psd2_plot", None), 64),
         ):
@@ -2776,7 +2784,136 @@ class MainWindow(QMainWindow):
         psd_values_by_sensor: Dict[int, Any] = None,
         psd_sample_rate_hz: float = None,
     ):
-        """Update cached FIP comparison curves shown in Tab3."""
+        """Cache the latest FIP packet and schedule a unified View refresh.
+
+        FIP and eDAS payloads are stored separately and combined in
+        ``_render_view_plots`` so the two time-domain curves and the space-time
+        image share one time axis and update together.
+        """
+        self._view_fip_payload = {
+            "comm_count": int(comm_count),
+            "values": np.asarray(values),
+            "sample_rate_hz": float(sample_rate_hz),
+            "sensor_count": int(sensor_count),
+            "values_by_sensor": values_by_sensor,
+            "packet_duration_seconds": max(float(packet_duration_seconds), 1e-6),
+            "psd_values_by_sensor": psd_values_by_sensor,
+            "psd_sample_rate_hz": psd_sample_rate_hz,
+            "_t": time.monotonic(),
+        }
+        self._view_fip_online = True
+        self._request_view_plot_render()
+
+    def update_tab3_plot_payload(self, payload: Dict[str, Any]):
+        """Cache the latest eDAS plot payload and schedule a unified View refresh."""
+        header = payload.get("header", {})
+        self.update_tab3_header_status(header)
+        self._view_das_payload = {
+            "comm_count": header.get("comm_count", -1),
+            "packet_duration_seconds": max(float(header.get("packet_duration_seconds", 1.0)), 1e-6),
+            "curve1_das_time": payload.get("curve1_das_time", payload.get("das_curve_time", [])),
+            "curve1_das_values": payload.get("curve1_das_values", payload.get("das_curve_values", [])),
+            "curve2_das_time": payload.get("curve2_das_time", payload.get("das_curve_time", [])),
+            "curve2_das_values": payload.get("curve2_das_values", payload.get("das_curve_values", [])),
+            "space_time_matrix": payload.get("space_time_matrix"),
+            "space_time_x": payload.get("space_time_x"),
+            "space_time_y": payload.get("space_time_y"),
+            "_t": time.monotonic(),
+        }
+        self._view_das_online = True
+        self._request_view_plot_render()
+
+    def _request_view_plot_render(self) -> None:
+        """Coalesce FIP/eDAS arrivals into one deferred View render pass."""
+        if getattr(self, "_view_plot_render_pending", False):
+            return
+        self._view_plot_render_pending = True
+        QTimer.singleShot(0, self._run_view_plot_render)
+
+    def _run_view_plot_render(self) -> None:
+        self._view_plot_render_pending = False
+        self._render_view_plots()
+
+    def _render_view_plots(self) -> None:
+        """Render the two time-domain curves and the space-time image together."""
+        if not self.is_tab3_plot_enabled():
+            return
+        if hasattr(self, "tab_widget") and self.tab_widget.currentIndex() != 0:
+            return
+        now = time.monotonic()
+        fip_payload = self._view_fip_payload
+        das_payload = self._view_das_payload
+        fip_fresh = fip_payload is not None and (now - fip_payload["_t"]) < self._view_payload_ttl_seconds
+        das_fresh = das_payload is not None and (now - das_payload["_t"]) < self._view_payload_ttl_seconds
+
+        # 双路同时接收时，先等待 FIP/eDAS 对齐（comm_count 偏差在容差内）再一起更新；
+        # 若某一路已停流，则继续用新鲜的一路刷新以保持显示不冻结。
+        if self._view_fip_online and self._view_das_online:
+            if fip_payload is None or das_payload is None:
+                return
+            if not fip_fresh and not das_fresh:
+                return
+            if fip_fresh and das_fresh:
+                try:
+                    drift = abs(int(fip_payload["comm_count"]) - int(das_payload["comm_count"]))
+                except (TypeError, ValueError):
+                    drift = 0
+                if drift > self._view_alignment_drift_tolerance:
+                    self._tab3_logger.debug(
+                        "TAB3_NODE ui.render wait_alignment drift=%d", drift
+                    )
+                    return
+
+        if fip_fresh and das_fresh:
+            min_interval = max(
+                self._tab3_fip_plot_min_interval_seconds,
+                self._tab3_das_plot_min_interval_seconds,
+            )
+        elif das_fresh:
+            min_interval = self._tab3_das_plot_min_interval_seconds
+        else:
+            min_interval = self._tab3_fip_plot_min_interval_seconds
+        now = time.monotonic()
+        elapsed = now - self._view_last_plot_render_monotonic
+        if elapsed < min_interval:
+            # 被限频丢弃的 payload 稍后补渲染，避免首个 FIP/eDAS 数据因限频一直不显示。
+            if not self._view_plot_render_pending:
+                self._view_plot_render_pending = True
+                remaining_ms = int((min_interval - elapsed) * 1000.0) + 1
+                QTimer.singleShot(remaining_ms, self._run_view_plot_render)
+            return
+        self._view_last_plot_render_monotonic = now
+
+        started = time.perf_counter()
+        self._render_fip_view(fip_payload if fip_fresh else None)
+        self._render_das_view(das_payload if das_fresh else None)
+
+        latest_time = None
+        if fip_fresh and fip_payload is not None:
+            latest_time = self._view_source_latest_time(fip_payload, "packet_duration_seconds")
+        if das_fresh and das_payload is not None:
+            das_latest = self._view_source_latest_time(das_payload, "packet_duration_seconds")
+            latest_time = das_latest if latest_time is None else max(latest_time, das_latest)
+        if latest_time is not None:
+            self._apply_view_shared_time_range(latest_time)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        self._tab3_logger.debug(
+            "TAB3_NODE ui.render fip=%s das=%s latest=%.3f elapsed_ms=%.2f",
+            bool(fip_fresh),
+            bool(das_fresh),
+            latest_time if latest_time is not None else -1.0,
+            elapsed_ms,
+        )
+        if elapsed_ms > self._tab3_ui_slow_threshold_ms:
+            self._tab3_logger.warning(
+                "TAB3_NODE ui.render_slow elapsed_ms=%.2f fip=%s das=%s",
+                elapsed_ms,
+                bool(fip_fresh),
+                bool(das_fresh),
+            )
+
+    def _render_fip_view(self, fip_payload: Optional[Dict[str, Any]]) -> None:
+        """Render the FIP time-domain curves from the cached payload."""
         curve1_mode = self.tab3_curve1_combo.currentText()
         curve2_mode = self.tab3_curve2_combo.currentText()
         fip_modes = ("FIP", "FIP1", "FIP2")
@@ -2786,20 +2923,22 @@ class MainWindow(QMainWindow):
             self._render_tab3_curve(self.tab3_curve2_fip_curve, curve2_mode, [], [], "FIP")
         if curve1_mode not in fip_modes and curve2_mode not in fip_modes:
             return
-        if not self.is_tab3_plot_enabled():
+        if fip_payload is None:
+            for curve_item, curve_mode in (
+                (self.tab3_curve1_fip_curve, curve1_mode),
+                (self.tab3_curve2_fip_curve, curve2_mode),
+            ):
+                if curve_mode in fip_modes:
+                    self._render_tab3_curve(curve_item, curve_mode, [], [], curve_mode)
             return
-        if hasattr(self, 'tab_widget') and self.tab_widget.currentIndex() != 0:
-            return
-        now = time.monotonic()
-        if now - self._tab3_last_fip_plot_monotonic < self._tab3_fip_plot_min_interval_seconds:
-            values_arr = np.asarray(values)
-            self._tab3_logger.debug(
-                "TAB3_NODE ui.fip_curve skip_throttle comm=%s points=%d",
-                comm_count,
-                values_arr.size,
-            )
-            return
-        self._tab3_last_fip_plot_monotonic = now
+        comm_count = fip_payload["comm_count"]
+        values = fip_payload["values"]
+        sample_rate_hz = fip_payload["sample_rate_hz"]
+        sensor_count = fip_payload["sensor_count"]
+        values_by_sensor = fip_payload["values_by_sensor"]
+        packet_duration_seconds = fip_payload["packet_duration_seconds"]
+        psd_values_by_sensor = fip_payload["psd_values_by_sensor"]
+        psd_sample_rate_hz = fip_payload["psd_sample_rate_hz"]
         started = time.perf_counter()
         rendered_points = 0
         source_points = 0
@@ -2840,19 +2979,6 @@ class MainWindow(QMainWindow):
             psd_rate = max(float(psd_sample_rate_hz or sample_rate_hz), 1.0)
             source_points = max(source_points, int(values_arr.size))
             rendered_points = max(rendered_points, int(window_values.size))
-            if plot_values.size and abs(float(plot_values[0])) <= 1e-12 and comm_count % 50 == 0:
-                self._tab3_logger.warning(
-                    "TAB3_NODE ui.fip_curve_first_zero comm=%s curve=%s sensor=FIP%s "
-                    "source_first=%.9g plot_first=%.9g source_points=%d plot_points=%d step=%d",
-                    comm_count,
-                    curve_mode,
-                    sensor_index,
-                    float(values_arr.flat[0]),
-                    float(plot_values[0]),
-                    int(values_arr.size),
-                    int(plot_values.size),
-                    step,
-                )
             self._render_tab3_curve(
                 curve_item,
                 curve_mode,
@@ -2879,35 +3005,36 @@ class MainWindow(QMainWindow):
                 rendered_points,
             )
 
-    def update_tab3_plot_payload(self, payload: Dict[str, Any]):
-        """Apply the latest DAS plot payload to Tab3 widgets."""
-        header = payload.get("header", {})
-        self.update_tab3_header_status(header)
-        if not self.is_tab3_plot_enabled():
-            return
-        if hasattr(self, 'tab_widget') and self.tab_widget.currentIndex() != 0:
-            return
-        now = time.monotonic()
-        comm_count = header.get("comm_count", "-")
-        if now - self._tab3_last_das_plot_monotonic < self._tab3_das_plot_min_interval_seconds:
-            self._tab3_logger.debug("TAB3_NODE ui.das_payload skip_throttle comm=%s", comm_count)
-            return
-        self._tab3_last_das_plot_monotonic = now
-        started = time.perf_counter()
+    def _render_das_view(self, das_payload: Optional[Dict[str, Any]]) -> None:
+        """Render the eDAS time-domain curves and the space-time image."""
+        das_times1 = das_payload.get("curve1_das_time", []) if das_payload is not None else []
+        das_values1 = das_payload.get("curve1_das_values", []) if das_payload is not None else []
+        das_times2 = das_payload.get("curve2_das_time", []) if das_payload is not None else []
+        das_values2 = das_payload.get("curve2_das_values", []) if das_payload is not None else []
+        self._render_tab3_curve(
+            self.tab3_curve1_das_curve,
+            self.tab3_curve1_combo.currentText(),
+            das_times1,
+            das_values1,
+            "DAS Channel",
+        )
+        self._render_tab3_curve(
+            self.tab3_curve2_das_curve,
+            self.tab3_curve2_combo.currentText(),
+            das_times2,
+            das_values2,
+            "DAS Channel",
+        )
+        if das_payload is not None:
+            self._render_view_space_time(das_payload)
 
-        das_times1 = payload.get("curve1_das_time", payload.get("das_curve_time", []))
-        das_values1 = payload.get("curve1_das_values", payload.get("das_curve_values", []))
-        das_times2 = payload.get("curve2_das_time", payload.get("das_curve_time", []))
-        das_values2 = payload.get("curve2_das_values", payload.get("das_curve_values", []))
-        self._render_tab3_curve(self.tab3_curve1_das_curve, self.tab3_curve1_combo.currentText(), das_times1, das_values1, "DAS Channel")
-        self._render_tab3_curve(self.tab3_curve2_das_curve, self.tab3_curve2_combo.currentText(), das_times2, das_values2, "DAS Channel")
-
+    def _render_view_space_time(self, das_payload: Dict[str, Any]) -> None:
+        """Update the space-time image, positioned on the shared absolute time axis."""
         if not self.space_time_plot_btn.isChecked():
             return
-
-        matrix = payload.get("space_time_matrix")
-        x_axis = payload.get("space_time_x")
-        y_axis = payload.get("space_time_y")
+        matrix = das_payload.get("space_time_matrix")
+        x_axis = das_payload.get("space_time_x")
+        y_axis = das_payload.get("space_time_y")
         if matrix is None or len(np.shape(matrix)) != 2 or matrix.size == 0:
             self._reset_tab3_space_time_image()
             return
@@ -2920,11 +3047,8 @@ class MainWindow(QMainWindow):
             self._set_tab3_space_time_levels(levels[0], levels[0] + 1e-6)
             levels = self.get_tab3_v_range()
         x_scale = 1.0
-        x_offset = 0.0
-        if x_axis is not None and len(x_axis) > 0:
-            x_offset = float(x_axis[0])
-            if len(x_axis) > 1:
-                x_scale = float(x_axis[1] - x_axis[0])
+        if x_axis is not None and len(x_axis) > 1:
+            x_scale = float(x_axis[1] - x_axis[0])
         y_scale = 1.0
         y_offset = 0.0
         if y_axis is not None and len(y_axis) > 0:
@@ -2933,6 +3057,10 @@ class MainWindow(QMainWindow):
                 y_scale = float(y_axis[1] - y_axis[0])
         x_width = max(x_scale, 1e-12) * matrix.shape[1]
         y_height = max(y_scale, 1e-12) * matrix.shape[0]
+        # 绝对时间定位：图像右边缘对齐到最新对齐帧的结束时刻，使时空图与
+        # 两个时域图共用同一套时间坐标（上下对齐）。
+        latest_time = self._view_source_latest_time(das_payload, "packet_duration_seconds")
+        x_offset = latest_time - x_width
         self.tab3_space_time_image.setImage(matrix, autoLevels=False, levels=levels)
         if hasattr(self, "tab3_space_time_histogram"):
             self.tab3_space_time_histogram.setLevels(*levels)
@@ -2940,25 +3068,89 @@ class MainWindow(QMainWindow):
         if self._tab3_last_space_time_rect != rect:
             self.tab3_space_time_image.setRect(*rect)
             self._tab3_last_space_time_rect = rect
-        elapsed_ms = (time.perf_counter() - started) * 1000.0
-        self._tab3_logger.debug(
-            "TAB3_NODE ui.das_payload comm=%s curve_points=%d matrix_shape=%s elapsed_ms=%.2f",
-            comm_count,
-            max(
-                len(das_values1) if hasattr(das_values1, "__len__") else 0,
-                len(das_values2) if hasattr(das_values2, "__len__") else 0,
-            ),
-            tuple(matrix.shape),
-            elapsed_ms,
-        )
-        if elapsed_ms > self._tab3_ui_slow_threshold_ms:
-            self._tab3_logger.warning(
-                "TAB3_NODE ui.das_payload_slow comm=%s elapsed_ms=%.2f matrix_shape=%s",
-                comm_count,
-                elapsed_ms,
-                tuple(matrix.shape),
-            )
 
+    def _view_source_latest_time(self, payload: Dict[str, Any], duration_key: str) -> float:
+        """Return the absolute end time of the payload's latest packet."""
+        try:
+            comm_count = int(payload.get("comm_count", 0))
+        except (TypeError, ValueError):
+            comm_count = 0
+        duration = max(float(payload.get(duration_key, 1.0)), 1e-6)
+        return (comm_count + 1) * duration
+
+    def _apply_view_shared_time_range(self, latest_time: float) -> None:
+        """Slide the shared time-domain x-axis on all three View plots."""
+        if getattr(self, "_view_user_range_active", False):
+            return
+        if hasattr(self, "view_axis_enable_check") and self.view_axis_enable_check.isChecked():
+            x_min, x_max = self.get_view_x_range()
+            self._set_view_x_range_all(x_min, x_max)
+            return
+        window = self._time_window_seconds()
+        self._set_view_x_range_all(latest_time - window, latest_time)
+
+    def _set_view_x_range_all(self, x_min: float, x_max: float) -> None:
+        """Set the same X range on the two time-domain plots and the space-time plot."""
+        if x_max <= x_min or not np.all(np.isfinite((x_min, x_max))):
+            return
+        self._view_x_link_enabled = False
+        try:
+            for plot in (
+                getattr(self, "tab3_curve1_plot", None),
+                getattr(self, "tab3_curve2_plot", None),
+                getattr(self, "tab3_space_time_plot", None),
+            ):
+                if plot is None:
+                    continue
+                try:
+                    plot.setXRange(x_min, x_max, padding=0.0)
+                except Exception:
+                    pass
+        finally:
+            self._view_x_link_enabled = True
+
+    def _link_view_x_axes(self) -> None:
+        """Link the X axes of the two time-domain plots and the space-time plot."""
+        for plot in (
+            getattr(self, "tab3_curve1_plot", None),
+            getattr(self, "tab3_curve2_plot", None),
+            getattr(self, "tab3_space_time_plot", None),
+        ):
+            if plot is None:
+                continue
+            try:
+                plot.getViewBox().sigXRangeChanged.connect(self._on_view_plot_x_changed)
+            except Exception:
+                pass
+
+    def _on_view_plot_x_changed(self, view_box) -> None:
+        """Propagate a horizontal zoom/pan to the other two View plots."""
+        if not getattr(self, "_view_x_link_enabled", True):
+            return
+        try:
+            x_range = view_box.viewRange()[0]
+        except Exception:
+            return
+        if not np.all(np.isfinite(x_range)):
+            return
+        self._view_x_link_enabled = False
+        try:
+            for plot in (
+                getattr(self, "tab3_curve1_plot", None),
+                getattr(self, "tab3_curve2_plot", None),
+                getattr(self, "tab3_space_time_plot", None),
+            ):
+                if plot is None:
+                    continue
+                vb = plot.getViewBox()
+                if vb is view_box:
+                    continue
+                try:
+                    vb.setXRange(float(x_range[0]), float(x_range[1]), padding=0.0)
+                except Exception:
+                    pass
+        finally:
+            self._view_x_link_enabled = True
 
     def reset_tab3_views(self):
         # Clear View tab plots, cached PSD inputs, and runtime labels.
@@ -2982,6 +3174,12 @@ class MainWindow(QMainWindow):
         }
         self._fip_curve_rolling.clear()
         self._reset_tab3_space_time_image()
+        self._view_fip_payload = None
+        self._view_das_payload = None
+        self._view_plot_render_pending = False
+        self._view_fip_online = False
+        self._view_das_online = False
+        self._view_last_plot_render_monotonic = 0.0
         self._tab3_last_fip_plot_monotonic = 0.0
         self._tab3_last_das_plot_monotonic = 0.0
         self._view_psd_update_pending = False
@@ -3512,6 +3710,8 @@ class MainWindow(QMainWindow):
         # Toggle visibility of the View Space-Time pane and skip image updates when hidden.
         if hasattr(self, 'tab3_space_time_panel'):
             self.tab3_space_time_panel.setVisible(enabled)
+        if hasattr(self, 'tab3_space_time_histogram'):
+            self.tab3_space_time_histogram.setVisible(enabled)
         if not enabled:
             self._reset_tab3_space_time_image()
         self.space_time_plot_btn.setText("时空 ON" if enabled else "时空 OFF")
@@ -3997,10 +4197,19 @@ class MainWindow(QMainWindow):
         x_min, x_max = self.get_view_x_range()
         y_min, y_max = self.get_view_y_range()
         psd_y_min, psd_y_max = self.get_view_psd_y_range()
-        if x_max > x_min and y_max > y_min:
+        if x_max > x_min:
+            # 两个时域图与时空图共用同一套手动 X 范围。
+            for plot in (
+                getattr(self, 'tab3_curve1_plot', None),
+                getattr(self, 'tab3_curve2_plot', None),
+                getattr(self, 'tab3_space_time_plot', None),
+            ):
+                if plot:
+                    plot.setXRange(x_min, x_max, padding=0.0)
+        if y_max > y_min:
             for plot in (getattr(self, 'tab3_curve1_plot', None), getattr(self, 'tab3_curve2_plot', None)):
                 if plot:
-                    plot.setRange(xRange=(x_min, x_max), yRange=(y_min, y_max), padding=0.0)
+                    plot.setYRange(y_min, y_max, padding=0.0)
         if psd_y_max > psd_y_min:
             for plot in (getattr(self, 'view_psd1_plot', None), getattr(self, 'view_psd2_plot', None)):
                 if plot:

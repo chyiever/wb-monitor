@@ -217,9 +217,11 @@ def load_edas_bin_json(bin_path: Path) -> JointReplayData:
     raw = np.fromfile(bin_path, dtype="<f8")
     if blocks and channels and samples and raw.size >= blocks * channels * samples:
         matrices = raw[: blocks * channels * samples].reshape(blocks, channels, samples)
+        # 一次性批量降为 float32（比逐块转换快数倍），das_frames 保存视图避免再复制
+        matrices = matrices.astype(np.float32, copy=False)
     else:
-        matrices = np.empty((0, 0, 0), dtype=np.float64)
-    das_frames = [np.asarray(m, dtype=np.float32) for m in matrices]
+        matrices = np.empty((0, 0, 0), dtype=np.float32)
+    das_frames = [matrices[i] for i in range(matrices.shape[0])]
     frame_count = len(das_frames)
 
     comms = list(np.asarray(meta.get("comm_counts", []), dtype=np.int64))

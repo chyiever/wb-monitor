@@ -7,13 +7,15 @@ from typing import Optional
 
 import numpy as np
 import pyqtgraph as pg
-from PyQt5.QtCore import Qt, QThread, QTimer
+from PyQt5.QtCore import QEvent, Qt, QThread, QTimer
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QFileDialog,
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
@@ -24,10 +26,12 @@ from PyQt5.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QSpinBox,
     QSplitter,
     QStatusBar,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -51,12 +55,34 @@ pg.setConfigOptions(antialias=False)
 pg.setConfigOption("background", "w")
 pg.setConfigOption("foreground", "k")
 
+# Qt 鼠标侧键：Qt.BackButton == 8（对应 pyqtgraph 崩溃 KeyError: 8）、Qt.ForwardButton == 16。
+# pyqtgraph 的 GraphicsScene 未登记这些按键的按下位置，
+# 在其上按下/拖动侧键会在 mouseMoveEvent -> buttonDownScenePos() 抛 KeyError。
+_SIDE_BUTTON_MASK = int(Qt.BackButton) | int(Qt.ForwardButton)
+
+
+class _SideButtonEventFilter(QWidget):
+    """拦截鼠标侧键（前进/后退键）事件，规避 pyqtgraph KeyError: 8 崩溃。"""
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802
+        try:
+            etype = event.type()
+            if etype in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick):
+                if int(event.button()) & _SIDE_BUTTON_MASK:
+                    return True
+            elif etype == QEvent.MouseMove:
+                if int(event.buttons()) & _SIDE_BUTTON_MASK:
+                    return True
+        except Exception:
+            pass
+        return False
+
 
 class ReplayWindow(QMainWindow):
     """Simple joint NPZ replay window."""
 
     APP_NAME = "FIP/eDAS 联合数据回放"
-    APP_VERSION = "v1.1.0"
+    APP_VERSION = "v1.2.0"
     APP_BUILD_DATE = "2026-09-17"
     COLOR_MAPS = ("Seismic", "RdBu", "CoolWarm", "Viridis", "Plasma", "Inferno", "Magma", "Gray", "Jet")
     COLOR_BAR_WIDTH = 100
@@ -106,6 +132,27 @@ class ReplayWindow(QMainWindow):
             background: #d6e9fb;
             color: #0b3d6e;
         }
+        QTabWidget::pane {
+            border: 1px solid #cfd8dc;
+            border-radius: 4px;
+            background: #fbfcfd;
+        }
+        QTabBar::tab {
+            background: #eceff1;
+            border: 1px solid #b0bec5;
+            border-bottom: none;
+            border-top-left-radius: 4px;
+            border-top-right-radius: 4px;
+            padding: 4px 12px;
+            margin-right: 2px;
+            color: #455a64;
+        }
+        QTabBar::tab:selected {
+            background: #ffffff;
+            color: #0b3d6e;
+            font-weight: 600;
+        }
+        QScrollArea { background: transparent; }
         QStatusBar { background: #eceff1; }
         QStatusBar::item { border: none; }
     """
@@ -128,6 +175,8 @@ class ReplayWindow(QMainWindow):
         self._redraw_timer.setInterval(self.REDRAW_DEBOUNCE_MS)
         self._redraw_timer.timeout.connect(self._flush_requests)
 
+        self._side_button_filter = _SideButtonEventFilter(self)
+
         font = QFont()
         font.setPointSize(9)
         self.setFont(font)
@@ -143,7 +192,16 @@ class ReplayWindow(QMainWindow):
         self._worker.moveToThread(self._worker_thread)
         self._worker.redrawDone.connect(self._on_redraw_done)
         self._worker.failed.connect(self._on_worker_failed)
+        self._worker.redrawStarted.connect(self._on_worker_busy)
+        # 通过信号提交任务，保证 redraw() 在 worker 线程执行（直接调用会在 GUI 线程运行导致卡顿）
+        self._worker.requestReceived.connect(self._worker.redraw)
+        self._worker.cacheInvalidated.connect(self._worker.invalidate_cache)
         self._worker_thread.start()
+
+    def _on_worker_busy(self) -> None:
+        self.statusBar().showMessage("正在计算…")
+        if QApplication.overrideCursor() is None:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._redraw_timer.stop()
@@ -196,13 +254,34 @@ class ReplayWindow(QMainWindow):
         panel.setMaximumWidth(520)
         layout = QVBoxLayout(panel)
         layout.setContentsMargins(0, 0, 8, 0)
-        layout.setSpacing(8)
-        layout.addWidget(self._build_path_group())
-        layout.addWidget(self._build_file_group(), 1)
-        layout.addWidget(self._build_source_group())
-        layout.addWidget(self._build_fip_preprocess_group())
-        layout.addWidget(self._build_edas_preprocess_group())
-        layout.addWidget(self._build_space_group())
+        layout.setSpacing(0)
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+
+        read_tab = QWidget()
+        read_layout = QVBoxLayout(read_tab)
+        read_layout.setContentsMargins(4, 8, 4, 4)
+        read_layout.setSpacing(8)
+        read_layout.addWidget(self._build_path_group())
+        read_layout.addWidget(self._build_file_group(), 1)
+
+        param_tab = QWidget()
+        param_layout = QVBoxLayout(param_tab)
+        param_layout.setContentsMargins(4, 8, 4, 4)
+        param_layout.setSpacing(8)
+        param_layout.addWidget(self._build_source_group())
+        param_layout.addWidget(self._build_fip_preprocess_group())
+        param_layout.addWidget(self._build_edas_preprocess_group())
+        param_layout.addWidget(self._build_space_group())
+        param_layout.addStretch(1)
+        param_scroll = QScrollArea()
+        param_scroll.setWidgetResizable(True)
+        param_scroll.setFrameShape(QFrame.NoFrame)
+        param_scroll.setWidget(param_tab)
+
+        tabs.addTab(read_tab, "数据读取")
+        tabs.addTab(param_scroll, "曲线·预处理·显示")
+        layout.addWidget(tabs, 1)
         return panel
 
     def _build_path_group(self) -> QGroupBox:
@@ -212,9 +291,12 @@ class ReplayWindow(QMainWindow):
         self.path_edit = QLineEdit(str(self._data_dir))
         self.browse_btn = QPushButton("浏览")
         self.refresh_btn = QPushButton("刷新")
-        layout.addWidget(self.path_edit, 0, 0, 1, 2)
+        self.reload_btn = QPushButton("重新加载数据")
+        self.reload_btn.setToolTip("清除后台缓存并从磁盘重新读取当前文件（用于文件内容被外部更新后强制刷新）")
+        layout.addWidget(self.path_edit, 0, 0, 1, 3)
         layout.addWidget(self.browse_btn, 1, 0)
         layout.addWidget(self.refresh_btn, 1, 1)
+        layout.addWidget(self.reload_btn, 1, 2)
         return group
 
     def _build_file_group(self) -> QGroupBox:
@@ -321,10 +403,9 @@ class ReplayWindow(QMainWindow):
         self.edas_downsample_spin.setValue(1)
         self.edas_downsample_spin.setMaximumWidth(90)
         layout.addWidget(self.edas_downsample_spin, 2, 1)
-        self.apply_btn = QPushButton("应用参数")
         self.reset_view_btn = QPushButton("重置视图")
-        layout.addWidget(self.apply_btn, 2, 2)
-        layout.addWidget(self.reset_view_btn, 2, 3)
+        self.reset_view_btn.setToolTip("三张图恢复自动范围，并重新对齐共用横轴")
+        layout.addWidget(self.reset_view_btn, 2, 2, 1, 2)
         return group
 
     def _build_space_group(self) -> QGroupBox:
@@ -406,6 +487,7 @@ class ReplayWindow(QMainWindow):
         self.histogram.setMinimumWidth(90)
         self.histogram.setMaximumWidth(120)
         self.histogram.setImageItem(self.space_image)
+        self.histogram.viewport().installEventFilter(self._side_button_filter)
 
         self.plot_height_splitter = QSplitter(Qt.Vertical)
         self.plot_height_splitter.setChildrenCollapsible(False)
@@ -458,6 +540,7 @@ class ReplayWindow(QMainWindow):
         plot.setMenuEnabled(True)
         if hasattr(plot, "showButtons"):
             plot.showButtons()
+        plot.viewport().installEventFilter(self._side_button_filter)
         try:
             plot.getViewBox().sigXRangeChanged.connect(lambda vb, rng, p=plot: self._sync_x_range(p, rng))
         except Exception:
@@ -477,9 +560,9 @@ class ReplayWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.browse_btn.clicked.connect(self._browse)
         self.refresh_btn.clicked.connect(lambda: self._scan_files())
+        self.reload_btn.clicked.connect(self._reload_current)
         self.path_edit.returnPressed.connect(lambda: self._scan_files())
         self.file_list.currentItemChanged.connect(self._on_file_selected)
-        self.apply_btn.clicked.connect(self._schedule_redraw)
         self.reset_view_btn.clicked.connect(self._reset_view)
         for widget in (
             self.curve1_combo,
@@ -508,10 +591,19 @@ class ReplayWindow(QMainWindow):
             signal = getattr(widget, "valueChanged", None) or getattr(widget, "currentTextChanged", None) or getattr(widget, "toggled", None)
             if signal is not None:
                 signal.connect(lambda *_args: self._schedule_redraw())
-        self.fip_filter_band_edit.returnPressed.connect(self._schedule_redraw)
-        self.edas_filter_band_edit.returnPressed.connect(self._schedule_redraw)
-        self.channel_range_edit.returnPressed.connect(self._schedule_redraw)
+        # 预处理/范围参数实时生效：输入变化即去抖重算，无需回车或手动应用
+        self.fip_filter_band_edit.textChanged.connect(self._schedule_redraw)
+        self.edas_filter_band_edit.textChanged.connect(self._schedule_redraw)
+        self.channel_range_edit.textChanged.connect(self._schedule_redraw)
         self.auto_levels_check.toggled.connect(self._update_manual_levels_state)
+
+    def _reload_current(self) -> None:
+        if self._current_path is None:
+            return
+        self._worker.clear_cache()
+        self._auto_range_pending = True
+        self.statusBar().showMessage(f"正在重新加载 {self._current_path.name} …")
+        self._schedule_redraw()
 
     def _browse(self) -> None:
         chosen = QFileDialog.getExistingDirectory(self, "选择 FIP/eDAS 数据目录", self.path_edit.text())
@@ -575,7 +667,7 @@ class ReplayWindow(QMainWindow):
         if self._pending_request is not None:
             request = self._pending_request
             self._pending_request = None
-            self._worker.redraw(request)
+            self._worker.submit(request)
 
     def _build_request(self) -> Optional[RedrawRequest]:
         if self._current_path is None:
@@ -644,6 +736,8 @@ class ReplayWindow(QMainWindow):
         )
 
     def _on_redraw_done(self, result: RedrawResult) -> None:
+        while QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
         if result.seq != self._worker_seq:
             return
         self._apply_result(result)
@@ -674,6 +768,8 @@ class ReplayWindow(QMainWindow):
             self._reset_view()
 
     def _on_worker_failed(self, message: str, seq: int) -> None:
+        while QApplication.overrideCursor() is not None:
+            QApplication.restoreOverrideCursor()
         if seq != self._worker_seq:
             return
         self._clear_plots()

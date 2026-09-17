@@ -12,6 +12,7 @@
 - FIP 独立 `.npz`、eDAS 独立 `.bin + .json`、FIP+eDAS 联合三种格式（`.bin` / `.npz` / `.h5`）的文件结构。
 - 后台线程、非阻塞队列、增量 chunk、内存预算等防卡顿存储机制。
 - 联合存储游标只在写盘成功后推进的修复机制（`_last_snapshot_end_comm` bug fix）。
+- 2026-09-17 Tab1/Tab2 时间轴、触发存储、重启/倒序包和 joint 元数据风险修正。
 - Data 页（Tab2）内通信、同步、存储相关参数和按钮含义。
 - Tab2 存储参数推荐设置。
 - 联调时应检查的通信连续性、对齐状态和文件字段。
@@ -266,6 +267,13 @@ packet_duration_seconds = samples_per_channel / sample_rate_hz_sent
 
 `comm_count` 回退或重复会记录 reset/out-of-order 日志。
 
+2026-09-17 修正规则：
+
+- FIP 处理链路只有在当前归一化 `comm_count > last_comm_count + 1` 时才计入缺包；`comm_count` 回退、重复或发送端重启归零仅记录为 reset/out-of-order，并重置每传感器处理状态。
+- FIP 独立存储链路遇到重复/倒序包时不再追加到当前 chunk；若检测到新会话 `comm_count == 0`，会先 flush 当前缓存，再开启新的存储段。
+- Tab2 特征链路遇到缺包、倒序或发送端重启时，会同时重置滑动缓存、滤波状态、样本位置和窗口编号，防止跨缺口拼接特征窗口。
+- Data 页同步统计中的匹配序号集合只保留首包和最近 2000 个匹配 `comm_count`，避免长时间运行时去重缓存无限增长。
+
 ### 5.3 FIP-eDAS 接收时间差
 
 Data 页会按同一 `comm_count` 配对 FIP/eDAS 的 TCP 完整包体接收完成时间，显示：
@@ -276,6 +284,22 @@ Data 页会按同一 `comm_count` 配对 FIP/eDAS 的 TCP 完整包体接收完�
 - 匹配包数。
 
 该时间差用于通信同步诊断，不等同于数据物理事件发生时间。
+
+### 5.4 Tab2 特征与触发存储时间基准
+
+Tab2 检测页使用 Tab1 处理后的下采样 FIP 数据。其时间轴不依赖主机桌面时间，而按以下方式重建：
+
+```text
+packet_start_time = comm_count * packet_duration_seconds
+window_start_time = packet_start_time + window_start_sample / sample_rate
+```
+
+实现约束：
+
+- 每个 `FIPTab2InputPacket` 的 `timestamp` 为该包逻辑起始时间。
+- 特征窗口 `start_time`、`center_time`、`end_time` 均由样本位置计算，和触发存储使用同一时间基准。
+- 若检测到 `comm_count` 缺口或回退，Tab2 会丢弃缺口前缓存，不把缺口两侧样本合并进同一个滑动窗口。
+- 触发存储的保存范围为 `event.start_time - pre_trigger_seconds` 到 `event.end_time + post_trigger_seconds`。停止监测并进入 drain 模式时，如果后触发窗口尚未完全等满，也会保存当前已缓存片段并记录 warning，避免活跃告警事件静默丢失。
 
 ## 6. 存储总览
 
@@ -564,6 +588,12 @@ FIPeDAS-YYYYMMDD-HHMMSS.mmm.h5    # 联合格式=h5
 | `das_sample_rate_hz` | eDAS 每通道采样率 |
 | `das_duration_seconds` | eDAS 单帧时长 |
 | `frame_count` / `comm_counts` / `packet_start_times` / `fip_present` / `das_present` | 帧级明细 |
+
+说明：
+
+- `fip_channel_count`、`fip_sample_rate_hz`、`fip_duration_seconds` 从 chunk 内首个实际存在的 FIP packet 提取。
+- `das_channel_count`、`das_sample_rate_hz`、`das_duration_seconds` 从 chunk 内首个实际存在的 eDAS packet 提取。
+- 因此，若 chunk 首帧缺失某一路，但后续帧包含该路数据，文件级元数据不会被首帧缺失误写为 0；逐帧是否存在仍以 `fip_present` / `das_present` 为准。
 
 ### 9.5 bin 格式（`FIPeDAS-*.bin`）
 

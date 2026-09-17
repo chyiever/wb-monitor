@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
 
@@ -76,14 +77,20 @@ class ReplayWorker(QObject):
 
     redrawDone = pyqtSignal(object)
     failed = pyqtSignal(str, object)
+    redrawStarted = pyqtSignal()
+    # GUI 线程通过此信号把请求跨线程投递到本对象所在的 worker 线程
+    requestReceived = pyqtSignal(object)
+    # 清空文件缓存（跨线程排队执行，避免与正在进行的加载竞争）
+    cacheInvalidated = pyqtSignal()
 
     def __init__(self, cache_size: int = 4) -> None:
         super().__init__()
         self._cache_size = max(1, int(cache_size))
-        self._data_cache: dict[str, JointReplayData] = {}
+        self._data_cache: "OrderedDict[str, JointReplayData]" = OrderedDict()
 
     @pyqtSlot(object)
     def redraw(self, request: RedrawRequest) -> None:
+        self.redrawStarted.emit()
         try:
             data = self._load_cached(request.path)
             result = _compute_redraw(request, data)
@@ -91,18 +98,52 @@ class ReplayWorker(QObject):
         except Exception as exc:
             self.failed.emit(str(exc), request.seq)
 
+    def submit(self, request: RedrawRequest) -> None:
+        """GUI 线程入口：借助跨线程信号把请求投递到 worker 线程。"""
+        self.requestReceived.emit(request)
+
+    def clear_cache(self) -> None:
+        """GUI 线程入口：排队清空后台文件缓存（下次加载重新读盘）。"""
+        self.cacheInvalidated.emit()
+
+    @pyqtSlot()
+    def invalidate_cache(self) -> None:
+        self._data_cache.clear()
+
     def _load_cached(self, path_str: str) -> JointReplayData:
         path = Path(path_str)
         key = str(path.resolve())
         cached = self._data_cache.get(key)
         if cached is not None:
+            self._data_cache.move_to_end(key)
             return cached
         data = load_data_file(path)
-        if len(self._data_cache) >= self._cache_size:
-            oldest = next(iter(self._data_cache))
-            del self._data_cache[oldest]
         self._data_cache[key] = data
+        self._evict_cache()
         return data
+
+    def _evict_cache(self) -> None:
+        # 按“文件字节大小×3（float64/float32 转换）”估算内存占用，超过阈值时淘汰最久未用的文件
+        limit = self._cache_size * 300 * 1024 * 1024
+        total = sum(max(1, self._entry_bytes(entry)) for entry in self._data_cache.values())
+        while len(self._data_cache) > self._cache_size or (len(self._data_cache) > 1 and total > limit):
+            oldest_key, oldest = next(iter(self._data_cache.items()))
+            total -= max(1, self._entry_bytes(oldest))
+            del self._data_cache[oldest_key]
+
+    @staticmethod
+    def _entry_bytes(data: JointReplayData) -> int:
+        size = 0
+        for frames in (data.fip1_frames, data.fip2_frames):
+            for frame in frames:
+                size += int(getattr(frame, "nbytes", 0) or 0)
+        for matrix in data.das_frames:
+            size += int(getattr(matrix, "nbytes", 0) or 0)
+        try:
+            file_bytes = int(data.path.stat().st_size)
+        except OSError:
+            file_bytes = 0
+        return max(size, file_bytes)
 
 
 def _compute_redraw(request: RedrawRequest, data: JointReplayData) -> RedrawResult:
