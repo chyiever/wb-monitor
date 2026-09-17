@@ -112,3 +112,31 @@
 **验证**：offscreen 冒烟测试通过——文件信息正确显示采集时刻、时长、采样率、通道数与数据量；窗口标题与顶部标题栏显示软件名 + 版本号。
 
 **后续微调**：顶部标题栏软件名改为水平居中并放大（字号 15px → 24px），版本号仍靠右显示。
+
+### 5. 兼容单独 FIP、eDAS 与多种联合格式
+
+**需求**：根据 `wb-monitor/docs/FIP／eDAS 通信协议与数据存储机制.md`，让回放工具兼容单独的 FIP 数据、单独的 eDAS 数据，以及不同格式的联合数据，并更新开发文档与 README。
+
+**新增支持的格式**（`src/fipedas_read/data_loader.py`）：
+
+| 数据 | 格式 | 版本 |
+|---|---|---|
+| FIP 独立 | `*.npz` | `wb-monitor-tab1-fip-v3` |
+| eDAS 独立 | `*.bin + *.json` | `wb-monitor-edas-raw-v1` |
+| 联合 | `*.npz` | `wb-monitor-joint-v5` / `-v6`（原有） |
+| 联合 | `*.bin` | `wb-monitor-joint-bin-v1`（magic `FIPeDAS1` 自描述） |
+| 联合 | `*.h5` | `wb-monitor-joint-h5-v1`（HDF5，依赖 h5py） |
+
+**实现要点**：
+
+- `load_fip_npz()`：读取 `phase_data`（1D 或 `sensor_count×N`），拆分 FIP1/FIP2；采样率取 `sample_rate` 或 `raw_sample_rate_hz`；`data_info` 中提取 `stream_start_time` 作为采集时刻。
+- `load_edas_bin_json()`：读 `.json` 元数据（`matrix_shape_per_block`、`blocks_written`、`comm_counts`、`packet_start_times` 等），把 `.bin` 的 `<f8` 矩阵切分为逐帧 `das_frames`。
+- `load_joint_bin()`：校验 magic `FIPeDAS1`，解析 JSON 头与逐帧记录（`<iddBBididi` 定长头 + FIP 数组 + eDAS 矩阵）。
+- `load_joint_h5()`：读取 HDF5 数据集与根 attrs（`fip1_raw`/`fip2_raw`/`das_raw`/`comm_counts` 等）。
+- `load_data_file(path)`：按后缀与关键字段自动分派（npz 通过关键字段区分联合/FIP 独立）。
+- `iter_replay_files()`：自动发现 `FIPeDAS-*.npz/.bin/.h5`、`*-FIP*.npz`、`*-eDAS-*.bin(+json)`。
+- 所有格式统一归一化为 `JointReplayData`（`_make_joint()` 统一补齐帧数、`fip_present`/`das_present` 掩码），上层 worker/viewer 无需感知格式差异。
+- 文件信息栏新增「数据」行，标注 `FIP` / `eDAS` / `FIP+eDAS`；缺失的数据源对应曲线/图标题显示「无 FIP 数据」/「无 eDAS 数据」。
+- `requirements.txt` 新增 `h5py`（读取联合 `.h5` 需要）。
+
+**验证**：对五种格式各生成样例文件，`load_data_file` 全部正确读取（帧数、FIP/eDAS 存在标志、矩阵形状正确）；GUI 全流程逐文件切换冒烟测试通过。

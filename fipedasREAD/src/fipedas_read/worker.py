@@ -14,7 +14,7 @@ from .data_loader import (
     build_space_time_matrix,
     concatenate_das_channel,
     concatenate_fip_frames,
-    load_joint_npz,
+    load_data_file,
 )
 from .preprocess import PreprocessSpec, decimate_for_plot, preprocess_waveform, robust_levels
 
@@ -60,6 +60,8 @@ class RedrawResult:
     seq: int
     path: str
     file_info: str
+    has_fip: bool
+    has_das: bool
     curve1: CurveResult
     curve2: CurveResult
     space_matrix: np.ndarray
@@ -93,7 +95,7 @@ class ReplayWorker(QObject):
         cached = self._data_cache.get(key)
         if cached is not None:
             return cached
-        data = load_joint_npz(path)
+        data = load_data_file(path)
         if len(self._data_cache) >= self._cache_size:
             oldest = next(iter(self._data_cache))
             del self._data_cache[oldest]
@@ -109,6 +111,8 @@ def _compute_redraw(request: RedrawRequest, data: JointReplayData) -> RedrawResu
         seq=request.seq,
         path=request.path,
         file_info=_file_info_text(data),
+        has_fip=data.has_fip,
+        has_das=data.has_das,
         curve1=curve1,
         curve2=curve2,
         space_matrix=matrix,
@@ -182,8 +186,14 @@ def _file_info_text(data: JointReplayData) -> str:
     duration = max(0.0, data.end_time - data.start_time)
     file_size = int(data.path.stat().st_size) if data.path.exists() else 0
     created = (data.created_at or "").strip() or "n/a"
+    kind = []
+    if data.has_fip:
+        kind.append("FIP")
+    if data.has_das:
+        kind.append("eDAS")
     lines = [
         f"格式: {data.format_version}",
+        f"数据: {'+'.join(kind) if kind else '未知'}",
         f"采集时刻: {created}",
         f"时长: {duration:.3f} s（{data.frame_count} 帧）",
         f"采样率: FIP {fip_rate}  |  DAS {das_rate}",

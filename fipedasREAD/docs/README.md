@@ -26,28 +26,46 @@ python .\fipedasREAD\run.py D:\PCCP\FIPeDASDATA\FIPeDAS-20260916-120000.000.npz
 - numpy
 - scipy
 
-## 支持的数据字段
+## 支持的数据文件
 
-当前优先读取 `wb-monitor-joint-v5` 字段：
+根据 `wb-monitor/docs/FIP／eDAS 通信协议与数据存储机制.md`，本工具兼容以下存储格式（自动识别，无需手动指定类型）：
+
+| 数据 | 格式 | 说明 |
+|---|---|---|
+| FIP 独立 | `*.npz` | `wb-monitor-tab1-fip-v3`，字段 `phase_data` |
+| eDAS 独立 | `*.bin + *.json` | `wb-monitor-edas-raw-v1`，二进制矩阵 + JSON 元数据 |
+| FIP+eDAS 联合 | `*.npz` | `wb-monitor-joint-v5` / `-v6` |
+| FIP+eDAS 联合 | `*.bin` | `wb-monitor-joint-bin-v1`，magic `FIPeDAS1` 自描述 |
+| FIP+eDAS 联合 | `*.h5` | `wb-monitor-joint-h5-v1`，HDF5 容器（依赖 h5py） |
+
+只含 FIP 或只含 eDAS 的文件也能正常打开：缺失的数据源对应曲线/图显示「无 FIP 数据」/「无 eDAS 数据」，文件信息栏会标注数据类型（`FIP`、`eDAS` 或 `FIP+eDAS`）。
+
+### 联合 `.npz` 支持的数据字段
+
+当前优先读取 `wb-monitor-joint-v6` 字段：
 
 - `comm_counts`
 - `packet_start_times`
 - `packet_duration_seconds`
-- `fip1_display_data`
-- `fip2_display_data`
+- `fip1_raw_data`
+- `fip2_raw_data`
 - `das_raw_matrix`
 - `fip_sample_rate_hz`
 - `das_sample_rate_hz`
 - `das_channel_count`
+- `fip_present` / `das_present`
 - `format_version`
-- `created_at`
+- `created_at` / `wall_clock_start`
 
 同时兼容部分旧字段：
 
-- `fip1_raw_200khz`
-- `fip2_raw_200khz`
+- `fip1_display_data`
+- `fip2_display_data`
 - `fip_display_data`
 - `fip_raw_200khz`
+- `fip_raw_data`
+- `fip1_raw_200khz`
+- `fip2_raw_200khz`
 - `das_matrix`
 - `edas_raw_matrix`
 
@@ -56,8 +74,8 @@ python .\fipedasREAD\run.py D:\PCCP\FIPeDASDATA\FIPeDAS-20260916-120000.000.npz
 左侧区域：
 
 - 数据路径选择和刷新。
-- 文件名列表。
-- 文件信息：格式版本、采集时刻、时长（帧数）、采样率（FIP/DAS）、通道数、数据量（FIP/DAS 采样点数与文件大小）。
+- 文件名列表（自动识别联合 npz/bin/h5、FIP 独立 npz、eDAS 独立 bin+json）。
+- 文件信息：数据类型（FIP/eDAS/FIP+eDAS）、格式版本、采集时刻、时长（帧数）、采样率（FIP/DAS）、通道数、数据量（FIP/DAS 采样点数与文件大小）。
 - 两条时域曲线的数据源选择：`FIP1`、`FIP2`、`DAS Channel`。
 - DAS 通道号。
 - FIP 预处理：去均值、归一化、Butterworth 滤波、频带、阶数、降采样。

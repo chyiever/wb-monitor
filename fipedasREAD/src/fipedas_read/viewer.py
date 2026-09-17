@@ -32,7 +32,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from .data_loader import iter_joint_npz_files
+from .data_loader import iter_replay_files
 from .preprocess import (
     FilterSpec,
     PreprocessSpec,
@@ -509,7 +509,7 @@ class ReplayWindow(QMainWindow):
         self.auto_levels_check.toggled.connect(self._update_manual_levels_state)
 
     def _browse(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(self, "选择 FIPeDAS joint NPZ 目录", self.path_edit.text())
+        chosen = QFileDialog.getExistingDirectory(self, "选择 FIP/eDAS 数据目录", self.path_edit.text())
         if chosen:
             self.path_edit.setText(chosen)
             self._scan_files()
@@ -522,7 +522,7 @@ class ReplayWindow(QMainWindow):
             self.path_edit.setText(str(self._data_dir))
         else:
             self._data_dir = path
-        files = iter_joint_npz_files(select_file or self._data_dir)
+        files = iter_replay_files(select_file or self._data_dir)
         if select_file is not None and select_file.is_file():
             files = [select_file]
         self.file_list.blockSignals(True)
@@ -530,6 +530,7 @@ class ReplayWindow(QMainWindow):
         for file_path in files:
             item = QListWidgetItem(file_path.name)
             item.setData(Qt.UserRole, str(file_path))
+            item.setToolTip(str(file_path))
             self.file_list.addItem(item)
             if select_file is not None and file_path.resolve() == select_file.resolve():
                 self.file_list.setCurrentItem(item)
@@ -537,12 +538,12 @@ class ReplayWindow(QMainWindow):
             self.file_list.setCurrentRow(self.file_list.count() - 1)
         current = self.file_list.currentItem()
         self.file_list.blockSignals(False)
-        self.statusBar().showMessage(f"发现 {self.file_list.count()} 个 npz 文件")
+        self.statusBar().showMessage(f"发现 {self.file_list.count()} 个数据文件")
         if current is not None:
             self._select_path(Path(current.data(Qt.UserRole)))
         else:
             self._current_path = None
-            self.file_info_label.setText("未找到 .npz 文件")
+            self.file_info_label.setText("未找到数据文件")
             self._clear_plots()
 
     def _on_file_selected(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
@@ -642,12 +643,15 @@ class ReplayWindow(QMainWindow):
         self.file_info_label.setText(result.file_info)
         self.statusBar().showMessage(f"已加载 {Path(result.path).name}")
         self.curve1.setData(result.curve1.times, result.curve1.values)
-        self.curve1_plot.setTitle(result.curve1.title)
         self.curve2.setData(result.curve2.times, result.curve2.values)
-        self.curve2_plot.setTitle(result.curve2.title)
+        title1 = result.curve1.title if result.has_fip or result.curve1.values.size else "无 FIP 数据"
+        title2 = result.curve2.title if result.has_fip or result.curve2.values.size else "无 FIP 数据"
+        self.curve1_plot.setTitle(title1)
+        self.curve2_plot.setTitle(title2)
         self.space_image.setImage(result.space_matrix, autoLevels=False, levels=result.space_levels)
         self.space_image.setRect(*result.space_rect)
         self.histogram.setLevels(*result.space_levels)
+        self.space_plot.setTitle("DAS Timespace" if result.has_das else "无 eDAS 数据")
         if self.auto_levels_check.isChecked():
             self.space_vmin_spin.blockSignals(True)
             self.space_vmin_spin.setValue(result.space_levels[0])
