@@ -2,6 +2,7 @@
 
 ## 最新维护记录
 
+- [2026-09-23 整体数据流稳定性评估与优化记录](docs/2026-09-23-整体数据流稳定性评估与优化记录.md)
 - [2026-09-22 现场测试日志与联合存储修复记录](docs/2026-09-22-现场测试日志与联合存储修复记录.md)
 - [2026-09-17 Tab1/Tab2 通信、绘图、时间对齐与存储风险排查优化](docs/2026-09-17-Tab1-Tab2通信绘图时间对齐与存储风险排查优化.md)
 
@@ -43,6 +44,7 @@ FIP/eDAS 同步时间戳取自 TCP 接收线程“完整包体接收完成”的
 - 相位展开、数字滤波、系统降采样
 - FIP1/FIP2 曲线显示、PSD、Data 页统计和存储
 - `NPZ` 格式相位数据存储
+- FIP 独立存储使用无压缩 `.npz`，优先保证写盘吞吐和连续性
 - 代码结构已整理到 `src/fip`
 
 ### eDAS 主链路已完成
@@ -64,6 +66,7 @@ FIP/eDAS 同步时间戳取自 TCP 接收线程“完整包体接收完成”的
 - FIP/eDAS 对齐状态维护和联合原始数据定时存储
 - joint `.bin/.npz/.h5` 存储游标只在写盘成功后推进；FIP 或 eDAS 尾帧未配对时会等待补齐，不再生成 FIP=2s、DAS=1s 的不对称 chunk
 - 实时显示链路和存储链路分离：显示队列在负载高时可跳帧以保持界面响应，存储链路采用无损背压以保证连续落盘
+- Tab1 时域波形和 PSD 按 FIP 单包时长动态刷新：1s/包时每包刷新，0.2s/包时约每 1s 刷新
 
 ### 检测页已完成
 
@@ -327,6 +330,7 @@ VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve
 - [2026-07-18 FIP和eDAS时间同步与通信检验](E:/codes/pccpHOST/wb-monitor/docs/2026-07-18-FIP和eDAS时间同步与通信检验.md)
 - [2026-07-17 FIP-eDAS联调问题数量与修复日志](E:/codes/pccpHOST/wb-monitor/docs/2026-07-17-FIP-eDAS联调问题数量与修复日志.md)
 - [2026-07-18 Tab3-FIP丢帧缺口与首点0分析修复](E:/codes/pccpHOST/wb-monitor/docs/2026-07-18-Tab3-FIP丢帧缺口与首点0分析修复.md)
+- [2026-09-23 整体数据流稳定性评估与优化记录](E:/codes/pccpHOST/wb-monitor/docs/2026-09-23-整体数据流稳定性评估与优化记录.md)
 - [2026-09-22 现场测试日志与联合存储修复记录](E:/codes/pccpHOST/wb-monitor/docs/2026-09-22-现场测试日志与联合存储修复记录.md)
 - [FIP/eDAS 通信协议与数据存储机制](E:/codes/pccpHOST/wb-monitor/docs/FIP／eDAS 通信协议与数据存储机制.md)
 - [开发日志汇总](E:/codes/pccpHOST/wb-monitor/docs/dev_log.md)
@@ -338,6 +342,7 @@ VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve
 - `首包时间差（FIP-eDAS）` 使用 TCP 完整收包时间戳并固定首个匹配包
 - 联合存储默认使用裸流式 `bin`；`npz` 和 `h5` 适合短时验证或低数据率压缩归档，缺少 `h5py` 时会自动回退 `bin`
 - eDAS Space-Time 空 payload 不会清空已显示画面；滚动缓存按实际溢出列裁剪，避免周期性空白图
+- Tab1 显示队列采用丢旧保新策略，存储队列采用无损背压策略；显示跳帧不代表存储丢帧
 - Setting 页全局显示设置保存后需重启软件生效
 - `run.py --config` 尚未完整接入自定义配置文件加载
 

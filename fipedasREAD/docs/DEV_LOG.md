@@ -1,5 +1,48 @@
 # 开发日志（fipedasREAD 回放工具）
 
+## 2026-09-17（v1.2.0）
+
+### 7. 大文件（约 300MB）读取卡顿修复
+
+**根因**：`viewer._flush_requests()` 以普通方法调用 `self._worker.redraw(request)` 提交任务。由于未通过信号连接，该调用在 **GUI 线程**同步执行——300MB 文件的 NPZ 解压、逐帧 object 数组转换、曲线拼接与滤波、timespace 矩阵构建全部阻塞界面（此前日志宣称的多线程化实际未生效）。
+
+**修改**：
+
+- `src/fipedas_read/worker.py`
+  - 新增 `requestReceived = pyqtSignal(object)`：GUI 线程调用 `submit()` 经跨线程信号投递请求，`redraw()` 在 worker 线程的事件循环中执行。
+  - 新增 `redrawStarted` 信号：计算开始时 GUI 显示忙碌光标 + 状态栏「正在计算…」；完成/失败后恢复。
+  - 缓存改为 LRU + 内存预算淘汰（最多 4 个文件或约 1.2GB，按数组字节与文件大小估算），避免 300MB 文件把缓存撑爆。
+  - 新增 `clear_cache()`（`cacheInvalidated` 信号排队清空缓存），供「重新加载数据」使用。
+- `src/fipedas_read/data_loader.py`
+  - `load_edas_bin_json()`：`<f8` 矩阵一次性 `astype(float32)` 批量降精度，帧列表保存视图（此前逐块转换，慢且多次复制）。
+
+### 8. 左侧参数区分成两个 tab
+
+- `src/fipedas_read/viewer.py`：左侧面板改为 `QTabWidget`——
+  - 「数据读取」：数据路径（浏览/刷新/**重新加载数据**）+ 文件列表 + 文件信息。
+  - 「曲线·预处理·显示」（QScrollArea）：时域曲线源、FIP 预处理、EDAS 预处理、timespace 参数。
+- 新增 QTabBar/QTabPane/QScrollArea QSS 样式。
+
+### 9. 预处理参数调整后立即生效
+
+- 频带输入（FIP/EDAS）、timespace 通道范围由「回车生效」改为 `textChanged` 即时触发（仍经 120ms 去抖合并），其余控件原本即自动生效。
+
+### 10. 移除「应用参数」按钮
+
+- 该按钮原本是唯一的手动全量重绘触发器（其余参数已自动生效），位置放在 EDAS 预处理组内语义不清（实际控制全部参数的重绘，而非仅 EDAS 预处理）。
+- 参数全部即时生效后按钮冗余：替换为「数据读取」tab 中的「重新加载数据」，语义明确——清除后台文件缓存并从磁盘重读当前文件；「重置视图」保留在 EDAS 预处理组。
+
+### 11. EDAS 预处理作用范围确认
+
+- 现状已满足：`_preprocess_spec()` 对 `DAS Channel` 波形源返回 EDAS 预处理参数（控制 DAS 时域曲线）；timespace 勾选「应用EDAS预处理」后复用同一参数（控制瀑布图）。文档中明确说明。
+
+### 12. 修复 pyqtgraph `KeyError: 8`（鼠标侧键崩溃）
+
+- **原因**：`Qt.BackButton == 8`。pyqtgraph `GraphicsScene` 只登记左/中/右键的按下位置，使用鼠标前进/后退侧键时 `mouseMoveEvent -> itemsNearEvent -> buttonDownScenePos()` 抛 `KeyError: 8`。
+- **修改**：新增 `_SideButtonEventFilter`，安装到三张图与色标直方图的 viewport 上，拦截 `MouseButtonPress/Release/DblClick`（Back/Forward 键）及携带侧键状态的 `MouseMove` 事件，pyqtgraph 不再收到侧键事件。
+
+**验证**：offscreen 冒烟测试——加载测试文件后 `redrawDone` 经信号返回、序号匹配、忙碌光标恢复；取消「去均值」并修改频带后自动触发重算（seq 2→4）；`apply_btn` 已不存在、`reload_btn` 正常；侧键过滤器已安装到各 viewport。
+
 ## 2026-09-16
 
 ### 1. Timespace 图新增 Vmin/Vmax 手动色阶

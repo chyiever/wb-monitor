@@ -797,10 +797,16 @@ class TimedomainPlotThread(QThread):
         _initial_maxlen = int(self.window_duration * self._display_sample_rate * 1.5)
         self.data_buffer = deque(maxlen=_initial_maxlen)
         self.time_buffer = deque(maxlen=_initial_maxlen)
-        self.update_interval = 5   # 每5个包更新一次
+        self.target_update_seconds = 1.0
         self.packet_count = 0
         self.last_comm_count = None  # 用于丢弃重复/倒序数据包
         self.next_timestamp = 0.0    # 内部单调时间轴，避免外部时间戳抖动导致叠影
+        self.stats = {
+            "packets_enqueued": 0,
+            "packets_dropped": 0,
+            "queue_peak": 0,
+            "plot_updates": 0,
+        }
 
         self.logger = logging.getLogger(f'{__name__}.TimedomainPlotThread')
 
@@ -814,12 +820,23 @@ class TimedomainPlotThread(QThread):
             self.logger.info(f"TimedomainPlotThread received processed packet #{data.comm_count}")
 
         try:
-            if not self.input_queue.full():
-                self.input_queue.put(data, block=False)
-            else:
-                self.logger.warning(f"TimePlotThread queue full, dropping packet #{data.comm_count}")
+            if self.input_queue.full():
+                try:
+                    dropped = self.input_queue.get_nowait()
+                    self.stats["packets_dropped"] += 1
+                    self.logger.warning(
+                        "TimePlotThread queue full, dropped oldest packet #%d to admit #%d",
+                        dropped.comm_count,
+                        data.comm_count,
+                    )
+                except Empty:
+                    pass
+            self.input_queue.put(data, block=False)
+            self.stats["packets_enqueued"] += 1
+            self.stats["queue_peak"] = max(self.stats["queue_peak"], self.input_queue.qsize())
         except Full:
-            pass  # 丢弃数据避免阻塞
+            self.stats["packets_dropped"] += 1
+            self.logger.warning("TimePlotThread queue full, failed to admit packet #%d", data.comm_count)
 
     def set_enabled(self, enabled: bool):
         """启用/禁用时域绘图"""
@@ -937,9 +954,18 @@ class TimedomainPlotThread(QThread):
             self.packet_count += 1
             self.last_comm_count = data.comm_count
 
-            # 定期更新绘图（减少UI负载）
-            if self.packet_count % self.update_interval == 0:
-                self.logger.info(f"Updating time plot - packet count: {self.packet_count}")
+            # 按真实包时长动态节流：0.2s/包时约每 1s 刷新一次；1s/包时每包刷新一次。
+            packet_duration = normalize_fip_packet_duration(
+                getattr(data, "packet_duration_seconds", DEFAULT_FIP_PACKET_DURATION_SECONDS)
+            )
+            packets_per_update = max(1, int(round(self.target_update_seconds / packet_duration)))
+            if self.packet_count % packets_per_update == 0:
+                self.logger.debug(
+                    "Updating time plot - packet_count=%d packets_per_update=%d dropped=%d",
+                    self.packet_count,
+                    packets_per_update,
+                    self.stats["packets_dropped"],
+                )
                 if data.comm_count % 50 == 0:
                     packet_span = len(display_data) * dt
                     self.logger.debug(
@@ -947,6 +973,7 @@ class TimedomainPlotThread(QThread):
                         f"display_rate={display_sample_rate:.1f}Hz, span={packet_span:.4f}s"
                     )
                 self._update_plot()
+                self.stats["plot_updates"] += 1
 
         except Exception as e:
             self.logger.error(f"Error processing time data for packet #{data.comm_count}: {e}")
@@ -978,7 +1005,7 @@ class TimedomainPlotThread(QThread):
     def stop(self):
         """停止线程"""
         self.running = False
-        self.logger.info("Timedomain plot thread stopping")
+        self.logger.info("Timedomain plot thread stopping with stats: %s", self.stats)
 
 
 class PSDPlotThread(QThread):
@@ -996,8 +1023,14 @@ class PSDPlotThread(QThread):
         self.enabled = True
 
         self.psd_calculator = psd_calculator
-        self.update_interval = 5  # 每5个包计算一次PSD
+        self.target_update_seconds = 1.0
         self.packet_count = 0
+        self.stats = {
+            "packets_enqueued": 0,
+            "packets_dropped": 0,
+            "queue_peak": 0,
+            "plot_updates": 0,
+        }
 
         self.logger = logging.getLogger(f'{__name__}.PSDPlotThread')
 
@@ -1007,10 +1040,23 @@ class PSDPlotThread(QThread):
             return
 
         try:
-            if not self.input_queue.full():
-                self.input_queue.put(data, block=False)
+            if self.input_queue.full():
+                try:
+                    dropped = self.input_queue.get_nowait()
+                    self.stats["packets_dropped"] += 1
+                    self.logger.warning(
+                        "PSDPlotThread queue full, dropped oldest packet #%d to admit #%d",
+                        dropped.comm_count,
+                        data.comm_count,
+                    )
+                except Empty:
+                    pass
+            self.input_queue.put(data, block=False)
+            self.stats["packets_enqueued"] += 1
+            self.stats["queue_peak"] = max(self.stats["queue_peak"], self.input_queue.qsize())
         except Full:
-            pass
+            self.stats["packets_dropped"] += 1
+            self.logger.warning("PSDPlotThread queue full, failed to admit packet #%d", data.comm_count)
 
     def set_enabled(self, enabled: bool):
         """启用/禁用PSD绘图"""
@@ -1038,9 +1084,13 @@ class PSDPlotThread(QThread):
                 data = self.input_queue.get(timeout=0.5)
                 if self.enabled:
                     self.packet_count += 1
-                    # 降低PSD计算频率
-                    if self.packet_count % self.update_interval == 0:
+                    packet_duration = normalize_fip_packet_duration(
+                        getattr(data, "packet_duration_seconds", DEFAULT_FIP_PACKET_DURATION_SECONDS)
+                    )
+                    packets_per_update = max(1, int(round(self.target_update_seconds / packet_duration)))
+                    if self.packet_count % packets_per_update == 0:
                         self._calculate_psd(data)
+                        self.stats["plot_updates"] += 1
 
             except Empty:
                 continue
@@ -1068,7 +1118,7 @@ class PSDPlotThread(QThread):
     def stop(self):
         """停止线程"""
         self.running = False
-        self.logger.info("PSD plot thread stopping")
+        self.logger.info("PSD plot thread stopping with stats: %s", self.stats)
 
 
 class DataStorageThread(QThread):
@@ -1269,6 +1319,8 @@ class DataStorageThread(QThread):
 
     def end_run_cycle(self):
         self._flush_buffered_data()
+        self.running = False
+        self.running = False
         self.run_started_at = None
 
     def _clear_buffer(self):
@@ -1730,7 +1782,9 @@ class DataStorageThread(QThread):
             # 旧版本同时写 phase_data + fip1 + fip2 造成 2 倍写放大，显著拖慢
             # 存储线程并导致存储队列堆积丢包（详见 2026-08-18 联调日志）。
 
-            np.savez_compressed(file_path, **payload)
+            # 独立 FIP 存储优先保证吞吐和连续性。np.savez 不做压缩，仍为
+            # 标准 .npz 容器，但显著降低 CPU 压缩耗时和存储队列积压风险。
+            np.savez(file_path, **payload)
 
             self.saved_sample_count += sample_count
             self.saved_duration_seconds += duration_seconds
@@ -1898,27 +1952,20 @@ class OptimizedTab1ThreadManager(QObject):
         """
         # --- 阶段一：排空存储队列 ---
         self.storage_thread.begin_drain()
-        # 等待存储线程排空。队列容量已降为 120 包，按每 10 s 数据约 6~13 s 落盘
-        # 估算，排空 120 包最长约 3 分钟；此处放宽到 180 s，避免尾包大量丢失
-        # （旧值 10 s 曾导致停机时 1981 包滞留队列未落盘）。
+        # 等待存储线程完整退出 drain run loop。只看 input_queue.empty() 不够：
+        # 队列可能已空，但线程仍在 flush 最后一段文件；此时提前 stop 会增加尾包风险。
         drain_timeout_ms = 180000
-        drain_wait_start = time.time()
-        while self.storage_thread.isRunning():
-            elapsed_ms = (time.time() - drain_wait_start) * 1000
-            if elapsed_ms >= drain_timeout_ms:
-                self.logger.warning(
-                    'Storage drain timeout after %.1f s, remaining queue=%d. '
-                    'Some tail packets may not be saved.',
-                    elapsed_ms / 1000,
-                    self.storage_thread.input_queue.qsize(),
-                )
-                break
-            # 排空完成条件：队列为空且线程仍在运行（run 循环会自行退出 drain 模式）
-            if self.storage_thread.input_queue.empty():
-                # 给最后一个 flush 一点时间完成
-                time.sleep(0.1)
-                break
-            time.sleep(0.05)
+        drained = self.storage_thread.wait(drain_timeout_ms) if self.storage_thread.isRunning() else True
+        if not drained:
+            self.logger.warning(
+                'Storage drain timeout after %.1f s, remaining queue=%d. '
+                'Requesting stop; some tail packets may not be saved.',
+                drain_timeout_ms / 1000,
+                self.storage_thread.input_queue.qsize(),
+            )
+            self.storage_thread.stop()
+            if self.storage_thread.isRunning():
+                self.storage_thread.wait(30000)
 
         self.logger.info(
             'Storage drain finished. Saved files=%d, saved samples=%d',
@@ -1927,7 +1974,7 @@ class OptimizedTab1ThreadManager(QObject):
         )
 
         # --- 阶段二：停止所有线程 ---
-        threads = [self.data_processor, self.time_plotter, self.psd_plotter, self.storage_thread]
+        threads = [self.data_processor, self.time_plotter, self.psd_plotter]
 
         for thread in threads:
             thread.stop()
@@ -1941,7 +1988,8 @@ class OptimizedTab1ThreadManager(QObject):
 
         # 清空绘图数据
         self._clear_plots()
-        self.storage_thread.end_run_cycle()
+        if not self.storage_thread.isRunning():
+            self.storage_thread.end_run_cycle()
 
         self.logger.info("All Tab1 threads stopped")
 
@@ -2141,5 +2189,7 @@ class OptimizedTab1ThreadManager(QObject):
             'time_curve_exists': self.time_curve is not None,
             'psd_curve_exists': self.psd_curve is not None,
             'time_plotting_enabled': self.time_plotter.enabled if hasattr(self.time_plotter, 'enabled') else 'unknown',
-            'psd_plotting_enabled': self.psd_plotter.enabled if hasattr(self.psd_plotter, 'enabled') else 'unknown'
+            'psd_plotting_enabled': self.psd_plotter.enabled if hasattr(self.psd_plotter, 'enabled') else 'unknown',
+            'time_plot_stats': dict(getattr(self.time_plotter, 'stats', {})),
+            'psd_plot_stats': dict(getattr(self.psd_plotter, 'stats', {})),
         }

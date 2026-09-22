@@ -45,8 +45,11 @@ pip install -r .\fipedasREAD\requirements.txt
 - 右侧显示两张时域图和一张 DAS timespace 图。
 - 三张图共用横轴时间范围：任意一张图矩形放大或平移后，其余两张同步。
 - 三张图采用垂直分割器，默认高度比例为 `1:1:2`，可手动拖动调整。
+- 左侧参数区分成两个 tab：「数据读取」（路径、文件列表）与「曲线·预处理·显示」（时域曲线源、FIP/EDAS 预处理、timespace）。
+- 所有参数（含频带、通道范围输入）调整后经 120ms 去抖自动生效，无需手动应用；「重新加载数据」按钮用于清除后台缓存并强制从磁盘重读当前文件。
+- EDAS 预处理参数同时作用于 DAS 时域曲线（波形源为 `DAS Channel` 时）与 DAS timespace 瀑布图。
 - timespace 默认 `Seismic` 色图，可切换 `RdBu`、`CoolWarm`、`Viridis`、`Plasma`、`Inferno`、`Magma`、`Gray` 或 `Jet`。
 - 两张时域图右侧保留与 timespace 色标等宽的空白区，保证三张图真实绘图区宽度一致。
-- 顶部标题栏显示软件名称与版本号（当前 `v1.1.0 · 2026-09-17`）。
+- 顶部标题栏显示软件名称与版本号（当前 `v1.2.0 · 2026-09-17`）。
 
 更多字段说明和 GUI 细节见 [docs/README.md](docs/README.md)。
