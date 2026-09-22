@@ -353,12 +353,20 @@ def save_joint(
     if fmt == "bin":
         return save_bin(frames, output_dir, created_at, wall_clock_start)
     if fmt == "h5":
-        return save_h5(
-            frames,
-            output_dir,
-            created_at,
-            wall_clock_start,
-            compression=h5_compression,
-            compression_level=h5_compression_level,
-        )
+        try:
+            return save_h5(
+                frames,
+                output_dir,
+                created_at,
+                wall_clock_start,
+                compression=h5_compression,
+                compression_level=h5_compression_level,
+            )
+        except ModuleNotFoundError as exc:
+            if exc.name != "h5py":
+                raise
+            logger.warning(
+                "h5py is not installed; falling back joint storage from h5 to bin for this chunk"
+            )
+            return save_bin(frames, output_dir, created_at, wall_clock_start)
     return save_npz(frames, output_dir, created_at, wall_clock_start)

@@ -1125,7 +1125,7 @@ class DataStorageThread(QThread):
             'raw_packets_missing': 0,
             'raw_packets_duplicate_or_out_of_order': 0,
             'phase_unwrap_failure_count': 0,
-            'storage_failure_count': 0,   # 队列满丢包计数（磁盘过载时触发）
+            'storage_failure_count': 0,   # 停止/排空后无法接收新包的计数
             'saved_file_count': 0,
             'saved_sample_count': 0,
         }
@@ -1133,7 +1133,7 @@ class DataStorageThread(QThread):
         self.set_storage_interval_seconds(storage_interval_seconds)
 
     def add_raw_packet(self, packet: RawDataPacket):
-        """将原始数据包加入存储队列（主线程调用，必须非阻塞）。
+        """将原始数据包加入存储队列。
 
         Args:
             packet: 来自 TCP 服务器的原始数据包。
@@ -1141,11 +1141,9 @@ class DataStorageThread(QThread):
         设计约束：
             本方法在 Qt 主线程的信号槽中调用（调用链：TCP data_received
             信号 → _process_data_packet → process_raw_packet → 此方法）。
-            主线程绝对不能阻塞，否则 Qt 事件循环停转，UI 冻结。
-
-            使用 put_nowait（非阻塞）：队列满时宁可丢包并记录告警，
-            也不能阻塞主线程。队列满仅在磁盘严重过载时发生，此时继续
-            阻塞主线程会导致更严重的全面卡死和更大范围的数据丢失。
+            当前存储策略优先保证落盘数据连续。若磁盘持续慢于输入速率，
+            这里会等待存储线程消化队列并形成背压，而不是主动丢弃新包。
+            实时显示链路仍独立采用有界队列以保护界面刷新。
         """
         if not self.enabled:
             return
@@ -1153,21 +1151,32 @@ class DataStorageThread(QThread):
         if self._drain_mode:
             return
 
-        try:
-            self.input_queue.put_nowait(packet)
-            self.stats['raw_packets_enqueued'] += 1
-            self.stats['raw_queue_peak'] = max(
-                self.stats['raw_queue_peak'], self.input_queue.qsize()
-            )
-        except Full:
-            # 队列满：记录丢包，绝不阻塞主线程
-            self.stats['storage_failure_count'] += 1
-            self.logger.error(
-                'Storage queue full (size=%d), dropping packet #%d. '
-                'Disk may be too slow. Check storage_failure_count in stats.',
-                self.RAW_QUEUE_MAXSIZE,
-                packet.comm_count,
-            )
+        warned = False
+        while (self.running or self.isRunning()) and self.enabled and not self._drain_mode:
+            try:
+                self.input_queue.put(packet, timeout=0.25)
+                self.stats['raw_packets_enqueued'] += 1
+                self.stats['raw_queue_peak'] = max(
+                    self.stats['raw_queue_peak'], self.input_queue.qsize()
+                )
+                return
+            except Full:
+                if not warned:
+                    warned = True
+                    self.logger.warning(
+                        'FIP storage queue is applying lossless backpressure '
+                        '(queue_size=%d/%d, packet #%d). Disk may be too slow.',
+                        self.input_queue.qsize(),
+                        self.RAW_QUEUE_MAXSIZE,
+                        packet.comm_count,
+                    )
+                continue
+        self.stats['storage_failure_count'] += 1
+        self.logger.error(
+            'FIP storage worker is not accepting packet #%d; packet was not enqueued.',
+            packet.comm_count,
+        )
+        return
 
     def set_enabled(self, enabled: bool):
         """通过控制队列向存储线程发送启停指令（线程安全，T1-10）。

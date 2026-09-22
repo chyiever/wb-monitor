@@ -44,6 +44,7 @@ class AlignedSessionCoordinator(QObject):
         self._fip_online = False
         self._das_online = False
         self._session_active = False
+        self._retention_floor_comm_count: Optional[int] = None
 
     def start_session(self) -> None:
         """Reset all state for a newly started monitoring session."""
@@ -57,6 +58,7 @@ class AlignedSessionCoordinator(QObject):
             self._fip_online = False
             self._das_online = False
             self._session_active = True
+            self._retention_floor_comm_count = None
         self._emit_status("waiting")
 
     def stop_session(self) -> None:
@@ -133,6 +135,20 @@ class AlignedSessionCoordinator(QObject):
             frames = [self._build_frame_locked(c) for c in new_counts]
         return frames
 
+    def protect_unflushed_frames_after(self, last_comm_count: Optional[int]) -> None:
+        """Prevent cache trimming from evicting frames that joint storage has not persisted.
+
+        ``last_comm_count`` is the highest comm_count known to be safely written.
+        When set, cache trimming may discard older counts but must retain all
+        counts greater than it, even if the normal time/byte budget is exceeded.
+        """
+        with self._lock:
+            if last_comm_count is None:
+                self._retention_floor_comm_count = None
+            else:
+                self._retention_floor_comm_count = int(last_comm_count) + 1
+            self._trim_cache_locked()
+
     def latest_frame_bytes(self) -> int:
         """Public estimate of one current aligned frame's in-memory size."""
         with self._lock:
@@ -196,6 +212,23 @@ class AlignedSessionCoordinator(QObject):
             )
         while len(self._ordered_counts) > max_frames:
             old_count = self._ordered_counts.popleft()
+            if (
+                self._retention_floor_comm_count is not None
+                and old_count >= self._retention_floor_comm_count
+            ):
+                self._ordered_counts.appendleft(old_count)
+                self.logger.warning(
+                    "Alignment cache retained unsaved frames beyond nominal budget: "
+                    "oldest_unsaved=%s cache_len=%d max_frames=%d cache_seconds=%.1f "
+                    "budget_mb=%.1f latest_frame_mb=%.1f",
+                    old_count,
+                    len(self._ordered_counts),
+                    max_frames,
+                    self.cache_seconds,
+                    self.max_cache_bytes / (1024 * 1024),
+                    latest_frame_bytes / (1024 * 1024),
+                )
+                break
             self._fip_packets.pop(old_count, None)
             self._das_packets.pop(old_count, None)
 

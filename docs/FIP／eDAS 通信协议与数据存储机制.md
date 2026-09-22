@@ -1,6 +1,6 @@
 # FIP/eDAS 通信协议与数据存储机制
 
-> 更新时间：2026-09-17
+> 更新时间：2026-09-22
 > 适用代码：当前 `src/fip`、`src/das`、`src/alignment`、`src/ui` 实现
 
 ## 1. 文档范围
@@ -10,9 +10,9 @@
 - FIP TCP 协议与包体格式。
 - eDAS TCP 协议与包体格式。
 - FIP 独立 `.npz`、eDAS 独立 `.bin + .json`、FIP+eDAS 联合三种格式（`.bin` / `.npz` / `.h5`）的文件结构。
-- 后台线程、非阻塞队列、增量 chunk、内存预算等防卡顿存储机制。
-- 联合存储游标只在写盘成功后推进的修复机制（`_last_snapshot_end_comm` bug fix）。
-- 2026-09-17 Tab1/Tab2 时间轴、触发存储、重启/倒序包和 joint 元数据风险修正。
+- 后台线程、无损背压、增量 chunk、内存预算等连续存储机制。
+- 联合存储游标只在写盘成功后推进，并且只写连续完整 FIP/eDAS 配对帧的修复机制。
+- 2026-09-22 测试日志、Space-Time 滚动显示、H5 缺依赖回退、joint `.npz` 只含 1s eDAS 的连续性修正。
 - Data 页（Tab2）内通信、同步、存储相关参数和按钮含义。
 - Tab2 存储参数推荐设置。
 - 联调时应检查的通信连续性、对齐状态和文件字段。
@@ -61,7 +61,8 @@
                                                                  |
                                                                  v
                                                         +-------------------+
-                                                        | joint .npz store  |
+                                                        | joint store       |
+                                                        | .bin/.npz/.h5     |
                                                         +-------------------+
 ```
 
@@ -153,13 +154,13 @@ FIP 管线分为“处理显示链路”和“独立存储链路”：
 | 链路 | 输入 | 输出/用途 |
 |---|---|---|
 | 处理显示链路 | TCP 解析后的 `RawDataPacket.phase_data` | `ProcessedData`，用于 Tab1/View 绘图、PSD 和 Tab2 分析显示 |
-| 原始存储/对齐链路 | 同一个 `RawDataPacket` | FIP 独立 `.npz` 与 Data 页 joint `.npz` 的 FIP 部分，保持未滤波、未相位展开的原始解码数据 |
+| 原始存储/对齐链路 | 同一个 `RawDataPacket` | FIP 独立 `.npz` 与 Data 页 joint 文件的 FIP 部分，保持未滤波、未相位展开的原始解码数据 |
 
 FIP 的 `unwrap` 复选框只控制处理显示链路：
 
 - `unwrap=OFF`：处理显示链路使用原始解码后的相位数值。
 - `unwrap=ON`：每个传感器独立调用相位展开，仅影响 View/PSD/Tab2 分析显示，不影响任何存储文件。
-- FIP 独立 `.npz` 与 Data 页 joint `.npz` 的 FIP 字段始终来自 `RawDataPacket.phase_data` 拆分后的原始 `float64` 数组；默认 `FIP降采样=1`，即不抽取。
+- FIP 独立 `.npz` 与 Data 页 joint 文件的 FIP 字段始终来自 `RawDataPacket.phase_data` 拆分后的原始 `float64` 数组；默认 `FIP降采样=1`，即不抽取。
 
 无论 `unwrap` 状态如何，处理链路会修复明显异常的极端值或非有限值，并记录诊断日志；存储链路只做传感器拆分和必要的数值类型转换。
 
@@ -316,7 +317,7 @@ window_start_time = packet_start_time + window_start_sample / sample_rate
 ```text
 D:/PCCP/FIPdata        -> FIP 独立 .npz
 D:/PCCP/eDASDATA       -> eDAS 独立 .bin + .json
-D:/PCCP/FIPeDASDATA    -> FIP+eDAS joint（默认 .npz，可切 .bin / .h5）
+D:/PCCP/FIPeDASDATA    -> FIP+eDAS joint（默认 .bin，可切 .npz / .h5）
 ```
 
 联合存储不会替代单独存储；单独存储也不会自动写入联合文件。
@@ -337,9 +338,9 @@ RawDataPacket.phase_data
 当前实现特点：
 
 - 写盘在线程 `DataStorageThread` 中完成。
-- UI/主线程只做 `put_nowait` 非阻塞入队。
 - 输入队列容量为 `120` 个原始 FIP 包。
-- 队列满时丢弃新入队包并计数，不阻塞 UI。
+- 队列满时进入无损背压等待，优先保证落盘数据连续，不再主动丢弃新包。
+- 如果磁盘持续低于输入速率，上游接收/处理会被放慢；这是“存储连续性优先”的策略。
 - 停止监测时进入 drain 模式，尽量排空已入队请求。
 - 修改 `FIP降采样`、采样率、包时长或传感器数量时，会刷新当前 chunk，避免不同参数混在一个文件中；`unwrap` 不再影响存储 chunk。
 
@@ -427,11 +428,11 @@ DASRawPacket
 
 - eDAS 独立存储不依赖 FIP 是否在线。
 - 写盘在线程 `EDASRawStorageWorker` 中完成。
-- UI/接收线程只做非阻塞入队。
 - 全局输入队列最大 `4096` 包。
 - UI `eDAS队列` 决定有效容量，当前默认 `200`。
 - 队列内存预算为 `2 GiB`。
-- 队列满或超过预算时丢弃最旧待写包，优先保护接收线程和 UI。
+- 队列满、达到 UI 容量或超过预算时进入无损背压等待，优先保证 `.bin + .json` 连续，不再丢弃最旧待写包。
+- 单个 eDAS 包本身超过预算时会记录 warning，但仍接收入队，避免软件主动制造断点。
 - 按 UI `eDAS块/文件` 分文件，默认每 `50` 个 eDAS 包切一个新文件。
 
 ### 8.2 `.bin` 文件命名
@@ -531,8 +532,10 @@ matrix_blocks = raw.reshape(blocks, channels, samples)
 ```text
 AlignedSessionCoordinator.get_frames_since(last_saved_end_comm)
   -> 只取增量 AlignedPacketFrame
+  -> 从最小 comm_count 开始只保留连续完整 FIP/eDAS 配对帧
+  -> 不完整尾帧留在缓存中等待另一数据源补齐
   -> 达到 joint chunk 条件
-  -> DASStorageRequest 非阻塞入队（同一时刻只允许一个在途请求）
+  -> DASStorageRequest 入队（同一时刻只允许一个在途请求）
   -> DASStorageWorker 后台按所选格式写盘
   -> 写盘成功后通过 request_finished(end_comm, True) 信号推进游标
 ```
@@ -543,20 +546,24 @@ AlignedSessionCoordinator.get_frames_since(last_saved_end_comm)
   这些帧将永久丢失。日志中表现为大量 `requests_dropped` 与文件间 comm 空洞。
 - 新实现：
   - 游标只在**写盘成功**后由 `_on_joint_request_finished` 推进；
+  - 每个 joint 文件只包含从上次成功游标之后开始的**连续完整配对帧**；
+  - 若 FIP 某个 `comm_count` 已到、eDAS 同序号尚未到，当前 chunk 只写此前已经完整配对的连续前缀，尾部不完整帧保留到下一轮；
   - 失败/超限请求的帧下一轮定时器会自动重新收集，不再丢失；
   - 同一时刻只允许一个在途请求（`_joint_write_pending`），队列永不堆积，
     因此不再发生“丢最旧请求”。
+- 2026-09-22 修正：旧逻辑可能在 FIP 比 eDAS 先到时，把含 FIP 但缺 eDAS 的尾帧也写入 `.npz`，
+  导致“联合间隔 2s，但文件内 FIP 有 2s、DAS 只有 1s”。当前实现会等待完整配对，不再写这种不对称 chunk。
 - 代价：写盘较慢时（如 npz 压缩）chunk 会自然变大，文件可能覆盖多于一个间隔；
-  这是为了优先保证零丢失。对齐缓存（`缓存(s)`）会自动放大以覆盖写入延迟。
+  这是为了优先保证零丢失。对齐缓存会保护未写盘帧，不因普通 `缓存(s)` 裁剪提前移除。
 
 当前实现特点：
 
 - joint 写盘线程为 `DASStorageWorker`。
-- 主线程只封装 `DASStorageRequest` 并入队，不阻塞 Qt 事件循环。
+- 正常情况下主线程只封装 `DASStorageRequest` 并快速入队；若写盘线程长期跟不上，会触发无损背压以保护连续性。
 - 联合格式由 Tab2 `联合格式` 下拉框切换：`bin` / `npz` / `h5`。
 - `bin` 为裸二进制流式写盘（无压缩），支持最高吞吐（目标 500 MB/s+，受磁盘限制）。
-- `npz` 为压缩归档（`np.savez_compressed`），兼容旧格式字段。
-- `h5` 为 HDF5 容器，可选 `gzip` 压缩（`H5压缩` 下拉框，仅对 h5 生效）。
+- `npz` 为压缩归档（`np.savez_compressed`），兼容旧格式字段，但高数据率时 CPU/内存压力明显高于 `bin`。
+- `h5` 为 HDF5 容器，可选 `gzip` 压缩（`H5压缩` 下拉框，仅对 h5 生效）；若运行环境缺少 `h5py`，会记录 warning 并自动回退为 `bin` 保存当前 chunk。
 - joint 使用增量 chunk，不再每次写最近 N 秒全量快照，避免相邻文件大量重叠。
 - 停止时写盘线程会 drain 已入队请求，降低尾部 chunk 丢失风险。
 
@@ -564,7 +571,7 @@ AlignedSessionCoordinator.get_frames_since(last_saved_end_comm)
 
 ```text
 FIPeDAS-YYYYMMDD-HHMMSS.mmm.bin   # 联合格式=bin
-FIPeDAS-YYYYMMDD-HHMMSS.mmm.npz   # 联合格式=npz（默认）
+FIPeDAS-YYYYMMDD-HHMMSS.mmm.npz   # 联合格式=npz
 FIPeDAS-YYYYMMDD-HHMMSS.mmm.h5    # 联合格式=h5
 ```
 
@@ -593,7 +600,7 @@ FIPeDAS-YYYYMMDD-HHMMSS.mmm.h5    # 联合格式=h5
 
 - `fip_channel_count`、`fip_sample_rate_hz`、`fip_duration_seconds` 从 chunk 内首个实际存在的 FIP packet 提取。
 - `das_channel_count`、`das_sample_rate_hz`、`das_duration_seconds` 从 chunk 内首个实际存在的 eDAS packet 提取。
-- 因此，若 chunk 首帧缺失某一路，但后续帧包含该路数据，文件级元数据不会被首帧缺失误写为 0；逐帧是否存在仍以 `fip_present` / `das_present` 为准。
+- 当前 joint 写盘只接受完整 FIP/eDAS 配对帧，正常文件内 `fip_present` / `das_present` 均应为 `True`；读旧文件或异常文件时仍应以这两个字段为准。
 
 ### 9.5 bin 格式（`FIPeDAS-*.bin`）
 
@@ -698,26 +705,38 @@ with h5py.File("FIPeDAS-20260917-120000.000.h5", "r") as h:
 所有大体量写盘都遵守同一原则：
 
 - 接收线程只解析协议和构造内存对象。
-- UI/主线程只做轻量状态更新和非阻塞入队。
+- UI/主线程只做轻量状态更新和写盘请求封装。
 - `.npz` 压缩、`.bin` 写入、`.json` 元数据刷新都放到后台线程。
-- 队列满时选择丢弃待写请求，而不是阻塞 TCP 接收或 Qt 事件循环。
+- 存储队列满时采用无损背压：等待后台写盘线程消化队列，而不是主动丢弃待写请求。
 - 停止监测时尽量 drain 已入队请求。
+- 如果磁盘或压缩吞吐长期低于输入数据率，软件会优先暴露背压、慢写盘 warning 或上游变慢，而不是静默生成不连续文件。
 
-### 10.2 三条存储链路对比
+### 10.2 实时显示与存储连续性的区别
+
+实时显示链路和存储链路采用不同策略：
+
+- `DASPlotWorker` 的绘图队列只有 `4` 包，队列满或内存超过预算时会丢弃旧绘图帧，只保留最新画面，保证 View 页面仍尽量实时。
+- FIP 处理显示链路也可能在处理压力过高时丢弃旧的显示/处理包；相关计数显示为绘图或处理链路的 drop。
+- 这些显示丢帧不等价于存储丢帧。FIP 独立存储、eDAS 独立存储和 joint 联合存储均走独立原始数据路径。
+- eDAS Space-Time 滚动缓存只裁剪刚好溢出的列数，不再额外按 shift window 大步跳动；空 payload 不会把画面重置成空白图。
+- 因此：实时波形在机器负载高时可能跳帧或降低刷新率，但修复后的存储链路不会因为显示队列丢帧而丢失落盘数据。
+
+### 10.3 三条存储链路对比
 
 | 链路 | 写盘线程 | 队列策略 | 内存保护 | 文件切分 |
 |---|---|---|---|---|
-| FIP `.npz` | `DataStorageThread` | `Queue(maxsize=120)`，满时丢新包 | 队列容量限制 | 按 `FIP间隔(s)` chunk |
-| eDAS `.bin + .json` | `EDASRawStorageWorker` | 有效容量由 `eDAS队列` 决定，满时丢旧包 | `2 GiB` 队列字节预算 | 按 `eDAS块/文件` |
-| joint `.bin/.npz/.h5` | `DASStorageWorker` | 单在途请求，入队前先等待上一请求完成 | 请求 `bin` 上限 `64 GiB`，`npz/h5` 上限 `2 GiB`；对齐缓存自动放大 | 按 `联合间隔(s)` 或字节压力提前 flush |
+| FIP `.npz` | `DataStorageThread` | `Queue(maxsize=120)`，满时无损背压等待 | 队列容量限制与背压 warning | 按 `FIP间隔(s)` chunk |
+| eDAS `.bin + .json` | `EDASRawStorageWorker` | 有效容量由 `eDAS队列` 决定，满时无损背压等待 | `2 GiB` 队列字节预算；单包超预算只告警仍接收 | 按 `eDAS块/文件` |
+| joint `.bin/.npz/.h5` | `DASStorageWorker` | 单在途请求，游标成功后推进；队列满/预算压力时无损背压 | 请求 `bin` 上限 `64 GiB`，`npz/h5` 上限 `2 GiB`；对齐缓存保护未写盘帧 | 按 `联合间隔(s)` 或字节压力提前 flush |
 
-### 10.3 卡顿风险边界
+### 10.4 卡顿风险边界
 
 - `.npz` 是压缩格式，CPU 和内存压力明显高于顺序 `.bin`。
 - joint `.npz`/`.h5` 同时包含 FIP 与 eDAS 数据，满速大矩阵下可能很大。
 - 联合存储采用单在途请求 + 成功后推进游标，已消除“入队即丢帧”问题；
-  但若写盘吞吐长期低于输入速率，帧会在对齐缓存中累积，最终受 `缓存(s)`
-  与内存预算限制，仍可能出现尾部丢帧。此时应优先使用 `.bin` 裸流式格式。
+  且对齐缓存会保护未写盘帧，避免普通缓存裁剪造成文件间断点。
+- 若写盘吞吐长期低于输入速率，帧会在队列和对齐缓存中累积，软件会产生背压和 warning。
+  此时应优先使用 `.bin` 裸流式格式，或降低 eDAS 发送端数据率。
 - 满速 eDAS 长时间原始保存应优先使用独立 `.bin + .json`，并确认 NVMe 写速满足现场数据率。
 
 ## 11. Data/Tab 参数与按钮
@@ -795,14 +814,14 @@ with h5py.File("FIPeDAS-20260917-120000.000.h5", "r") as h:
 | `eDAS块/文件` | `50` | eDAS `.bin` 每个文件包含的完整包数 |
 | `eDAS队列` | `200` | eDAS 独立存储有效队列容量 |
 | `FIP降采样` | `1` | FIP 独立存储抽取因子，范围 `1~100`；默认 `1` 表示不降采样 |
-| `联合格式` | `npz` | joint 存储格式：`bin`（裸二进制流式，最高吞吐）、`npz`（压缩归档）、`h5`（HDF5） |
+| `联合格式` | `bin` | joint 存储格式：`bin`（裸二进制流式，最高吞吐）、`npz`（压缩归档）、`h5`（HDF5） |
 | `H5压缩` | `none` | 仅对 `h5` 生效：`none`（最快）/ `gzip`（体积小但慢） |
 
 **存储状态与日志**
 
 | 控件 | 说明 |
 |---|---|
-| `预计文件` | 显示 FIP/eDAS/joint 未压缩体量估计 |
+| `预计文件` | 显示 FIP/eDAS/joint 单文件未压缩体量估计，并同时显示当前估算数据率（MB/s） |
 | `FIP成功/失败`、`eDAS成功/失败` | 存储状态计数 |
 | `联合Last`、`eDAS Last` | 最近一次写盘状态或文件名 |
 
@@ -818,14 +837,14 @@ with h5py.File("FIPeDAS-20260917-120000.000.h5", "r") as h:
 
 ### 12.2 存储检查
 
-- joint 文件只在两路在线且 `aligned` 时生成；联合存储的“生成频率 = 写盘耗时”是正常的，
-  关键是 `联合Last` 每次写盘后是否连续推进、文件内 `comm_counts` 是否连续。
+- joint 文件只在两路在线且存在完整连续配对帧时生成；联合存储的“生成频率 = 写盘耗时”是正常的，
+  关键是 `联合Last` 每次写盘后是否连续推进、文件内 `comm_counts` 是否连续，且 `fip_present` / `das_present` 均为 `True`。
 - 检查 joint 文件是否丢帧：比对 `comm_counts` 与 FIP/eDAS 的 `接收包` 序号。
-  修复后的实现不会因队列丢弃丢帧；若仍出现空洞，先看 `缓存(s)` 是否小于写盘延迟。
+  修复后的实现不会因存储队列丢弃或 FIP/eDAS 尾帧先后到达而丢帧；若仍出现空洞，优先检查发送端是否实际缺包、网络是否断连、磁盘是否长期低于输入速率。
 - eDAS 满速原始长期保存优先检查 `.bin + .json` 是否连续增长。
 - 若 joint 状态提示单请求过大，应缩短 `联合间隔(s)`、降低 eDAS 发送端采样/通道规模，
   或改用 eDAS 独立 `.bin`。
-- 若出现 `storage.joint_slow` 或存储队列满日志，说明磁盘或压缩吞吐低于输入速率：
+- 若出现 `storage.joint_slow` 或 `lossless backpressure` 日志，说明磁盘或压缩吞吐低于输入速率：
   高数据率时把 `联合格式` 切到 `bin`（裸流式）并确认磁盘为 NVMe/SSD。
 - 读取 FIP 独立 `.npz` 时只依赖 `phase_data`；不要假设存在 `fip1_phase_data` / `fip2_phase_data`。
 - 读取 joint 文件时以 `format_version` 和 `fip_sample_rate_hz` / `das_sample_rate_hz` 为准；
@@ -837,8 +856,9 @@ with h5py.File("FIPeDAS-20260917-120000.000.h5", "r") as h:
 
 | 场景 | 建议配置 |
 |---|---|
-| 常规联调（FIP+eDAS 都要存） | `联合格式=npz`，`联合间隔=2.0s`，`缓存=10s`；文件约 2 s/个，验证方便 |
+| 常规联调（FIP+eDAS 都要存） | `联合格式=bin`，`联合间隔=2.0s`，`缓存=10s`；文件约 2 s/个，优先保证吞吐和连续性 |
 | 高吞吐长期记录（满速 eDAS） | `联合格式=bin`（裸流式），`eDAS块/文件` 按容量切分；确认磁盘写速 ≥ 数据率 |
+| 短时验证压缩归档 | `联合格式=npz`，`联合间隔=2.0s`；适合小数据量快速检查字段，不建议满速长期运行 |
 | 追求存储体积小 | `联合格式=h5` + `H5压缩=gzip`；或 `联合格式=npz`；注意压缩会降低写盘吞吐 |
 | 只存一路（FIP 或 eDAS） | 关闭 `同时存储FIP+eDAS`，只开对应单路存储，避免无谓的对齐等待 |
 | 单独验证 FIP | `FIP存储=ON`，`FIP间隔=2s`，`FIP降采样=1` |
@@ -848,10 +868,10 @@ with h5py.File("FIPeDAS-20260917-120000.000.h5", "r") as h:
 
 1. **联合间隔（2s）**：联合文件时长 = 间隔 × 单包时长。默认 2 s 便于快速回看；
    需要更少文件时再调大到 10~60 s。bin 格式可安全放大间隔，npz/h5 注意内存与压缩耗时。
-2. **缓存（s）**：必须 ≥ 联合间隔，且最好 ≥ 一次最慢写盘的耗时，否则写盘期间到达的帧
-   会被对齐缓存提前裁掉。写盘慢时（npz/h5 压缩）建议把 `缓存` 调到 30~60 s。
-3. **联合格式**：默认 `npz` 兼容性最好；现场长期、满速记录必须用 `bin`；
-   `h5` 适合需要标准库读取且有压缩需求的场景。
+2. **缓存（s）**：必须 ≥ 联合间隔。当前代码会保护尚未写盘的 comm_count，不因普通缓存裁剪丢失；
+   但写盘慢时缓存会变大并产生 warning，建议把 `缓存` 调到 30~60 s 以便观察状态。
+3. **联合格式**：默认 `bin`，现场长期、满速记录必须用 `bin`；
+   `npz` 适合短时验证和字段检查，`h5` 适合需要标准库读取且有压缩需求的场景。
 4. **H5压缩**：仅当 `联合格式=h5` 时生效。数据率低可用 `gzip`，高数据率必须 `none`。
 5. **FIP降采样**：默认 `1`（不降采样）。仅当 FIP 数据量过大、存储压力高时才调大，
    例如 `2` 表示每 2 点存 1 点（存储采样率减半）。

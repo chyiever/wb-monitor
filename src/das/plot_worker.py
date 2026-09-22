@@ -332,7 +332,6 @@ class DASPlotWorker(QThread):
             return np.empty((0, 0), dtype=np.float32), np.array([], dtype=np.float64), np.array([], dtype=np.int32)
 
         display_seconds = max(0.5, float(self.settings.get("space_time_total_seconds", 5.0)))
-        shift_seconds = max(0.1, float(self.settings.get("space_time_shift_seconds", 1.0)))
         sample_rate = max(float(packet.header.sample_rate_hz), 1.0)
         max_pixels = min(300000, max(50000, int(self.settings.get("space_time_max_pixels", 120000))))
         effective_time_downsample = max(1, int(time_downsample))
@@ -349,7 +348,6 @@ class DASPlotWorker(QThread):
         row_count = int(block.shape[0])
         block_cols = int(block.shape[1])
         dt = effective_time_downsample / sample_rate
-        shift_cols = max(1, int(round(shift_seconds / max(dt, 1e-12))))
         max_cols_by_pixels = max(1, max_pixels // max(row_count, 1))
         max_cols_by_window = max(block_cols, int(np.ceil(display_seconds / max(dt, 1e-12))))
         max_cols = max(1, min(max_cols_by_window, max_cols_by_pixels))
@@ -364,7 +362,6 @@ class DASPlotWorker(QThread):
             int(space_downsample),
             int(effective_time_downsample),
             int(max_cols),
-            int(shift_cols),
         )
         if self._space_time_signature != signature or self._space_time_buffer is None:
             self._space_time_buffer = np.zeros((row_count, max_cols), dtype=np.float32)
@@ -387,7 +384,11 @@ class DASPlotWorker(QThread):
         else:
             if self._space_time_valid_cols + block_cols > max_cols:
                 overflow = self._space_time_valid_cols + block_cols - max_cols
-                drop_cols = min(self._space_time_valid_cols, max(overflow, shift_cols))
+                # Drop exactly the columns required for the new packet.  The old
+                # code also dropped a configured shift window, which made the
+                # waterfall jump and could leave a visually blank frame between
+                # valid updates at high downsample factors.
+                drop_cols = min(self._space_time_valid_cols, overflow)
                 remaining_cols = self._space_time_valid_cols - drop_cols
                 if remaining_cols > 0:
                     self._space_time_buffer[:, :remaining_cols] = self._space_time_buffer[:, drop_cols:self._space_time_valid_cols]

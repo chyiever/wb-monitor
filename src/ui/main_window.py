@@ -1208,7 +1208,7 @@ class MainWindow(QMainWindow):
         self.tab3_joint_format_combo.addItem("bin (裸二进制流式)", "bin")
         self.tab3_joint_format_combo.addItem("npz (压缩归档)", "npz")
         self.tab3_joint_format_combo.addItem("h5 (HDF5)", "h5")
-        self.tab3_joint_format_combo.setCurrentIndex(1)
+        self.tab3_joint_format_combo.setCurrentIndex(0)
         self.tab3_joint_format_combo.setToolTip("bin: 裸二进制流式写盘，支持最高吞吐(500MB/s+); npz: 压缩归档(修复游标丢帧); h5: HDF5 可选gzip压缩")
         layout.addWidget(self.tab3_joint_format_combo, 2, 1, 1, 2)
         layout.addWidget(QLabel("H5压缩"), 2, 3)
@@ -2299,7 +2299,7 @@ class MainWindow(QMainWindow):
         self._set_line_text(getattr(self, "tab3_storage_path_edit", None), storage.get("path"))
         self._set_spin_value(getattr(self, "tab3_storage_interval_spin", None), storage.get("interval_seconds"))
         self._set_spin_value(getattr(self, "tab3_cache_seconds_spin", None), storage.get("cache_seconds"))
-        self._set_combo_value(getattr(self, "tab3_joint_format_combo", None), storage.get("format", "npz"))
+        self._set_combo_value(getattr(self, "tab3_joint_format_combo", None), storage.get("format", "bin"))
         self._set_combo_value(getattr(self, "tab3_joint_h5_compress_combo", None), storage.get("h5_compression", "none"))
         self._set_checked(getattr(self, "tab3_edas_storage_toggle_btn", None), storage.get("edas_enabled"))
         self._set_line_text(getattr(self, "tab3_edas_storage_path_edit", None), storage.get("edas_path"))
@@ -2667,9 +2667,11 @@ class MainWindow(QMainWindow):
         try:
             self._edas_channel_count = int(channel_count)
             self._edas_samples_per_channel = int(data_bytes) // 4 // max(1, int(channel_count))
+            self._edas_packet_duration_seconds = float(duration)
         except (TypeError, ValueError):
             self._edas_channel_count = None
             self._edas_samples_per_channel = None
+            self._edas_packet_duration_seconds = None
         self._update_storage_size_estimates()
 
     def _update_storage_size_estimates(self) -> None:
@@ -2692,26 +2694,47 @@ class MainWindow(QMainWindow):
             edas_bytes = channel_count * samples_per_channel * blocks_per_file * 8
 
         joint_bytes = None
+        fip_rate = None
+        edas_rate = None
+        joint_rate = None
         try:
             joint_interval = float(self.tab3_storage_interval_spin.value())
-            fip_per_sec = (sample_rate / downsample * sensor_count * 8) if fip_bytes else 0.0
-            edas_per_sec = (channel_count * samples_per_channel * 8) if (channel_count and samples_per_channel) else 0.0
-            joint_bytes = (fip_per_sec + edas_per_sec) * joint_interval
+            fip_rate = (sample_rate / downsample * sensor_count * 8) if fip_bytes else 0.0
+            if channel_count and samples_per_channel:
+                packet_duration = max(float(getattr(self, "_edas_packet_duration_seconds", 1.0) or 1.0), 1e-9)
+                edas_rate = channel_count * samples_per_channel * 8 / packet_duration
+            else:
+                edas_rate = 0.0
+            joint_rate = fip_rate + edas_rate
+            joint_bytes = joint_rate * joint_interval
         except Exception:
             joint_bytes = None
+            joint_rate = None
 
         if hasattr(self, 'data_fip_size_label'):
-            self.data_fip_size_label.setText(f"FIP: {self._format_file_size_mb(fip_bytes)}")
+            self.data_fip_size_label.setText(
+                f"FIP: {self._format_file_size_mb(fip_bytes)} ({self._format_data_rate(fip_rate)})"
+            )
         if hasattr(self, 'data_edas_size_label'):
-            self.data_edas_size_label.setText(f"eDAS: {self._format_file_size_mb(edas_bytes)}")
+            self.data_edas_size_label.setText(
+                f"eDAS: {self._format_file_size_mb(edas_bytes)} ({self._format_data_rate(edas_rate)})"
+            )
         if hasattr(self, 'data_joint_size_label'):
-            self.data_joint_size_label.setText(f"联合: {self._format_file_size_mb(joint_bytes)}")
+            self.data_joint_size_label.setText(
+                f"联合: {self._format_file_size_mb(joint_bytes)} ({self._format_data_rate(joint_rate)})"
+            )
 
     @staticmethod
     def _format_file_size_mb(num_bytes) -> str:
         if num_bytes is None or num_bytes <= 0:
             return "-"
         return f"~{num_bytes / (1024 * 1024):.1f} MB"
+
+    @staticmethod
+    def _format_data_rate(num_bytes_per_second) -> str:
+        if num_bytes_per_second is None or num_bytes_per_second <= 0:
+            return "-/s"
+        return f"~{num_bytes_per_second / (1024 * 1024):.1f} MB/s"
 
 
     def update_tab3_packet_statistics(self, stats: Dict[str, Any]):
@@ -2753,7 +2776,7 @@ class MainWindow(QMainWindow):
             if any(token in lowered for token in ("error", "fail", "失败", "fallback")):
                 self._fip_storage_failure_count += 1
                 self._edas_storage_failure_count += 1
-            elif any(token in lowered for token in (".npz", ".npy", ".bin")) and not lowered.startswith("started"):
+            elif any(token in lowered for token in (".npz", ".npy", ".bin", ".h5")) and not lowered.startswith("started"):
                 self._fip_storage_success_count += 1
                 self._edas_storage_success_count += 1
         self._update_data_storage_buttons()
@@ -3036,7 +3059,7 @@ class MainWindow(QMainWindow):
         x_axis = das_payload.get("space_time_x")
         y_axis = das_payload.get("space_time_y")
         if matrix is None or len(np.shape(matrix)) != 2 or matrix.size == 0:
-            self._reset_tab3_space_time_image()
+            self._tab3_logger.debug("TAB3_NODE ui.space_time skip_empty_payload")
             return
         matrix = np.ascontiguousarray(matrix, dtype=np.float32)
         if self.tab3_auto_levels_check.isChecked():

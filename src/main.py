@@ -19,6 +19,7 @@ import sys
 import logging
 import json
 import time
+import re
 import numpy as np
 from datetime import datetime
 from pathlib import Path
@@ -104,6 +105,104 @@ class DailyFileHandler(logging.Handler):
             super().close()
 
 
+class TestReportWriter:
+    """Generate one lightweight Markdown test report from an application log."""
+
+    MAX_MATCHES_PER_SECTION = 80
+
+    def __init__(self, report_dir: Path) -> None:
+        self.report_dir = Path(report_dir)
+
+    def write(self, log_path: Path) -> Path:
+        log_path = Path(log_path)
+        self.report_dir.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        report_path = self.report_dir / f"test_report_{stamp}.md"
+        lines = self._read_lines(log_path)
+        summary = self._summarize(lines)
+        report_path.write_text(
+            self._render_markdown(log_path, summary),
+            encoding="utf-8",
+        )
+        return report_path
+
+    def _read_lines(self, log_path: Path) -> list[str]:
+        if not log_path.exists():
+            return []
+        return log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+    def _summarize(self, lines: list[str]) -> Dict[str, Any]:
+        warnings = []
+        errors = []
+        tracebacks = []
+        storage = []
+        performance = []
+        timestamps = []
+        for line in lines:
+            if len(line) >= 19 and re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", line[:19]):
+                timestamps.append(line[:19])
+            if " - WARNING - " in line:
+                warnings.append(line)
+            if " - ERROR - " in line or "Fatal error" in line:
+                errors.append(line)
+            if "Traceback (most recent call last)" in line or "ModuleNotFoundError" in line:
+                tracebacks.append(line)
+            lowered = line.lower()
+            if any(token in lowered for token in ("storage", "saved", "save_failures", "bytes_written")):
+                storage.append(line)
+            if any(token in lowered for token in ("performance stats", "plot_worker.stats", "slow", "throughput", "data_rate")):
+                performance.append(line)
+        return {
+            "line_count": len(lines),
+            "start_time": timestamps[0] if timestamps else "-",
+            "end_time": timestamps[-1] if timestamps else "-",
+            "warnings_total": len(warnings),
+            "errors_total": len(errors),
+            "tracebacks_total": len(tracebacks),
+            "warnings": warnings[-self.MAX_MATCHES_PER_SECTION:],
+            "errors": errors[-self.MAX_MATCHES_PER_SECTION:],
+            "tracebacks": tracebacks[-self.MAX_MATCHES_PER_SECTION:],
+            "storage": storage[-self.MAX_MATCHES_PER_SECTION:],
+            "performance": performance[-self.MAX_MATCHES_PER_SECTION:],
+        }
+
+    def _render_markdown(self, log_path: Path, summary: Dict[str, Any]) -> str:
+        now = datetime.now().isoformat(timespec="seconds")
+        parts = [
+            "# PCCP 测试日志报告",
+            "",
+            f"- 生成时间: `{now}`",
+            f"- 原始日志: `{log_path}`",
+            f"- 日志行数: `{summary['line_count']}`",
+            f"- 日志时间范围: `{summary['start_time']}` 至 `{summary['end_time']}`",
+            f"- ERROR 数量: `{summary['errors_total']}`",
+            f"- WARNING 数量: `{summary['warnings_total']}`",
+            f"- Traceback/ModuleNotFoundError 数量: `{summary['tracebacks_total']}`",
+            "",
+        ]
+        parts.extend(self._section("错误与异常", summary["errors"] + summary["tracebacks"]))
+        parts.extend(self._section("警告", summary["warnings"]))
+        parts.extend(self._section("存储相关", summary["storage"]))
+        parts.extend(self._section("性能相关", summary["performance"]))
+        parts.extend([
+            "## 结论提示",
+            "",
+            "- 如果出现 `No module named 'h5py'`，说明 H5 联合存储缺少可选依赖；当前版本会自动回退到 `bin` 联合存储。",
+            "- 如果 eDAS 或联合速率接近/超过磁盘或网卡能力，优先使用 `bin` 格式，并降低发送端通道数、采样率或下采样参数。",
+            "",
+        ])
+        return "\n".join(parts)
+
+    def _section(self, title: str, lines: list[str]) -> list[str]:
+        if not lines:
+            return [f"## {title}", "", "- 无", ""]
+        out = [f"## {title}", ""]
+        for line in lines:
+            out.append(f"- `{line}`")
+        out.append("")
+        return out
+
+
 class PCCPMonitorApp:
     """
     Main application controller for PCCP monitoring system.
@@ -185,6 +284,8 @@ class PCCPMonitorApp:
 
         log_level = logging.DEBUG if debug_enabled else logging.INFO
         file_handler = DailyFileHandler(log_path, encoding='utf-8')
+        self._log_file_handler = file_handler
+        self._test_report_writer = TestReportWriter(log_path.parent / "test_reports")
         logging.basicConfig(
             level=log_level,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -1274,9 +1375,24 @@ class PCCPMonitorApp:
                 self.tcp_server.stop_server()
 
             self.logger.info("Application cleanup completed")
+            self._write_test_report()
 
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
+            self._write_test_report()
+
+    def _write_test_report(self) -> None:
+        """Write a Markdown report for the current test run."""
+        try:
+            handler = getattr(self, "_log_file_handler", None)
+            writer = getattr(self, "_test_report_writer", None)
+            if handler is None or writer is None:
+                return
+            handler.flush()
+            report_path = writer.write(handler.current_path)
+            self.logger.info("Test report generated: %s", report_path)
+        except Exception as exc:
+            self.logger.error("Failed to generate test report: %s", exc)
 
 
 def main(args=None):

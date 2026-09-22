@@ -2,6 +2,7 @@
 
 ## 最新维护记录
 
+- [2026-09-22 现场测试日志与联合存储修复记录](docs/2026-09-22-现场测试日志与联合存储修复记录.md)
 - [2026-09-17 Tab1/Tab2 通信、绘图、时间对齐与存储风险排查优化](docs/2026-09-17-Tab1-Tab2通信绘图时间对齐与存储风险排查优化.md)
 
 ## 项目概述
@@ -21,6 +22,7 @@
   - 统一显示 `接收包`、`缺包/失败`、`丢包率`、`最近Comm`
   - 显示 FIP/eDAS 同序号包接收时间差，方向为 `FIP - eDAS`
   - 提供 FIP、eDAS 和 FIP+eDAS 联合存储控制
+  - 联合存储只写连续完整的 FIP/eDAS 配对帧；分文件后 `comm_count` 应连续推进
 - `Tab3 / 检测`
   - 保留原 Tab2 的短时特征提取、阈值检测、告警事件和触发存储能力
   - 默认不启动，避免无需求时占用 CPU
@@ -60,6 +62,8 @@ FIP/eDAS 同步时间戳取自 TCP 接收线程“完整包体接收完成”的
 - FIP/eDAS 按 `comm_count` 配对的同步时间差显示
 - 首包时间差固定保存，最新值和平均值增量更新
 - FIP/eDAS 对齐状态维护和联合原始数据定时存储
+- joint `.bin/.npz/.h5` 存储游标只在写盘成功后推进；FIP 或 eDAS 尾帧未配对时会等待补齐，不再生成 FIP=2s、DAS=1s 的不对称 chunk
+- 实时显示链路和存储链路分离：显示队列在负载高时可跳帧以保持界面响应，存储链路采用无损背压以保证连续落盘
 
 ### 检测页已完成
 
@@ -172,9 +176,9 @@ Tab3 debug 日志节点统一使用 `TAB3_NODE` 前缀，重点节点包括：
 - `main.start` / `main.stop` / `main.sync_settings`：主控启停和参数同步。
 - `das_tcp.header` / `das_tcp.packet` / `das_tcp.stats`：DAS TCP 包头、完整包接收、真实区间包率、吞吐、接收耗时和缺包统计。
 - `manager.fip_packet` / `manager.raw_packet` / `manager.parse`：FIP 转发、DAS 解析、对齐协调、绘图和存储路由。
-- `plot_worker.enqueue` / `plot_worker.payload` / `plot_worker.stats`：绘图队列、丢旧保新、Space-Time 滚动缓存、处理耗时和队列峰值。
+- `plot_worker.enqueue` / `plot_worker.payload` / `plot_worker.stats`：绘图队列、显示链路丢旧保新、Space-Time 滚动缓存、处理耗时和队列峰值。
 - `ui.fip_curve` / `ui.das_payload`：主线程曲线和 Space-Time 绘制耗时，用于定位鼠标卡顿或界面刷新延迟。
-- `storage.joint_*` / `storage.edas_*`：联合存储和 eDAS-only 写盘入队、写盘耗时、文件切换和队列丢弃。
+- `storage.joint_*` / `storage.edas_*`：联合存储和 eDAS-only 写盘入队、写盘耗时、文件切换、无损背压和连续性状态。
 
 ## 主要模块说明
 
@@ -250,7 +254,7 @@ Tab3 debug 日志节点统一使用 `TAB3_NODE` 前缀，重点节点包括：
 
 同时：
 
-`FIP processed_data + DAS parsed packet -> AlignedSessionCoordinator -> Data 对齐状态 / 联合原始存储`
+`FIP raw packet + DAS parsed packet -> AlignedSessionCoordinator -> Data 对齐状态 / 联合原始存储`
 
 ### 时间同步检验
 
@@ -312,7 +316,8 @@ VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve
   - post-trigger：`3.0 s`
 - eDAS 默认端口：`3678`
 - FIP/eDAS 默认联合原始存储路径：`D:/PCCP/FIPeDASDATA`
-- FIP/eDAS 默认联合原始存储时间窗：`10.0 s`
+- FIP/eDAS 默认联合原始存储时间窗：`2.0 s`
+- FIP/eDAS 默认联合存储格式：`bin`
 - FIP/eDAS 默认对齐缓存保留时长：`10.0 s`
 
 ## 文档索引
@@ -322,6 +327,7 @@ VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve
 - [2026-07-18 FIP和eDAS时间同步与通信检验](E:/codes/pccpHOST/wb-monitor/docs/2026-07-18-FIP和eDAS时间同步与通信检验.md)
 - [2026-07-17 FIP-eDAS联调问题数量与修复日志](E:/codes/pccpHOST/wb-monitor/docs/2026-07-17-FIP-eDAS联调问题数量与修复日志.md)
 - [2026-07-18 Tab3-FIP丢帧缺口与首点0分析修复](E:/codes/pccpHOST/wb-monitor/docs/2026-07-18-Tab3-FIP丢帧缺口与首点0分析修复.md)
+- [2026-09-22 现场测试日志与联合存储修复记录](E:/codes/pccpHOST/wb-monitor/docs/2026-09-22-现场测试日志与联合存储修复记录.md)
 - [FIP/eDAS 通信协议与数据存储机制](E:/codes/pccpHOST/wb-monitor/docs/FIP／eDAS 通信协议与数据存储机制.md)
 - [开发日志汇总](E:/codes/pccpHOST/wb-monitor/docs/dev_log.md)
 
@@ -330,6 +336,8 @@ VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve
 - `View`、`Data`、`Tab3 / 检测`、`Setting` 已具备基础运行能力
 - FIP/eDAS 通信、同步统计、统一通信统计和联合存储已接入 Data 页
 - `首包时间差（FIP-eDAS）` 使用 TCP 完整收包时间戳并固定首个匹配包
+- 联合存储默认使用裸流式 `bin`；`npz` 和 `h5` 适合短时验证或低数据率压缩归档，缺少 `h5py` 时会自动回退 `bin`
+- eDAS Space-Time 空 payload 不会清空已显示画面；滚动缓存按实际溢出列裁剪，避免周期性空白图
 - Setting 页全局显示设置保存后需重启软件生效
 - `run.py --config` 尚未完整接入自定义配置文件加载
 

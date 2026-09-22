@@ -4,7 +4,8 @@
     原实现中 _maybe_store_snapshot 由 QTimer（主线程）每秒触发并直接调用
     np.savez_compressed，每次写盘 10–200 ms，周期性阻塞 Qt 事件循环，
     导致 UI 卡顿。本模块将写盘操作移至独立 QThread，主线程仅做
-    O(1) 的 put_nowait 入队，不执行任何 I/O。
+    O(1) 的对象封装，不执行任何 I/O；当磁盘持续慢于输入速率时，
+    存储入口会施加背压，优先保证已接收数据连续写入。
 
 增量存储（T3-02）：
     每次仅写入自上次存储结束点起的新增帧（增量 chunk），而非每次
@@ -81,14 +82,14 @@ class DASStorageWorker(QThread):
     本线程在后台持续消费，不阻塞主线程的 Qt 事件循环。
 
     队列设计：
-        maxsize=32。若写盘速度持续慢于存储定时器产生请求的速度
-        （通常 1 Hz），队列会堆积，此时丢弃最旧的请求（覆写最旧策略），
-        保证内存不无限增长。
+        maxsize=32。若写盘速度持续慢于存储定时器产生请求的速度，
+        入队端等待后台线程消化，而不是丢弃旧请求。联合存储游标只在
+        写盘成功后推进，因此分文件后的 comm_count 仍保持连续。
 
     使用方法：
         worker = DASStorageWorker()
         worker.start()
-        worker.enqueue_request(request)   # 主线程调用，非阻塞
+        worker.enqueue_request(request)
         worker.stop()
         worker.wait(5000)
     """
@@ -102,13 +103,13 @@ class DASStorageWorker(QThread):
     def __init__(self) -> None:
         super().__init__()
         self.logger = logging.getLogger(f"{__name__}.DASStorageWorker")
-        # 存储请求队列：主线程 put_nowait，本线程消费（T3-01）
+        # 存储请求队列：入队端在必要时背压等待，本线程消费（T3-01）
         self._queue: Queue = Queue(maxsize=self.INPUT_QUEUE_MAXSIZE)
         self._queue_lock = threading.Lock()
         self._queued_bytes = 0
         self.running = False
         # 联合存储格式：bin（裸二进制流式）/ npz / h5
-        self._format = "npz"
+        self._format = "bin"
         self._h5_compression = "none"
         self._h5_compression_level = 4
 
@@ -122,7 +123,7 @@ class DASStorageWorker(QThread):
 
     def set_format(self, fmt: str) -> None:
         """Select the joint storage backend: bin / npz / h5."""
-        fmt = str(fmt or "npz").lower()
+        fmt = str(fmt or "bin").lower()
         if fmt in ("bin", "npz", "h5"):
             self._format = fmt
 
@@ -132,49 +133,66 @@ class DASStorageWorker(QThread):
         self._h5_compression_level = max(1, min(9, int(level or 4)))
 
     def enqueue_request(self, request: DASStorageRequest) -> None:
-        """将存储请求放入队列（主线程调用，必须非阻塞）。
+        """Queue one joint write request, applying lossless backpressure if needed.
 
         Args:
             request: 封装了帧列表和输出路径的存储请求。
 
-        若队列满（写盘速度跟不上），丢弃最旧的请求并记录告警。
-        主线程绝不阻塞。
+        If the writer falls behind, this method waits until the storage thread
+        drains enough queued work.  That can slow the receiver path under disk
+        pressure, but it prevents silent discontinuities in segmented files.
         """
-        try:
+        warned = False
+        while self.running or self.isRunning():
             with self._queue_lock:
-                while (
-                    not self._queue.empty()
-                    and (
-                        self._queue.full()
-                        or self._queued_bytes + request.estimated_bytes > self.QUEUE_MEMORY_BUDGET_BYTES
-                    )
-                ):
-                    dropped = self._queue.get_nowait()
-                    self._queued_bytes = max(0, self._queued_bytes - int(getattr(dropped, "estimated_bytes", 0)))
-                    self.stats["requests_dropped"] += 1
+                over_budget = self._queued_bytes + request.estimated_bytes > self.QUEUE_MEMORY_BUDGET_BYTES
+                queue_size = self._queue.qsize()
+                queued_mb = self._queued_bytes / (1024 * 1024)
+                should_wait = self._queue.full() or (
+                    over_budget and self._queued_bytes > 0
+                )
+            if should_wait:
+                if not warned:
+                    warned = True
                     self.logger.warning(
-                        "DAS storage queue full, dropped oldest request. "
+                        "DAS joint storage queue is applying lossless backpressure. "
                         "queue_size=%d queued_mb=%.1f incoming_mb=%.1f budget_mb=%.1f",
-                        self._queue.qsize(),
-                        self._queued_bytes / (1024 * 1024),
+                        queue_size,
+                        queued_mb,
                         request.estimated_bytes / (1024 * 1024),
                         self.QUEUE_MEMORY_BUDGET_BYTES / (1024 * 1024),
                     )
-                self._queue.put_nowait(request)
-                self._queued_bytes += request.estimated_bytes
-                self.stats["requests_enqueued"] += 1
-                self.logger.debug(
-                    "TAB3_NODE storage.joint_enqueue frames=%d end_comm=%s queue_size=%d queued_mb=%.1f enqueued=%d dropped=%d",
-                    len(request.frames),
-                    request.end_comm,
-                    self._queue.qsize(),
-                    self._queued_bytes / (1024 * 1024),
-                    self.stats["requests_enqueued"],
-                    self.stats["requests_dropped"],
+                time.sleep(0.25)
+                continue
+            if over_budget and not warned:
+                warned = True
+                self.logger.warning(
+                    "DAS joint storage request exceeds queue budget but will be accepted to preserve continuity. "
+                    "queue_size=%d queued_mb=%.1f incoming_mb=%.1f budget_mb=%.1f",
+                    queue_size,
+                    queued_mb,
+                    request.estimated_bytes / (1024 * 1024),
+                    self.QUEUE_MEMORY_BUDGET_BYTES / (1024 * 1024),
                 )
-        except Full:
-            self.stats["requests_dropped"] += 1
-            self.logger.error("DAS storage queue full, failed to enqueue request.")
+            try:
+                self._queue.put(request, timeout=0.25)
+                with self._queue_lock:
+                    self._queued_bytes += request.estimated_bytes
+                    self.stats["requests_enqueued"] += 1
+                    self.logger.debug(
+                        "TAB3_NODE storage.joint_enqueue frames=%d end_comm=%s queue_size=%d queued_mb=%.1f enqueued=%d dropped=%d",
+                        len(request.frames),
+                        request.end_comm,
+                        self._queue.qsize(),
+                        self._queued_bytes / (1024 * 1024),
+                        self.stats["requests_enqueued"],
+                        self.stats["requests_dropped"],
+                    )
+                return
+            except Full:
+                continue
+        self.stats["requests_dropped"] += 1
+        self.logger.error("DAS storage worker is stopped; failed to enqueue joint request without loss.")
 
     def run(self) -> None:
         """存储循环：从队列取请求并写盘。"""
@@ -332,48 +350,68 @@ class EDASRawStorageWorker(QThread):
         blocks_per_file: int,
         queue_packets: int,
     ) -> bool:
-        """Queue one parsed eDAS packet for binary storage without blocking."""
+        """Queue one parsed eDAS packet for binary storage without dropping."""
         request = EDASRawStorageRequest(packet, output_dir, blocks_per_file, queue_packets)
         capacity = max(1, min(request.queue_packets, self.INPUT_QUEUE_MAXSIZE))
-        try:
+        warned = False
+        while self.running or self.isRunning():
             with self._queue_lock:
-                while (
-                    not self._queue.empty()
-                    and (
-                        self._queue.qsize() >= capacity
-                        or self._queued_bytes + request.data_bytes > self.QUEUE_MEMORY_BUDGET_BYTES
-                    )
-                ):
-                    dropped = self._queue.get_nowait()
-                    self._queued_bytes = max(0, self._queued_bytes - int(getattr(dropped, "data_bytes", 0)))
-                    self.stats["blocks_dropped"] += 1
+                queue_size = self._queue.qsize()
+                queued_bytes = self._queued_bytes
+                over_capacity = queue_size >= capacity
+                over_budget = queued_bytes + request.data_bytes > self.QUEUE_MEMORY_BUDGET_BYTES
+                queue_full = self._queue.full()
+                should_wait = over_capacity or queue_full or (
+                    over_budget and queued_bytes > 0
+                )
+            if should_wait:
+                if not warned:
+                    warned = True
                     self.logger.warning(
-                        "eDAS raw storage queue full, dropped oldest packet. "
-                        "queue_size=%d queued_mb=%.1f incoming_mb=%.1f budget_mb=%.1f"
-                        " Disk may be too slow.",
-                        self._queue.qsize(),
-                        self._queued_bytes / (1024 * 1024),
+                        "eDAS raw storage queue is applying lossless backpressure. "
+                        "comm=%s queue_size=%d capacity=%d queued_mb=%.1f incoming_mb=%.1f budget_mb=%.1f",
+                        packet.header.comm_count,
+                        queue_size,
+                        capacity,
+                        queued_bytes / (1024 * 1024),
                         request.data_bytes / (1024 * 1024),
                         self.QUEUE_MEMORY_BUDGET_BYTES / (1024 * 1024),
                     )
-                self._queue.put_nowait(request)
-                self._queued_bytes += request.data_bytes
-                self.stats["blocks_enqueued"] += 1
-                self.stats["queue_peak_bytes"] = max(self.stats["queue_peak_bytes"], self._queued_bytes)
-                self.logger.debug(
-                    "TAB3_NODE storage.edas_enqueue comm=%s queue_size=%d capacity=%d queued_mb=%.1f enqueued=%d dropped=%d",
+                time.sleep(0.25)
+                continue
+            if over_budget and not warned:
+                warned = True
+                self.logger.warning(
+                    "eDAS raw storage packet exceeds queue budget but will be accepted to preserve continuity. "
+                    "comm=%s queue_size=%d capacity=%d queued_mb=%.1f incoming_mb=%.1f budget_mb=%.1f",
                     packet.header.comm_count,
-                    self._queue.qsize(),
+                    queue_size,
                     capacity,
-                    self._queued_bytes / (1024 * 1024),
-                    self.stats["blocks_enqueued"],
-                    self.stats["blocks_dropped"],
+                    queued_bytes / (1024 * 1024),
+                    request.data_bytes / (1024 * 1024),
+                    self.QUEUE_MEMORY_BUDGET_BYTES / (1024 * 1024),
                 )
-            return True
-        except Full:
-            self.stats["blocks_dropped"] += 1
-            self.logger.error("eDAS raw storage queue full, failed to enqueue packet.")
-            return False
+            try:
+                self._queue.put(request, timeout=0.25)
+                with self._queue_lock:
+                    self._queued_bytes += request.data_bytes
+                    self.stats["blocks_enqueued"] += 1
+                    self.stats["queue_peak_bytes"] = max(self.stats["queue_peak_bytes"], self._queued_bytes)
+                    self.logger.debug(
+                        "TAB3_NODE storage.edas_enqueue comm=%s queue_size=%d capacity=%d queued_mb=%.1f enqueued=%d dropped=%d",
+                        packet.header.comm_count,
+                        self._queue.qsize(),
+                        capacity,
+                        self._queued_bytes / (1024 * 1024),
+                        self.stats["blocks_enqueued"],
+                        self.stats["blocks_dropped"],
+                    )
+                return True
+            except Full:
+                continue
+        self.stats["blocks_dropped"] += 1
+        self.logger.error("eDAS raw storage worker is stopped; failed to enqueue packet without loss.")
+        return False
 
     def run(self) -> None:
         self.running = True
@@ -524,7 +562,7 @@ class EDASRawStorageWorker(QThread):
                 "blocks_per_file": int(request.blocks_per_file),
                 "queue_packets": int(request.queue_packets),
                 "file_split_policy": "split after blocks_per_file complete DAS packets",
-                "queue_overflow_policy": "drop oldest packet before enqueueing the latest packet",
+                "queue_overflow_policy": "lossless backpressure; do not drop queued packets",
             },
             "das_parameters": {
                 "sample_rate_hz": sample_rate_hz,

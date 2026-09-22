@@ -42,12 +42,12 @@ class EDASManager(QObject):
             port=settings["communication"]["port"],
         )
         self.plot_worker = DASPlotWorker()
-        # Separate writers: joint npz and eDAS-only bin/json use independent queues.
+        # Separate writers: joint storage and eDAS-only bin/json use independent queues.
         self.storage_worker = DASStorageWorker()
         self.edas_storage_worker = EDASRawStorageWorker()
         self._joint_storage_enabled = False
         self._joint_storage_path = "D:/PCCP/FIPeDASDATA"
-        self._joint_interval_seconds = 10.0
+        self._joint_interval_seconds = 2.0
         self._edas_storage_enabled = False
         self._edas_storage_path = "D:/PCCP/eDASDATA"
         self._edas_blocks_per_file = 50
@@ -150,6 +150,7 @@ class EDASManager(QObject):
         self._joint_write_pending = False
         self._pending_wall_start = None
         self._disconnect_alert_active = False
+        self.coordinator.protect_unflushed_frames_after(None)
         self.plot_worker.reset_state()
         self.edas_storage_worker.reset_session()
         self.main_window.reset_tab3_views()
@@ -168,12 +169,13 @@ class EDASManager(QObject):
         self._joint_storage_enabled = bool(
             storage_settings.get("joint_enabled", storage_settings.get("enabled", False))
         )
+        self._sync_joint_retention_floor()
         self._joint_storage_path = storage_settings.get("path", self._joint_storage_path)
         self._joint_interval_seconds = max(
             1.0, float(storage_settings.get("interval_seconds", self._joint_interval_seconds))
         )
         # 联合存储格式：bin / npz / h5（Tab2 存储组切换）
-        self.storage_worker.set_format(storage_settings.get("format", "npz"))
+        self.storage_worker.set_format(storage_settings.get("format", "bin"))
         self.storage_worker.set_h5_compression(
             storage_settings.get("h5_compression", "none"),
             int(storage_settings.get("h5_compression_level", 4)),
@@ -183,8 +185,8 @@ class EDASManager(QObject):
             self._joint_interval_seconds * 2.0 + 5.0,
         )
         self.coordinator.cache_seconds = cache_seconds
-        # 写盘慢（如 npz 压缩）时缓存需覆盖写入延迟，否则尾部帧会先被裁掉。
-        # 至少按当前帧大小 * 缓存秒数估算，且不低于默认 2GB 预算。
+        # 写盘慢（如 npz 压缩）时缓存需覆盖写入延迟；joint 开启时未写盘帧
+        # 由 retention floor 保护，不会因普通缓存裁剪提前移除。
         estimated_bytes_per_sec = self.coordinator.latest_frame_bytes() / max(
             self.coordinator.latest_packet_duration_seconds(), 1e-6
         )
@@ -211,6 +213,13 @@ class EDASManager(QObject):
             self._edas_storage_enabled,
             cache_seconds,
         )
+
+    def _sync_joint_retention_floor(self) -> None:
+        """Keep alignment cache from trimming frames not yet persisted by joint storage."""
+        if self._joint_storage_enabled:
+            self.coordinator.protect_unflushed_frames_after(self._last_snapshot_end_comm)
+        else:
+            self.coordinator.protect_unflushed_frames_after(None)
 
     def process_fip_raw_packet(self, raw_packet: RawDataPacket) -> None:
         """Receive one raw FIP packet for alignment and joint storage."""
@@ -381,7 +390,7 @@ class EDASManager(QObject):
             )
             if not storage_queued:
                 self.main_window.update_tab3_edas_storage_status(
-                    f"Dropped DAS packet comm={parsed.header.comm_count}; eDAS save queue full"
+                    f"eDAS storage did not accept packet comm={parsed.header.comm_count}"
                 )
         plot_queued = self.plot_worker.enqueue_packet(parsed)
         if not plot_queued:
@@ -469,7 +478,7 @@ class EDASManager(QObject):
     def _maybe_store_snapshot(self) -> None:
         """Check joint storage conditions and enqueue incremental FIP+eDAS writes.
 
-        FIP+eDAS SAVE writes joint npz only when both sources are online and aligned.
+        FIP+eDAS SAVE writes joint files only when both sources are online and aligned.
         If only one source is online, the UI routes storage to the matching single-source path.
 
         Cursor fix: ``_last_snapshot_end_comm`` is advanced ONLY after the write
@@ -497,37 +506,60 @@ class EDASManager(QObject):
         if not frames:
             self.logger.debug("TAB3_NODE manager.joint_storage no_frames status=%s", status.alignment_status)
             return
-        end_comm = frames[-1].comm_count
-        if end_comm == self._last_snapshot_end_comm:
-            self.logger.debug("TAB3_NODE manager.joint_storage same_end_comm=%s", end_comm)
+        newest_seen_comm = frames[-1].comm_count
+        if newest_seen_comm == self._last_snapshot_end_comm:
+            self.logger.debug("TAB3_NODE manager.joint_storage same_end_comm=%s", newest_seen_comm)
             return
         if self._pending_wall_start is None:
             self._pending_wall_start = datetime.now().isoformat(timespec="milliseconds")
 
         if not status.fip_online or not status.das_online:
-            self._last_snapshot_end_comm = end_comm
+            self._last_snapshot_end_comm = newest_seen_comm
             self._pending_wall_start = None
+            self._sync_joint_retention_floor()
             self.logger.debug(
                 "TAB3_NODE manager.joint_storage fallback fip_online=%s das_online=%s end_comm=%s",
                 status.fip_online,
                 status.das_online,
-                end_comm,
+                newest_seen_comm,
             )
             self._route_joint_storage_fallback(status)
             return
-        if status.alignment_status != "aligned":
-            self._last_snapshot_end_comm = end_comm
-            self._pending_wall_start = None
+
+        complete_frames = []
+        first_incomplete = None
+        for frame in frames:
+            if frame.fip_packet is not None and frame.das_packet is not None:
+                complete_frames.append(frame)
+                continue
+            first_incomplete = frame
+            break
+        if not complete_frames:
             self.logger.debug(
-                "TAB3_NODE manager.joint_storage wait_alignment status=%s frames=%d end_comm=%s",
+                "TAB3_NODE manager.joint_storage wait_complete_pair status=%s frames=%d first_comm=%s "
+                "fip_missing=%s das_missing=%s",
                 status.alignment_status,
                 len(frames),
-                end_comm,
+                first_incomplete.comm_count if first_incomplete is not None else "-",
+                first_incomplete.fip_missing if first_incomplete is not None else "-",
+                first_incomplete.das_missing if first_incomplete is not None else "-",
             )
             self.main_window.update_tab3_storage_status(
-                f"Waiting aligned state; current={status.alignment_status}, end_comm={end_comm}"
+                f"Waiting complete FIP/eDAS pair; current={status.alignment_status}, newest_comm={newest_seen_comm}"
             )
             return
+        if first_incomplete is not None:
+            self.logger.debug(
+                "TAB3_NODE manager.joint_storage hold_incomplete_tail first_incomplete=%s "
+                "complete_frames=%d newest_comm=%s fip_missing=%s das_missing=%s",
+                first_incomplete.comm_count,
+                len(complete_frames),
+                newest_seen_comm,
+                first_incomplete.fip_missing,
+                first_incomplete.das_missing,
+            )
+        frames = complete_frames
+        end_comm = frames[-1].comm_count
 
         interval_seconds = max(1.0, float(storage_settings.get("interval_seconds", self._joint_interval_seconds)))
         chunk_start = float(frames[0].packet_start_time)
@@ -588,6 +620,7 @@ class EDASManager(QObject):
         if ok:
             self._last_snapshot_end_comm = max(self._last_snapshot_end_comm, int(end_comm))
             self._pending_wall_start = None
+            self._sync_joint_retention_floor()
             self.logger.debug(
                 "TAB3_NODE manager.joint_storage saved end_comm=%s cursor=%s",
                 end_comm,
