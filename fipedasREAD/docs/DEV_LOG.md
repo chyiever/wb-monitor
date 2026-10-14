@@ -1,5 +1,87 @@
 # 开发日志（fipedasREAD 回放工具）
 
+## 2026-10-14
+
+### 13. 新增 Windows 独立 exe 打包脚本
+
+**需求**：提供类似 `pcie7821_gui/build_exe.py` 的打包脚本，将本工具打包为独立 exe，exe 名称包含日期，并完成测试与文档更新。
+
+**新增** `build_exe.py`（项目根目录）：
+
+- 基于 PyInstaller，默认生成**单文件**（`--onefile`）、**无控制台**（`--windowed`）的独立 exe。
+- 变体参数：
+  - `--console`：生成带控制台的调试版；`--onedir`：生成文件夹（onedir）版。
+  - `--skip-clean` / `--clean-only`：跳过/仅执行清理。
+  - `--name`：覆盖 exe 名称；`--distpath` / `--workpath` / `--specpath` / `--upx-dir`：自定义路径。
+- **exe 名称默认包含日期**：`FIPeDASReplay-YYYY.M.D`，如 `FIPeDASReplay-2026.10.14`。
+- **图标**：优先使用项目内 `resources/logo.png`，否则回退到 `wb-monitor/resources/logo.png`，用 Pillow 转换为多尺寸（16~256）`.ico` 嵌入 exe；未安装 Pillow 时告警并跳过。
+- **打包配置**：`--paths src` 加入源码目录；显式声明隐藏导入（`fipedas_read.*`、`PyQt5`、`PyQt5.sip`、`numpy`、`pyqtgraph`、`scipy`、`scipy.signal`、`h5py`）；排除 PyQt6/PySide2/PySide6/matplotlib/pandas/numba/llvmlite/OpenGL/tkinter/torch 等无关模块以减小体积。
+- **清理**：打包前删除旧 `dist/<name>.exe`（或 `dist/<name>/`）、`build/`、`<name>.spec`；完成后删除 `build/` 工作目录并打印 exe 路径与体积。
+
+**验证**：
+
+- `python build_exe.py` 成功生成 `dist/FIPeDASReplay-2026.10.14.exe`（约 89.3 MB），图标已嵌入。
+- 启动该 exe（传入测试目录）后进程持续运行 20s 无崩溃，随后手动结束，确认 `run.py → fipedas_read.main` 入口与 PyQt5/pyqtgraph/scipy/h5py 等依赖打包完整。
+
+### 14. 界面参数持久化（下次打开沿用上次设置）
+
+**需求**：每次打开软件默认使用上次设置的参数。
+
+**实现**：
+
+- 新增 `src/fipedas_read/settings.py`：
+  - `load_settings()` / `save_settings()`：JSON 文件 `last_params.json`，写入采用「临时文件 + `replace`」原子替换，写失败静默忽略。
+  - 路径规则：打包 exe 时保存在 **exe 同级目录**（便携），源码运行时保存在**项目根目录**。
+- `viewer.py`：
+  - 启动时 `_restore_settings()` 在**连接信号之前**恢复全部控件（波形1/2 源、DAS 通道、FIP 与 EDAS 的去均值/归一化/滤波/频带/阶数/降采样、最大点、通道范围、时间/空间降采样、色图、逐通道去基线、自动色阶、Vmin/Vmax、应用EDAS预处理），避免恢复过程触发多余重绘。
+  - 关闭时 `closeEvent` 调用 `_save_settings()` 写盘。
+  - 数据路径一并记忆：`_resolve_initial_path()` 采用「命令行参数 > 上次目录 > 默认目录（D:/PCCP/FIPeDASDATA 或 cwd）」优先级。
+- `main.py`：`path` 位置参数默认值改为 `None`，把「默认目录」的决策交给 viewer（这样才能让上次目录生效）。
+
+### 15. 本地运行日志
+
+- 新增 `src/fipedas_read/logger.py`：
+  - `setup_logging()`：`RotatingFileHandler`（单文件 2MB、保留 3 份），日志目录为 exe 同级 `logs/`（源码版为项目根 `logs/`），文件 `fipedas_read.log`；若存在 stderr 则同时输出到控制台。
+  - `install_excepthook()`：未捕获异常写入日志（不含 KeyboardInterrupt）。
+- `main.py`：初始化日志并记录启动/退出（含版本号）。
+- `worker.py`：记录单次/多文件**加载耗时**、**重绘耗时**与失败堆栈，便于现场排查性能问题。
+
+### 16. 读取/绘图性能优化
+
+**根因**：点击文件后需在**全速率**序列上做零相位 `sosfiltfilt`，大文件下耗时约 1~2s。
+
+**修改**：
+
+- `preprocess.py`：`preprocess_waveform()` 新增 `max_samples` 参数——当原始序列超长时，先按步长抽取并**同步降低采样率**，再进行滤波与显示降采样；显示频带保持不变。
+- `worker.py`：曲线调用传入 `max_samples = max(4 × 最大点, 200000)`，把滤波工作量限制在几十万点内。
+- 结果缓存：`ReplayWorker` 新增 `redraw` **结果 LRU 缓存**（8 条，键为「路径元组 + 两条曲线参数 + timespace 参数」）。结果只包含已降采样的数组（体积小），命中时替换 `seq` 直接回放，重复点击/来回切换文件近乎瞬时。
+- `clear_cache()`（重新加载数据）同时清空数据缓存与结果缓存。
+
+**实测**：2000 万点序列带通滤波 0.412s → 0.022s（约 19×）。
+
+### 17. 文件列表多选并按时间拼接
+
+**需求**：支持多选文件，按时间拼接后绘图。
+
+**修改**：
+
+- `viewer.py`：文件列表改为 `QListWidget.ExtendedSelection`（Ctrl/Shift 多选），`itemSelectionChanged` → `_apply_selection()`，按行顺序收集选中路径；「文件信息」在未选择/未找到时给出提示。
+- `worker.py`：`RedrawRequest.path: str` → `paths: tuple[str, ...]`；`RedrawResult.path` → `paths`；数据缓存键改为路径元组；多条路径时合并加载。
+- `data_loader.py`：新增 `merge_joint_data()`——按各文件**首个分组起始时间**（回退 `created_at`、文件名）排序，拼接 FIP 帧、DAS 矩阵、速率、通道数、存在标志等；若后一文件与前一文件时间**重叠**，整体平移使其紧接前一段之后，保证合并后的时间轴**单调且连续**（相对时间的文件也能正确首尾相接）。`JointReplayData` 新增 `source_paths` 字段记录来源文件。
+- 文件信息栏多选时新增「文件: N 个（已按时间拼接）」，文件大小按来源累加；开始采集时刻取最早文件。
+
+### 18. 文件属性标签调整
+
+- `worker._file_info_text()`：将「采集时刻」改为「**开始采集时刻**」，「通道数」改为「**DAS通道数**」。
+
+**验证**：offscreen 冒烟测试（脚本生成 2 个 `FIPeDAS-*.npz`，相对/重叠时间）：
+
+- 单选正常绘图，信息栏显示「开始采集时刻」「DAS通道数」，不含旧标签。
+- 全选两文件后按时间拼接：曲线时间轴**严格单调递增**、总帧数 4→8、文件大小累加，信息栏显示「文件: 2 个（已按时间拼接）」。
+- 修改参数（滤波阶数=7、通道范围=3-40）并保存后重建窗口，参数正确恢复。
+- 日志文件成功写入 `logs/fipedas_read.log`。
+- 2000 万点带通滤波基准：0.412s → 0.022s。
+
 ## 2026-09-17（v1.2.0）
 
 ### 7. 大文件（约 300MB）读取卡顿修复

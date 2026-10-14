@@ -266,14 +266,20 @@ class PCCPMonitorApp:
         # Initialize processors
         self._initialize_processors()
 
+    def _application_root(self) -> Path:
+        """Return the local application directory used for runtime artifacts."""
+        if getattr(sys, "frozen", False):
+            return Path(sys.executable).resolve().parent
+        return Path(__file__).resolve().parent.parent
+
     def _setup_logging(self, args=None):
         """Setup application logging.
 
         Normal mode uses INFO for low overhead. Debug mode is enabled by
         ``python run.py --debug`` and records per-node Tab3 diagnostics.
         """
-        log_dir = Path(__file__).parent.parent / 'logs'
-        log_dir.mkdir(exist_ok=True)
+        log_dir = self._application_root() / 'logs'
+        log_dir.mkdir(parents=True, exist_ok=True)
 
         debug_enabled = bool(getattr(args, 'debug', False))
         log_file = getattr(args, 'log', None)
@@ -435,6 +441,8 @@ class PCCPMonitorApp:
             self.main_window.tab2_settings_changed.connect(self._sync_tab2_settings)
         if hasattr(self.main_window, 'tab2_clear_alarms_requested'):
             self.main_window.tab2_clear_alarms_requested.connect(self._clear_tab2_alarms)
+        if hasattr(self.main_window, 'data_clear_statistics_requested'):
+            self.main_window.data_clear_statistics_requested.connect(self._clear_statistics)
         if hasattr(self.main_window, 'tab3_start_requested'):
             self.main_window.tab3_start_requested.connect(self._start_tab3_monitoring)
         if hasattr(self.main_window, 'tab3_stop_requested'):
@@ -1178,6 +1186,24 @@ class PCCPMonitorApp:
         """Clear the Tab2 alarm table."""
         if self.main_window:
             self.main_window.clear_alarm_table()
+
+    def _clear_statistics(self):
+        """Reset FIP/eDAS communication and storage statistics counters.
+
+        The MainWindow zeroes its local counters immediately; this handler clears
+        the source-side cumulative counters so the periodic statistics refresh
+        does not immediately repopulate the values.
+        """
+        try:
+            if self.tcp_server is not None and hasattr(self.tcp_server, "reset_statistics"):
+                self.tcp_server.reset_statistics()
+            if self.edas_manager is not None and hasattr(self.edas_manager, "reset_statistics"):
+                self.edas_manager.reset_statistics()
+            if self.alignment_coordinator is not None and hasattr(self.alignment_coordinator, "reset_statistics"):
+                self.alignment_coordinator.reset_statistics()
+            self.logger.info("Communication/storage statistics counters cleared")
+        except Exception as e:
+            self.logger.warning("Failed to clear statistics: %s", e)
 
     # 滤波器参数更新已移至优化的线程系统中处理
 

@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
     fip_sensor_settings_changed = pyqtSignal(dict)
     tab2_settings_changed = pyqtSignal()
     tab2_clear_alarms_requested = pyqtSignal()
+    data_clear_statistics_requested = pyqtSignal()
     tab3_start_requested = pyqtSignal()
     tab3_stop_requested = pyqtSignal()
     tab3_settings_changed = pyqtSignal()
@@ -565,7 +566,7 @@ class MainWindow(QMainWindow):
         self.time_display_duration_spin = QDoubleSpinBox()
         self.time_display_duration_spin.setToolTip("时域图滚动窗口长度：显示最近多少秒的数据")
         self.time_display_duration_spin.setRange(0.1, 60.0)
-        self.time_display_duration_spin.setValue(2.0)
+        self.time_display_duration_spin.setValue(1.0)
         self.time_display_duration_spin.setSingleStep(0.1)
         self.time_display_duration_spin.setSuffix(" s")
         layout.addWidget(self.time_display_duration_spin, 0, 1)
@@ -699,7 +700,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("总时间长度(s)"), 0, 2)
         self.tab3_space_time_total_seconds_spin = QDoubleSpinBox()
         self.tab3_space_time_total_seconds_spin.setRange(0.5, 120.0)
-        self.tab3_space_time_total_seconds_spin.setValue(2.0)
+        self.tab3_space_time_total_seconds_spin.setValue(1.0)
         self.tab3_space_time_total_seconds_spin.setDecimals(1)
         self.tab3_space_time_total_seconds_spin.setSingleStep(0.5)
         layout.addWidget(self.tab3_space_time_total_seconds_spin, 0, 3)
@@ -1032,7 +1033,7 @@ class MainWindow(QMainWindow):
     def _create_data_comm_control_group(self) -> QGroupBox:
         group = QGroupBox("通信控制")
         layout = QGridLayout(group)
-        for column in range(3):
+        for column in range(4):
             layout.setColumnStretch(column, 1)
         self.data_comm_both_btn = QPushButton("同时启动")
         self.data_comm_both_btn.setCheckable(True)
@@ -1046,6 +1047,11 @@ class MainWindow(QMainWindow):
         self.tab3_start_stop_btn.setCheckable(True)
         self.tab3_start_stop_btn.setMinimumHeight(44)
         layout.addWidget(self.tab3_start_stop_btn, 0, 2)
+        self.clear_stats_btn = QPushButton("清空统计")
+        self.clear_stats_btn.setMinimumHeight(44)
+        self.clear_stats_btn.setToolTip("清空 FIP/eDAS 通信统计与存储统计计数（不影响正在收发的数据）")
+        layout.addWidget(self.clear_stats_btn, 0, 3)
+        self._style_secondary_button(self.clear_stats_btn, min_width=110)
         return group
 
     def _create_data_comm_status_group(self) -> QGroupBox:
@@ -1167,57 +1173,99 @@ class MainWindow(QMainWindow):
         return group
 
     def _create_storage_param_group(self) -> QGroupBox:
+        """存储参数按数据链路分为三列：FIP独立 / eDAS独立 / 联合。"""
         group = QGroupBox("存储参数")
+        layout = QHBoxLayout(group)
+        layout.setSpacing(8)
+        layout.addWidget(self._create_fip_storage_param_group(), stretch=1)
+        layout.addWidget(self._create_edas_storage_param_group(), stretch=1)
+        layout.addWidget(self._create_joint_storage_param_group(), stretch=1)
+        return group
+
+    def _create_fip_storage_param_group(self) -> QGroupBox:
+        group = QGroupBox("FIP独立存储")
         layout = QGridLayout(group)
-        for column in range(6):
-            layout.setColumnStretch(column, 1)
+        layout.setColumnStretch(1, 1)
         layout.addWidget(QLabel("FIP间隔(s)"), 0, 0)
         self.storage_interval_spin = QSpinBox()
         self.storage_interval_spin.setRange(1, 300)
         self.storage_interval_spin.setValue(2)
         layout.addWidget(self.storage_interval_spin, 0, 1)
-        layout.addWidget(QLabel("联合间隔(s)"), 0, 2)
+        layout.addWidget(QLabel("FIP降采样"), 1, 0)
+        self.storage_downsample_spin = QSpinBox()
+        self.storage_downsample_spin.setRange(1, 100)
+        self.storage_downsample_spin.setValue(1)
+        self.storage_downsample_spin.setToolTip(
+            "仅影响 FIP 独立 .npz 存储；联合文件的 FIP 降采样请用中间“联合存储”列"
+        )
+        layout.addWidget(self.storage_downsample_spin, 1, 1)
+        layout.addWidget(QLabel("存储格式"), 2, 0)
+        self.fip_storage_format_combo = QComboBox()
+        self.fip_storage_format_combo.addItem("npz (无压缩)", "npz")
+        self.fip_storage_format_combo.setToolTip("当前仅支持 npz；保留下拉以便后续扩展其他格式")
+        layout.addWidget(self.fip_storage_format_combo, 2, 1)
+        return group
+
+    def _create_edas_storage_param_group(self) -> QGroupBox:
+        group = QGroupBox("eDAS独立存储")
+        layout = QGridLayout(group)
+        layout.setColumnStretch(1, 1)
+        layout.addWidget(QLabel("eDAS块/文件"), 0, 0)
+        self.tab3_edas_blocks_per_file_spin = QSpinBox()
+        self.tab3_edas_blocks_per_file_spin.setRange(1, 100000)
+        self.tab3_edas_blocks_per_file_spin.setValue(50)
+        layout.addWidget(self.tab3_edas_blocks_per_file_spin, 0, 1)
+        layout.addWidget(QLabel("eDAS队列"), 1, 0)
+        self.tab3_edas_queue_packets_spin = QSpinBox()
+        self.tab3_edas_queue_packets_spin.setRange(1, 4096)
+        self.tab3_edas_queue_packets_spin.setValue(200)
+        layout.addWidget(self.tab3_edas_queue_packets_spin, 1, 1)
+        layout.addWidget(QLabel("存储格式"), 2, 0)
+        self.edas_storage_format_combo = QComboBox()
+        self.edas_storage_format_combo.addItem("bin + json", "bin")
+        self.edas_storage_format_combo.setToolTip("当前仅支持 bin + json；保留下拉以便后续扩展其他格式")
+        layout.addWidget(self.edas_storage_format_combo, 2, 1)
+        return group
+
+    def _create_joint_storage_param_group(self) -> QGroupBox:
+        group = QGroupBox("联合存储")
+        layout = QGridLayout(group)
+        layout.setColumnStretch(1, 1)
+        layout.addWidget(QLabel("联合间隔(s)"), 0, 0)
         self.tab3_storage_interval_spin = QDoubleSpinBox()
         self.tab3_storage_interval_spin.setRange(1.0, 60.0)
         self.tab3_storage_interval_spin.setValue(2.0)
         self.tab3_storage_interval_spin.setDecimals(1)
-        layout.addWidget(self.tab3_storage_interval_spin, 0, 3)
-        layout.addWidget(QLabel("缓存(s)"), 0, 4)
+        layout.addWidget(self.tab3_storage_interval_spin, 0, 1)
+        layout.addWidget(QLabel("FIP降采样"), 1, 0)
+        self.tab3_joint_fip_downsample_spin = QSpinBox()
+        self.tab3_joint_fip_downsample_spin.setRange(1, 100)
+        self.tab3_joint_fip_downsample_spin.setValue(1)
+        self.tab3_joint_fip_downsample_spin.setToolTip(
+            "仅抽取联合文件中的 FIP 数据（arr[::factor]），1=不降采样；eDAS 不受影响"
+        )
+        layout.addWidget(self.tab3_joint_fip_downsample_spin, 1, 1)
+        layout.addWidget(QLabel("缓存(s)"), 2, 0)
         self.tab3_cache_seconds_spin = QDoubleSpinBox()
         self.tab3_cache_seconds_spin.setRange(5.0, 120.0)
         self.tab3_cache_seconds_spin.setValue(10.0)
         self.tab3_cache_seconds_spin.setDecimals(1)
-        layout.addWidget(self.tab3_cache_seconds_spin, 0, 5)
-        layout.addWidget(QLabel("eDAS块/文件"), 1, 0)
-        self.tab3_edas_blocks_per_file_spin = QSpinBox()
-        self.tab3_edas_blocks_per_file_spin.setRange(1, 100000)
-        self.tab3_edas_blocks_per_file_spin.setValue(50)
-        layout.addWidget(self.tab3_edas_blocks_per_file_spin, 1, 1)
-        layout.addWidget(QLabel("eDAS队列"), 1, 2)
-        self.tab3_edas_queue_packets_spin = QSpinBox()
-        self.tab3_edas_queue_packets_spin.setRange(1, 4096)
-        self.tab3_edas_queue_packets_spin.setValue(200)
-        layout.addWidget(self.tab3_edas_queue_packets_spin, 1, 3)
-        layout.addWidget(QLabel("FIP降采样"), 1, 4)
-        self.storage_downsample_spin = QSpinBox()
-        self.storage_downsample_spin.setRange(1, 100)
-        self.storage_downsample_spin.setValue(1)
-        layout.addWidget(self.storage_downsample_spin, 1, 5)
-        layout.addWidget(QLabel("联合格式"), 2, 0)
+        layout.addWidget(self.tab3_cache_seconds_spin, 2, 1)
+        layout.addWidget(QLabel("联合格式"), 3, 0)
         self.tab3_joint_format_combo = QComboBox()
         self.tab3_joint_format_combo.addItem("bin (裸二进制流式)", "bin")
         self.tab3_joint_format_combo.addItem("npz (压缩归档)", "npz")
         self.tab3_joint_format_combo.addItem("h5 (HDF5)", "h5")
         self.tab3_joint_format_combo.setCurrentIndex(0)
         self.tab3_joint_format_combo.setToolTip("bin: 裸二进制流式写盘，支持最高吞吐(500MB/s+); npz: 压缩归档(修复游标丢帧); h5: HDF5 可选gzip压缩")
-        layout.addWidget(self.tab3_joint_format_combo, 2, 1, 1, 2)
-        layout.addWidget(QLabel("H5压缩"), 2, 3)
+        layout.addWidget(self.tab3_joint_format_combo, 3, 1)
+        layout.addWidget(QLabel("H5压缩"), 4, 0)
         self.tab3_joint_h5_compress_combo = QComboBox()
         self.tab3_joint_h5_compress_combo.addItem("none (最快)", "none")
         self.tab3_joint_h5_compress_combo.addItem("gzip", "gzip")
         self.tab3_joint_h5_compress_combo.setCurrentIndex(0)
         self.tab3_joint_h5_compress_combo.setToolTip("仅对 h5 格式生效; gzip 压缩会降低写盘吞吐，高数据率建议 none")
-        layout.addWidget(self.tab3_joint_h5_compress_combo, 2, 4, 1, 2)
+        layout.addWidget(self.tab3_joint_h5_compress_combo, 4, 1)
         return group
 
     def _create_storage_status_group(self) -> QGroupBox:
@@ -1913,6 +1961,10 @@ class MainWindow(QMainWindow):
                     "enabled": self.phase_storage_check.isChecked(),
                     "interval": self.storage_interval_spin.value(),
                     "downsample_factor": self.storage_downsample_spin.value(),
+                    "format": self.fip_storage_format_combo.currentData(),
+                },
+                "edas": {
+                    "format": self.edas_storage_format_combo.currentData(),
                 },
                 "path": self.storage_path_edit.text()
             },
@@ -2174,6 +2226,11 @@ class MainWindow(QMainWindow):
         self._set_checked(getattr(self, "phase_storage_check", None), realtime.get("enabled"))
         self._set_spin_value(getattr(self, "storage_interval_spin", None), realtime.get("interval"))
         self._set_spin_value(getattr(self, "storage_downsample_spin", None), realtime.get("downsample_factor"))
+        self._set_combo_value(getattr(self, "fip_storage_format_combo", None), realtime.get("format"))
+        self._set_combo_value(
+            getattr(self, "edas_storage_format_combo", None),
+            storage.get("edas", {}).get("format"),
+        )
         self._set_line_text(getattr(self, "storage_path_edit", None), storage.get("path"))
 
     def _restore_view_settings(self, config: Dict[str, Any]) -> None:
@@ -2299,6 +2356,10 @@ class MainWindow(QMainWindow):
         self._set_line_text(getattr(self, "tab3_storage_path_edit", None), storage.get("path"))
         self._set_spin_value(getattr(self, "tab3_storage_interval_spin", None), storage.get("interval_seconds"))
         self._set_spin_value(getattr(self, "tab3_cache_seconds_spin", None), storage.get("cache_seconds"))
+        self._set_spin_value(
+            getattr(self, "tab3_joint_fip_downsample_spin", None),
+            storage.get("joint_fip_downsample", 1),
+        )
         self._set_combo_value(getattr(self, "tab3_joint_format_combo", None), storage.get("format", "bin"))
         self._set_combo_value(getattr(self, "tab3_joint_h5_compress_combo", None), storage.get("h5_compression", "none"))
         self._set_checked(getattr(self, "tab3_edas_storage_toggle_btn", None), storage.get("edas_enabled"))
@@ -2390,7 +2451,9 @@ class MainWindow(QMainWindow):
             self.tab3_colormap_combo, self.tab3_v_range_edit,
             self.tab3_joint_storage_toggle_btn, self.tab3_storage_path_edit,
             self.tab3_storage_interval_spin, self.tab3_cache_seconds_spin,
+            self.tab3_joint_fip_downsample_spin,
             self.tab3_joint_format_combo, self.tab3_joint_h5_compress_combo,
+            self.fip_storage_format_combo, self.edas_storage_format_combo,
             self.tab3_edas_storage_toggle_btn, self.tab3_edas_storage_path_edit,
             self.tab3_edas_blocks_per_file_spin, self.tab3_edas_queue_packets_spin,
             self.setting_gui_font_spin, self.setting_plot_title_font_spin,
@@ -2423,6 +2486,7 @@ class MainWindow(QMainWindow):
             getattr(self, 'storage_downsample_spin', None),
             getattr(self, 'tab3_edas_blocks_per_file_spin', None),
             getattr(self, 'tab3_storage_interval_spin', None),
+            getattr(self, 'tab3_joint_fip_downsample_spin', None),
         ):
             if widget is not None and hasattr(widget, 'valueChanged'):
                 widget.valueChanged.connect(lambda *_args: self._update_storage_size_estimates())
@@ -2628,6 +2692,7 @@ class MainWindow(QMainWindow):
                 "path": self.tab3_storage_path_edit.text(),
                 "interval_seconds": self.tab3_storage_interval_spin.value(),
                 "cache_seconds": self.tab3_cache_seconds_spin.value(),
+                "joint_fip_downsample": self.tab3_joint_fip_downsample_spin.value(),
                 "format": self.tab3_joint_format_combo.currentData(),
                 "h5_compression": self.tab3_joint_h5_compress_combo.currentData(),
                 "h5_compression_level": 4,
@@ -2699,13 +2764,15 @@ class MainWindow(QMainWindow):
         joint_rate = None
         try:
             joint_interval = float(self.tab3_storage_interval_spin.value())
+            joint_downsample = max(1, int(self.tab3_joint_fip_downsample_spin.value()))
             fip_rate = (sample_rate / downsample * sensor_count * 8) if fip_bytes else 0.0
+            joint_fip_rate = (sample_rate / joint_downsample * sensor_count * 8) if fip_bytes else 0.0
             if channel_count and samples_per_channel:
                 packet_duration = max(float(getattr(self, "_edas_packet_duration_seconds", 1.0) or 1.0), 1e-9)
                 edas_rate = channel_count * samples_per_channel * 8 / packet_duration
             else:
                 edas_rate = 0.0
-            joint_rate = fip_rate + edas_rate
+            joint_rate = joint_fip_rate + edas_rate
             joint_bytes = joint_rate * joint_interval
         except Exception:
             joint_bytes = None
@@ -2869,23 +2936,28 @@ class MainWindow(QMainWindow):
         fip_fresh = fip_payload is not None and (now - fip_payload["_t"]) < self._view_payload_ttl_seconds
         das_fresh = das_payload is not None and (now - das_payload["_t"]) < self._view_payload_ttl_seconds
 
-        # 双路同时接收时，先等待 FIP/eDAS 对齐（comm_count 偏差在容差内）再一起更新；
-        # 若某一路已停流，则继续用新鲜的一路刷新以保持显示不冻结。
-        if self._view_fip_online and self._view_das_online:
-            if fip_payload is None or das_payload is None:
+        # 双路通信都处于 active 时，先等待 FIP/eDAS 对齐再一起更新；
+        # 只运行单路或某一路已停止后，允许新鲜的单路 payload 继续刷新，避免画面冻结。
+        dual_monitoring_active = bool(
+            getattr(self, "monitoring_active", False)
+            and getattr(self, "_edas_monitoring_active", False)
+        )
+        dual_payload_fresh = bool(self._view_fip_online and self._view_das_online and fip_fresh and das_fresh)
+        dual_view_required = dual_monitoring_active or dual_payload_fresh
+        if dual_view_required:
+            if not (fip_fresh and das_fresh):
+                self._schedule_view_render_retry()
                 return
-            if not fip_fresh and not das_fresh:
+            try:
+                drift = abs(int(fip_payload["comm_count"]) - int(das_payload["comm_count"]))
+            except (TypeError, ValueError):
+                drift = 0
+            if drift > self._view_alignment_drift_tolerance:
+                self._tab3_logger.debug(
+                    "TAB3_NODE ui.render wait_alignment drift=%d", drift
+                )
+                self._schedule_view_render_retry()
                 return
-            if fip_fresh and das_fresh:
-                try:
-                    drift = abs(int(fip_payload["comm_count"]) - int(das_payload["comm_count"]))
-                except (TypeError, ValueError):
-                    drift = 0
-                if drift > self._view_alignment_drift_tolerance:
-                    self._tab3_logger.debug(
-                        "TAB3_NODE ui.render wait_alignment drift=%d", drift
-                    )
-                    return
 
         if fip_fresh and das_fresh:
             min_interval = max(
@@ -3027,6 +3099,12 @@ class MainWindow(QMainWindow):
                 elapsed_ms,
                 rendered_points,
             )
+
+    def _schedule_view_render_retry(self, delay_ms: int = 100) -> None:
+        if getattr(self, "_view_plot_render_pending", False):
+            return
+        self._view_plot_render_pending = True
+        QTimer.singleShot(max(20, int(delay_ms)), self._run_view_plot_render)
 
     def _render_das_view(self, das_payload: Optional[Dict[str, Any]]) -> None:
         """Render the eDAS time-domain curves and the space-time image."""
@@ -3649,8 +3727,6 @@ class MainWindow(QMainWindow):
                 curve_item.setData([], [])
                 setattr(curve_item, "_tab3_has_data", False)
             self._set_curve_legend_name(curve_item, None)
-            self._cache_view_curve_data(curve_item, curve_mode, [], [], sample_rate=cache_sample_rate)
-            self._request_view_psd_update()
             return
         plot_times, plot_values = self._downsample_tab3_curve(times, values)
         cache_values_arr = np.asarray(plot_values if cache_values is None else cache_values)
@@ -3975,6 +4051,55 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'data_edas_failure_label'):
             self.data_edas_failure_label.setText(str(self._edas_comm_failure_count))
         self._refresh_comm_lights()
+
+    def _on_clear_statistics_clicked(self) -> None:
+        """Clear FIP/eDAS communication and storage statistics from the Data tab.
+
+        Local UI counters/labels are zeroed immediately; the controller then
+        resets the source-side cumulative counters so the periodic refresh does
+        not immediately repopulate the cleared values.
+        """
+        self._fip_comm_failure_count = 0
+        self._edas_comm_failure_count = 0
+        self._fip_storage_success_count = 0
+        self._fip_storage_failure_count = 0
+        self._edas_storage_success_count = 0
+        self._edas_storage_failure_count = 0
+        self._last_joint_storage_status_seen = None
+        self._last_edas_storage_status_seen = None
+        self._reset_sync_tracking()
+        reset_labels = {
+            'packet_count_label': "0",
+            'tab3_packet_count_label': "0",
+            'loss_rate_label': "0.00%",
+            'data_fip_success_label': "0",
+            'data_fip_failure_label': "0",
+            'data_fip_loss_rate_label': "0.00%",
+            'data_fip_rate_label': "-",
+            'data_fip_last_comm_label': "-",
+            'data_edas_success_label': "0",
+            'data_edas_failure_label': "0",
+            'data_edas_loss_rate_label': "0.00%",
+            'data_edas_rate_label': "-",
+            'tab3_missing_packet_label': "0",
+            'tab3_last_comm_label': "-",
+            'tab3_last_storage_label': "-",
+            'tab3_edas_last_storage_label': "-",
+            'tab3_fip_missing_label': "0",
+            'tab3_das_missing_label': "0",
+            'tab3_alignment_status_label': "waiting",
+            'tab3_missing_ranges_label': "-",
+        }
+        for attr, text in reset_labels.items():
+            label = getattr(self, attr, None)
+            if label is not None:
+                label.setText(text)
+        self._update_data_storage_buttons()
+        self._refresh_comm_lights()
+        # Reset the source-side cumulative counters (TCP servers, alignment) too.
+        self.data_clear_statistics_requested.emit()
+        if hasattr(self, 'status_bar'):
+            self.status_bar.showMessage("通信/存储统计已清空", 3000)
 
     def _reset_sync_tracking(self) -> None:
         self._sync_fip_receive_times.clear()
@@ -4525,6 +4650,9 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'clear_alarms_btn'):
                 self.clear_alarms_btn.clicked.connect(self.tab2_clear_alarms_requested.emit)
 
+            if hasattr(self, 'clear_stats_btn'):
+                self.clear_stats_btn.clicked.connect(self._on_clear_statistics_clicked)
+
             if hasattr(self, 'tab3_start_stop_btn'):
                 self.tab3_start_stop_btn.toggled.connect(self._update_tab3_monitor_button_state)
                 self.tab3_start_stop_btn.clicked.connect(self._toggle_tab3_monitoring)
@@ -4568,8 +4696,11 @@ class MainWindow(QMainWindow):
                 getattr(self, 'tab3_storage_path_edit', None),
                 getattr(self, 'tab3_storage_interval_spin', None),
                 getattr(self, 'tab3_cache_seconds_spin', None),
+                getattr(self, 'tab3_joint_fip_downsample_spin', None),
                 getattr(self, 'tab3_joint_format_combo', None),
                 getattr(self, 'tab3_joint_h5_compress_combo', None),
+                getattr(self, 'fip_storage_format_combo', None),
+                getattr(self, 'edas_storage_format_combo', None),
                 getattr(self, 'tab3_edas_storage_path_edit', None),
                 getattr(self, 'tab3_edas_blocks_per_file_spin', None),
                 getattr(self, 'tab3_edas_queue_packets_spin', None),

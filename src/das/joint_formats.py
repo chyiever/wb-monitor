@@ -49,11 +49,24 @@ def _empty_fip_array() -> np.ndarray:
     return np.array([], dtype=np.float64)
 
 
-def _frame_fip_arrays(frame: Any) -> List[np.ndarray]:
-    """Return per-sensor raw (unwrapped) FIP arrays in sensor order."""
+def _apply_fip_downsample(arr: np.ndarray, fip_downsample: int) -> np.ndarray:
+    """Decimate one FIP sensor array by ``arr[::factor]`` for joint storage."""
+    factor = max(1, int(fip_downsample or 1))
+    if factor <= 1:
+        return arr
+    return arr[::factor]
+
+
+def _frame_fip_arrays(frame: Any, fip_downsample: int = 1) -> List[np.ndarray]:
+    """Return per-sensor raw (unwrapped) FIP arrays in sensor order.
+
+    ``fip_downsample`` lets joint storage reduce FIP volume independently of the
+    FIP-only storage path; metadata sample rates are divided by the same factor.
+    """
     fip = getattr(frame, "fip_packet", None)
     if fip is None:
         return []
+    factor = max(1, int(fip_downsample or 1))
     sensor_count = int(getattr(fip, "sensor_count", 1))
     mapping = getattr(fip, "unwrapped_by_sensor", None)
     if isinstance(mapping, dict) and mapping:
@@ -63,9 +76,9 @@ def _frame_fip_arrays(frame: Any) -> List[np.ndarray]:
             arr = mapping.get(index)
             if arr is None:
                 arr = fip.unwrapped_data if index == selected else _empty_fip_array()
-            out.append(np.asarray(arr, dtype=np.float64))
+            out.append(_apply_fip_downsample(np.asarray(arr, dtype=np.float64), factor))
         return out
-    return [np.asarray(fip.unwrapped_data, dtype=np.float64)]
+    return [_apply_fip_downsample(np.asarray(fip.unwrapped_data, dtype=np.float64), factor)]
 
 
 def _frame_das_matrix(frame: Any) -> Optional[np.ndarray]:
@@ -79,8 +92,13 @@ def build_chunk_metadata(
     frames: List[Any],
     created_at: str,
     wall_clock_start: Optional[str] = None,
+    fip_downsample: int = 1,
 ) -> Dict[str, Any]:
-    """Build the JSON-serializable file-level metadata shared by all formats."""
+    """Build the JSON-serializable file-level metadata shared by all formats.
+
+    ``fip_downsample`` reports the effective FIP sample rate after the joint FIP
+    decimation factor is applied.
+    """
     if not frames:
         return {}
     first = frames[0]
@@ -93,9 +111,12 @@ def build_chunk_metadata(
         (getattr(frame, "das_packet", None) for frame in frames if getattr(frame, "das_packet", None) is not None),
         None,
     )
+    fip_factor = max(1, int(fip_downsample or 1))
     packet_duration = float(getattr(first, "packet_duration_seconds", 1.0))
     fip_channel_count = int(getattr(fip_packet, "sensor_count", 0)) if fip_packet is not None else 0
-    fip_sample_rate_hz = float(getattr(fip_packet, "sample_rate_hz", 0.0)) if fip_packet is not None else 0.0
+    fip_sample_rate_hz = (
+        float(getattr(fip_packet, "sample_rate_hz", 0.0)) / fip_factor if fip_packet is not None else 0.0
+    )
     das_channel_count = int(getattr(das_packet, "channel_count", 0)) if das_packet is not None else 0
     das_sample_rate_hz = float(getattr(das_packet, "sample_rate_hz", 0.0)) if das_packet is not None else 0.0
     return {
@@ -135,6 +156,7 @@ def save_bin(
     output_dir: str,
     created_at: str,
     wall_clock_start: Optional[str] = None,
+    fip_downsample: int = 1,
 ) -> str:
     """Stream raw FIP + eDAS frames into one self-describing binary file.
 
@@ -146,8 +168,11 @@ def save_bin(
         das_channel_count(i32) das_sample_rate(f64) n_fip_arrays(i32)
         then for each fip array: pts(i32) + raw f64 bytes
         then das: rows(i32) cols(i32) + raw f64 bytes
+
+    ``fip_downsample`` decimates each FIP sensor array (arr[::factor]) and the
+    reported FIP sample rate is divided by the same factor.
     """
-    meta = build_chunk_metadata(frames, created_at, wall_clock_start)
+    meta = build_chunk_metadata(frames, created_at, wall_clock_start, fip_downsample)
     meta["format_version"] = FORMAT_VERSION_BIN
     file_path = _chunk_timestamp_path(output_dir, ".bin")
     header_json = json.dumps(meta, ensure_ascii=False).encode("utf-8")
@@ -156,17 +181,18 @@ def save_bin(
         handle.write(struct.pack("<I", len(header_json)))
         handle.write(header_json)
         for frame in frames:
-            _write_bin_frame(handle, frame)
+            _write_bin_frame(handle, frame, fip_downsample)
     return str(file_path)
 
 
-def _write_bin_frame(handle: Any, frame: Any) -> None:
+def _write_bin_frame(handle: Any, frame: Any, fip_downsample: int = 1) -> None:
     fip = getattr(frame, "fip_packet", None)
     das = getattr(frame, "das_packet", None)
-    fip_arrays = _frame_fip_arrays(frame) if fip is not None else []
+    fip_arrays = _frame_fip_arrays(frame, fip_downsample) if fip is not None else []
     das_matrix = _frame_das_matrix(frame)
+    fip_factor = max(1, int(fip_downsample or 1))
     fip_sensor_count = int(getattr(fip, "sensor_count", 0)) if fip is not None else 0
-    fip_rate = float(getattr(fip, "sample_rate_hz", 0.0)) if fip is not None else 0.0
+    fip_rate = float(getattr(fip, "sample_rate_hz", 0.0)) / fip_factor if fip is not None else 0.0
     das_channel_count = int(getattr(das, "channel_count", 0)) if das is not None else 0
     das_rate = float(getattr(das, "sample_rate_hz", 0.0)) if das is not None else 0.0
     handle.write(
@@ -202,9 +228,11 @@ def save_npz(
     output_dir: str,
     created_at: str,
     wall_clock_start: Optional[str] = None,
+    fip_downsample: int = 1,
 ) -> str:
     """Write one np.savez_compressed chunk (legacy joint format + metadata)."""
-    meta = build_chunk_metadata(frames, created_at, wall_clock_start)
+    meta = build_chunk_metadata(frames, created_at, wall_clock_start, fip_downsample)
+    fip_factor = max(1, int(fip_downsample or 1))
     file_path = _chunk_timestamp_path(output_dir, ".npz")
     payload: Dict[str, Any] = {
         "comm_counts": np.array([f.comm_count for f in frames], dtype=np.int32),
@@ -223,11 +251,25 @@ def save_npz(
             dtype=np.int32,
         ),
         "fip1_raw_data": np.array(
-            [f.fip_packet.unwrapped_by_sensor.get(1, _empty_fip_array()) if f.fip_packet is not None else _empty_fip_array() for f in frames],
+            [
+                _apply_fip_downsample(
+                    f.fip_packet.unwrapped_by_sensor.get(1, _empty_fip_array()), fip_factor
+                )
+                if f.fip_packet is not None
+                else _empty_fip_array()
+                for f in frames
+            ],
             dtype=object,
         ),
         "fip2_raw_data": np.array(
-            [f.fip_packet.unwrapped_by_sensor.get(2, _empty_fip_array()) if f.fip_packet is not None else _empty_fip_array() for f in frames],
+            [
+                _apply_fip_downsample(
+                    f.fip_packet.unwrapped_by_sensor.get(2, _empty_fip_array()), fip_factor
+                )
+                if f.fip_packet is not None
+                else _empty_fip_array()
+                for f in frames
+            ],
             dtype=object,
         ),
         "das_raw_matrix": np.array(
@@ -235,7 +277,10 @@ def save_npz(
             dtype=object,
         ),
         "fip_sample_rate_hz": np.array(
-            [f.fip_packet.sample_rate_hz if f.fip_packet is not None else np.nan for f in frames],
+            [
+                (f.fip_packet.sample_rate_hz / fip_factor) if f.fip_packet is not None else np.nan
+                for f in frames
+            ],
             dtype=np.float64,
         ),
         "das_sample_rate_hz": np.array(
@@ -263,11 +308,13 @@ def save_h5(
     wall_clock_start: Optional[str] = None,
     compression: str = "none",
     compression_level: int = 4,
+    fip_downsample: int = 1,
 ) -> str:
     """Write one h5 chunk with optional gzip compression and chunking."""
     import h5py
 
-    meta = build_chunk_metadata(frames, created_at, wall_clock_start)
+    fip_factor = max(1, int(fip_downsample or 1))
+    meta = build_chunk_metadata(frames, created_at, wall_clock_start, fip_downsample)
     meta["format_version"] = FORMAT_VERSION_H5
     file_path = _chunk_timestamp_path(output_dir, ".h5")
 
@@ -280,7 +327,7 @@ def save_h5(
     max_fip_pts = 0
     max_das_pts = 0
     for frame in frames:
-        for arr in _frame_fip_arrays(frame):
+        for arr in _frame_fip_arrays(frame, fip_factor):
             max_fip_pts = max(max_fip_pts, int(arr.size))
         das_matrix = _frame_das_matrix(frame)
         if das_matrix is not None and das_matrix.size:
@@ -290,7 +337,7 @@ def save_h5(
     for sensor_index in range(1, fip_sensor_count + 1):
         padded = np.zeros((len(frames), max_fip_pts), dtype="<f8")
         for i, frame in enumerate(frames):
-            arrays = _frame_fip_arrays(frame)
+            arrays = _frame_fip_arrays(frame, fip_factor)
             if sensor_index - 1 < len(arrays) and arrays[sensor_index - 1].size:
                 pts = min(int(arrays[sensor_index - 1].size), max_fip_pts)
                 padded[i, :pts] = arrays[sensor_index - 1][:pts]
@@ -322,6 +369,7 @@ def save_h5(
         h5_file.attrs["das_channel_count"] = das_channel_count
         h5_file.attrs["fip_points_per_sensor"] = max_fip_pts
         h5_file.attrs["das_samples_per_channel"] = max_das_pts
+        h5_file.attrs["fip_downsample"] = fip_factor
         h5_file.attrs["metadata_json"] = json.dumps(meta, ensure_ascii=False)
         h5_file.create_dataset("comm_counts", data=np.array([f.comm_count for f in frames], dtype=np.int64))
         h5_file.create_dataset(
@@ -345,13 +393,19 @@ def save_joint(
     wall_clock_start: Optional[str] = None,
     h5_compression: str = "none",
     h5_compression_level: int = 4,
+    fip_downsample: int = 1,
 ) -> str:
-    """Dispatch a joint chunk to the configured backend. Returns the file path."""
+    """Dispatch a joint chunk to the configured backend. Returns the file path.
+
+    ``fip_downsample`` decimates joint FIP arrays (independent of FIP-only
+    storage) and adjusts the embedded FIP sample-rate metadata accordingly.
+    """
     fmt = str(fmt or "npz").lower()
     if fmt not in VALID_FORMATS:
         fmt = "npz"
+    factor = max(1, int(fip_downsample or 1))
     if fmt == "bin":
-        return save_bin(frames, output_dir, created_at, wall_clock_start)
+        return save_bin(frames, output_dir, created_at, wall_clock_start, factor)
     if fmt == "h5":
         try:
             return save_h5(
@@ -361,6 +415,7 @@ def save_joint(
                 wall_clock_start,
                 compression=h5_compression,
                 compression_level=h5_compression_level,
+                fip_downsample=factor,
             )
         except ModuleNotFoundError as exc:
             if exc.name != "h5py":
@@ -368,5 +423,5 @@ def save_joint(
             logger.warning(
                 "h5py is not installed; falling back joint storage from h5 to bin for this chunk"
             )
-            return save_bin(frames, output_dir, created_at, wall_clock_start)
-    return save_npz(frames, output_dir, created_at, wall_clock_start)
+            return save_bin(frames, output_dir, created_at, wall_clock_start, factor)
+    return save_npz(frames, output_dir, created_at, wall_clock_start, factor)

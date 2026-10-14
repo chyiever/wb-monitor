@@ -50,7 +50,7 @@
     }
   },
   "visualization": {
-    "time_window": 2,
+    "time_window": 1,
     "grid_enabled": true,
     "refresh_rate": 50
   }

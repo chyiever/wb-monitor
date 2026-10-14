@@ -1320,7 +1320,6 @@ class DataStorageThread(QThread):
     def end_run_cycle(self):
         self._flush_buffered_data()
         self.running = False
-        self.running = False
         self.run_started_at = None
 
     def _clear_buffer(self):
@@ -1580,6 +1579,7 @@ class DataStorageThread(QThread):
                 self.logger.error(f'Storage error: {e}')
 
         self._flush_buffered_data()
+        self.running = False
 
     def _process_ctrl_commands(self):
         """处理控制命令队列中的所有待处理命令（在存储线程中调用，串行安全）。

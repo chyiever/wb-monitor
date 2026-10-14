@@ -48,6 +48,7 @@ class EDASManager(QObject):
         self._joint_storage_enabled = False
         self._joint_storage_path = "D:/PCCP/FIPeDASDATA"
         self._joint_interval_seconds = 2.0
+        self._joint_fip_downsample = 1
         self._edas_storage_enabled = False
         self._edas_storage_path = "D:/PCCP/eDASDATA"
         self._edas_blocks_per_file = 50
@@ -156,6 +157,10 @@ class EDASManager(QObject):
         self.main_window.reset_tab3_views()
         self.logger.debug("TAB3_NODE manager.reset")
 
+    def reset_statistics(self) -> None:
+        """Clear UI-facing eDAS receive counters without disturbing gap tracking."""
+        self.server.reset_statistics()
+
     def sync_from_ui(self) -> None:
         """Synchronize current UI settings into server, plot worker, and storage workers."""
         settings = self.main_window.get_tab3_settings()
@@ -173,6 +178,10 @@ class EDASManager(QObject):
         self._joint_storage_path = storage_settings.get("path", self._joint_storage_path)
         self._joint_interval_seconds = max(
             1.0, float(storage_settings.get("interval_seconds", self._joint_interval_seconds))
+        )
+        # 联合存储的 FIP 降采样：只影响 joint 文件的 FIP 数据量，与 FIP独立存储无关。
+        self._joint_fip_downsample = max(
+            1, int(storage_settings.get("joint_fip_downsample", self._joint_fip_downsample))
         )
         # 联合存储格式：bin / npz / h5（Tab2 存储组切换）
         self.storage_worker.set_format(storage_settings.get("format", "bin"))
@@ -570,6 +579,7 @@ class EDASManager(QObject):
             output_dir=storage_settings.get("path", self._joint_storage_path),
             end_comm=end_comm,
             wall_clock_start=self._pending_wall_start,
+            fip_downsample=self._joint_fip_downsample,
         )
         cache_budget_bytes = int(getattr(self.coordinator, "max_cache_bytes", 0) or 0)
         byte_limited_chunk = (

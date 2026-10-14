@@ -39,11 +39,12 @@ class DASStorageRequest:
         end_comm: 本批最后一帧的 comm_count，用于更新 _last_snapshot_end_comm。
     """
 
-    def __init__(self, frames: List[Any], output_dir: str, end_comm: int, wall_clock_start: Optional[str] = None) -> None:
+    def __init__(self, frames: List[Any], output_dir: str, end_comm: int, wall_clock_start: Optional[str] = None, fip_downsample: int = 1) -> None:
         self.frames = frames
         self.output_dir = output_dir
         self.end_comm = end_comm
         self.wall_clock_start = wall_clock_start
+        self.fip_downsample = max(1, int(fip_downsample or 1))
         self.estimated_bytes = sum(_estimate_frame_bytes(frame) for frame in frames)
 
 
@@ -252,6 +253,7 @@ class DASStorageWorker(QThread):
                 wall_clock_start=request.wall_clock_start,
                 h5_compression=self._h5_compression,
                 h5_compression_level=self._h5_compression_level,
+                fip_downsample=request.fip_downsample,
             )
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self.stats["requests_saved"] += 1

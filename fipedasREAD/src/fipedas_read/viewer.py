@@ -42,6 +42,7 @@ from .preprocess import (
     PreprocessSpec,
     parse_band_text,
 )
+from .settings import load_settings, save_settings
 from .worker import (
     CurveRequest,
     RedrawRequest,
@@ -157,18 +158,21 @@ class ReplayWindow(QMainWindow):
         QStatusBar::item { border: none; }
     """
 
-    def __init__(self, initial_path: Path) -> None:
+    def __init__(self, initial_path: Optional[Path] = None) -> None:
         super().__init__()
         self.setWindowTitle(f"{self.APP_NAME} {self.APP_VERSION}")
         self.resize(1600, 960)
         self.setStyleSheet(self.APP_STYLE)
-        self._data_dir = initial_path if initial_path.is_dir() else initial_path.parent
-        self._initial_file = initial_path if initial_path.is_file() else None
+
+        saved_settings = load_settings()
+        base_path = _resolve_initial_path(initial_path, saved_settings.get("data_dir"))
+        self._data_dir = base_path if base_path.is_dir() else base_path.parent
+        self._initial_file = base_path if base_path.is_file() else None
         self._syncing_x_range = False
         self._auto_range_pending = True
         self._worker_seq = 0
         self._pending_request: Optional[RedrawRequest] = None
-        self._current_path: Optional[Path] = None
+        self._current_paths: list[Path] = []
 
         self._redraw_timer = QTimer(self)
         self._redraw_timer.setSingleShot(True)
@@ -181,6 +185,7 @@ class ReplayWindow(QMainWindow):
         font.setPointSize(9)
         self.setFont(font)
         self._build_ui()
+        self._restore_settings(saved_settings)
         self._connect_signals()
         self._start_worker()
         self._scan_files(select_file=self._initial_file)
@@ -204,6 +209,7 @@ class ReplayWindow(QMainWindow):
             QApplication.setOverrideCursor(Qt.WaitCursor)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._save_settings()
         self._redraw_timer.stop()
         self._worker_thread.quit()
         self._worker_thread.wait(3000)
@@ -303,7 +309,8 @@ class ReplayWindow(QMainWindow):
         group = QGroupBox("文件名列表")
         layout = QVBoxLayout(group)
         self.file_list = QListWidget()
-        self.file_list.setSelectionMode(QListWidget.SingleSelection)
+        self.file_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.file_list.setToolTip("按住 Ctrl / Shift 可多选，多个文件将按时间拼接后绘图")
         layout.addWidget(self.file_list)
         self.file_info_label = QLabel("未加载")
         self.file_info_label.setWordWrap(True)
@@ -562,7 +569,7 @@ class ReplayWindow(QMainWindow):
         self.refresh_btn.clicked.connect(lambda: self._scan_files())
         self.reload_btn.clicked.connect(self._reload_current)
         self.path_edit.returnPressed.connect(lambda: self._scan_files())
-        self.file_list.currentItemChanged.connect(self._on_file_selected)
+        self.file_list.itemSelectionChanged.connect(self._apply_selection)
         self.reset_view_btn.clicked.connect(self._reset_view)
         for widget in (
             self.curve1_combo,
@@ -597,12 +604,116 @@ class ReplayWindow(QMainWindow):
         self.channel_range_edit.textChanged.connect(self._schedule_redraw)
         self.auto_levels_check.toggled.connect(self._update_manual_levels_state)
 
+    def _restore_settings(self, data: dict) -> None:
+        if not isinstance(data, dict):
+            return
+
+        def as_int(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
+        def as_float(value):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+
+        def set_combo(combo, value) -> None:
+            if isinstance(value, str) and combo.findText(value) >= 0:
+                combo.setCurrentText(value)
+
+        def set_check(check, value) -> None:
+            if isinstance(value, bool):
+                check.setChecked(value)
+
+        def set_spin(spin, value, coercer) -> None:
+            coerced = coercer(value)
+            if coerced is not None:
+                spin.setValue(coerced)
+
+        set_combo(self.curve1_combo, data.get("curve1"))
+        set_combo(self.curve2_combo, data.get("curve2"))
+        set_spin(self.das_channel_spin, data.get("das_channel"), as_int)
+
+        fip = data.get("fip") if isinstance(data.get("fip"), dict) else {}
+        set_check(self.fip_remove_mean_check, fip.get("remove_mean"))
+        set_check(self.fip_normalize_check, fip.get("normalize"))
+        set_check(self.fip_filter_check, fip.get("filter"))
+        if isinstance(fip.get("band"), str):
+            self.fip_filter_band_edit.setText(fip["band"])
+        set_spin(self.fip_filter_order_spin, fip.get("order"), as_int)
+        set_spin(self.fip_downsample_spin, fip.get("downsample"), as_int)
+
+        edas = data.get("edas") if isinstance(data.get("edas"), dict) else {}
+        set_check(self.edas_remove_mean_check, edas.get("remove_mean"))
+        set_check(self.edas_normalize_check, edas.get("normalize"))
+        set_check(self.edas_filter_check, edas.get("filter"))
+        if isinstance(edas.get("band"), str):
+            self.edas_filter_band_edit.setText(edas["band"])
+        set_spin(self.edas_filter_order_spin, edas.get("order"), as_int)
+        set_spin(self.edas_downsample_spin, edas.get("downsample"), as_int)
+
+        set_spin(self.max_points_spin, data.get("max_points"), as_int)
+        if isinstance(data.get("channel_range"), str):
+            self.channel_range_edit.setText(data["channel_range"])
+        set_spin(self.space_time_downsample_spin, data.get("space_time_downsample"), as_int)
+        set_spin(self.space_downsample_spin, data.get("space_downsample"), as_int)
+        set_combo(self.colormap_combo, data.get("colormap"))
+        set_check(self.space_baseline_check, data.get("space_baseline"))
+        set_check(self.auto_levels_check, data.get("auto_levels"))
+        set_spin(self.space_vmin_spin, data.get("vmin"), as_float)
+        set_spin(self.space_vmax_spin, data.get("vmax"), as_float)
+        set_check(self.space_preprocess_check, data.get("space_preprocess"))
+
+        self._update_manual_levels_state()
+        self._configure_image_colormap()
+
+    def _collect_settings(self) -> dict:
+        return {
+            "version": 1,
+            "data_dir": self.path_edit.text().strip(),
+            "curve1": self.curve1_combo.currentText(),
+            "curve2": self.curve2_combo.currentText(),
+            "das_channel": self.das_channel_spin.value(),
+            "fip": {
+                "remove_mean": self.fip_remove_mean_check.isChecked(),
+                "normalize": self.fip_normalize_check.isChecked(),
+                "filter": self.fip_filter_check.isChecked(),
+                "band": self.fip_filter_band_edit.text(),
+                "order": self.fip_filter_order_spin.value(),
+                "downsample": self.fip_downsample_spin.value(),
+            },
+            "edas": {
+                "remove_mean": self.edas_remove_mean_check.isChecked(),
+                "normalize": self.edas_normalize_check.isChecked(),
+                "filter": self.edas_filter_check.isChecked(),
+                "band": self.edas_filter_band_edit.text(),
+                "order": self.edas_filter_order_spin.value(),
+                "downsample": self.edas_downsample_spin.value(),
+            },
+            "max_points": self.max_points_spin.value(),
+            "channel_range": self.channel_range_edit.text(),
+            "space_time_downsample": self.space_time_downsample_spin.value(),
+            "space_downsample": self.space_downsample_spin.value(),
+            "colormap": self.colormap_combo.currentText(),
+            "space_baseline": self.space_baseline_check.isChecked(),
+            "auto_levels": self.auto_levels_check.isChecked(),
+            "vmin": self.space_vmin_spin.value(),
+            "vmax": self.space_vmax_spin.value(),
+            "space_preprocess": self.space_preprocess_check.isChecked(),
+        }
+
+    def _save_settings(self) -> None:
+        save_settings(self._collect_settings())
+
     def _reload_current(self) -> None:
-        if self._current_path is None:
+        if not self._current_paths:
             return
         self._worker.clear_cache()
         self._auto_range_pending = True
-        self.statusBar().showMessage(f"正在重新加载 {self._current_path.name} …")
+        self.statusBar().showMessage(f"正在重新加载 {_paths_label(self._current_paths)} …")
         self._schedule_redraw()
 
     def _browse(self) -> None:
@@ -633,28 +744,33 @@ class ReplayWindow(QMainWindow):
                 self.file_list.setCurrentItem(item)
         if self.file_list.count() and self.file_list.currentRow() < 0:
             self.file_list.setCurrentRow(self.file_list.count() - 1)
-        current = self.file_list.currentItem()
         self.file_list.blockSignals(False)
         self.statusBar().showMessage(f"发现 {self.file_list.count()} 个数据文件")
-        if current is not None:
-            self._select_path(Path(current.data(Qt.UserRole)))
-        else:
-            self._current_path = None
-            self.file_info_label.setText("未找到数据文件")
+        self._apply_selection()
+
+    def _apply_selection(self) -> None:
+        paths = self._selected_paths()
+        if not paths:
+            self._current_paths = []
+            if self.file_list.count() == 0:
+                self.file_info_label.setText("未找到数据文件")
+            else:
+                self.file_info_label.setText("未选择文件")
             self._clear_plots()
-
-    def _on_file_selected(self, current: Optional[QListWidgetItem], _previous: Optional[QListWidgetItem]) -> None:
-        if current is None:
             return
-        self._select_path(Path(current.data(Qt.UserRole)))
-
-    def _select_path(self, path: Path) -> None:
-        self._current_path = path
+        self._current_paths = paths
         self._auto_range_pending = True
         self._schedule_redraw()
 
+    def _selected_paths(self) -> list[Path]:
+        items = self.file_list.selectedItems()
+        if not items:
+            return []
+        items = sorted(items, key=self.file_list.row)
+        return [Path(item.data(Qt.UserRole)) for item in items]
+
     def _schedule_redraw(self) -> None:
-        if self._current_path is None:
+        if not self._current_paths:
             return
         request = self._build_request()
         if request is None:
@@ -670,14 +786,14 @@ class ReplayWindow(QMainWindow):
             self._worker.submit(request)
 
     def _build_request(self) -> Optional[RedrawRequest]:
-        if self._current_path is None:
+        if not self._current_paths:
             return None
         ch0, ch1 = _parse_range(self.channel_range_edit.text(), 0, 199)
         curve1_source = self.curve1_combo.currentText()
         curve2_source = self.curve2_combo.currentText()
         return RedrawRequest(
             seq=self._worker_seq + 1,
-            path=str(self._current_path),
+            paths=tuple(str(path) for path in self._current_paths),
             curve1=CurveRequest(
                 source=curve1_source,
                 das_channel=self.das_channel_spin.value(),
@@ -745,7 +861,7 @@ class ReplayWindow(QMainWindow):
     def _apply_result(self, result: RedrawResult) -> None:
         self._configure_image_colormap()
         self.file_info_label.setText(result.file_info)
-        self.statusBar().showMessage(f"已加载 {Path(result.path).name}")
+        self.statusBar().showMessage(f"已加载 {_paths_label(result.paths)}")
         self.curve1.setData(result.curve1.times, result.curve1.values)
         self.curve2.setData(result.curve2.times, result.curve2.values)
         title1 = result.curve1.title if result.has_fip or result.curve1.values.size else "无 FIP 数据"
@@ -826,6 +942,30 @@ class ReplayWindow(QMainWindow):
                 plot.setXRange(x0, x1, padding=padding)
         finally:
             self._syncing_x_range = False
+
+
+def _paths_label(paths) -> str:
+    names = [Path(path).name for path in paths]
+    if len(names) <= 2:
+        return "、".join(names)
+    return f"{names[0]} 等 {len(names)} 个文件"
+
+
+def _default_data_dir() -> Path:
+    preferred = Path("D:/PCCP/FIPeDASDATA")
+    if preferred.exists():
+        return preferred
+    return Path.cwd()
+
+
+def _resolve_initial_path(initial_path: Optional[Path], saved_dir: Optional[str]) -> Path:
+    if initial_path is not None:
+        return Path(initial_path)
+    if isinstance(saved_dir, str) and saved_dir.strip():
+        candidate = Path(saved_dir)
+        if candidate.exists():
+            return candidate
+    return _default_data_dir()
 
 
 def _parse_range(text: str, default_start: int, default_end: int) -> tuple[int, int]:

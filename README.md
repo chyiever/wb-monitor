@@ -2,6 +2,7 @@
 
 ## 最新维护记录
 
+- [2026-10-14 Data 存储参数三列布局、联合 FIP 降采样、独立存储格式下拉、清空统计](docs/FIP／eDAS%20通信协议与数据存储机制.md)
 - [2026-09-23 整体数据流稳定性评估与优化记录](docs/2026-09-23-整体数据流稳定性评估与优化记录.md)
 - [2026-09-22 现场测试日志与联合存储修复记录](docs/2026-09-22-现场测试日志与联合存储修复记录.md)
 - [2026-09-17 Tab1/Tab2 通信、绘图、时间对齐与存储风险排查优化](docs/2026-09-17-Tab1-Tab2通信绘图时间对齐与存储风险排查优化.md)
@@ -23,6 +24,10 @@
   - 统一显示 `接收包`、`缺包/失败`、`丢包率`、`最近Comm`
   - 显示 FIP/eDAS 同序号包接收时间差，方向为 `FIP - eDAS`
   - 提供 FIP、eDAS 和 FIP+eDAS 联合存储控制
+  - 存储参数按链路分为三列：`FIP独立存储` / `eDAS独立存储` / `联合存储`
+  - `FIP独立存储` 有独立 `FIP降采样`；`联合存储` 有独立 `FIP降采样`（只抽取联合文件的 FIP），两者互不影响
+  - FIP/eDAS 独立存储各有格式下拉框（当前分别仅 `npz`、`bin + json`，为后续扩展预留）
+  - 提供 `清空统计` 按钮，一键清零通信/存储统计计数
   - 联合存储只写连续完整的 FIP/eDAS 配对帧；分文件后 `comm_count` 应连续推进
 - `Tab3 / 检测`
   - 保留原 Tab2 的短时特征提取、阈值检测、告警事件和触发存储能力
@@ -64,9 +69,15 @@ FIP/eDAS 同步时间戳取自 TCP 接收线程“完整包体接收完成”的
 - FIP/eDAS 按 `comm_count` 配对的同步时间差显示
 - 首包时间差固定保存，最新值和平均值增量更新
 - FIP/eDAS 对齐状态维护和联合原始数据定时存储
+- 联合存储支持独立的 FIP 降采样（只抽取联合文件的 FIP，与 FIP 独立存储降采样互不影响），文件内 FIP 采样率随之修正
+- Data 页 `清空统计` 按钮可一键清零 FIP/eDAS 通信与存储统计计数；仅重置计数基准，不影响正在收发的数据
 - joint `.bin/.npz/.h5` 存储游标只在写盘成功后推进；FIP 或 eDAS 尾帧未配对时会等待补齐，不再生成 FIP=2s、DAS=1s 的不对称 chunk
 - 实时显示链路和存储链路分离：显示队列在负载高时可跳帧以保持界面响应，存储链路采用无损背压以保证连续落盘
 - Tab1 时域波形和 PSD 按 FIP 单包时长动态刷新：1s/包时每包刷新，0.2s/包时约每 1s 刷新
+- View 默认时域窗口与 Space-Time 窗口统一为 1s，FIP/eDAS 刷新节奏统一为 1s
+- FIP 与 eDAS 同时通信时，View 会等待两路同序号附近的新鲜 payload 后统一刷新两幅时域图与 Space-Time，避免单路先刷导致另一侧空白
+- PSD 使用当前选中曲线缓存计算，隐藏曲线不再清空同槽位 PSD 输入；勾选 PSD 后随 1s 节流更新
+- 程序启动会在应用根目录自动创建 `logs/`，运行日志与自动测试报告分别写入 `logs/` 和 `logs/test_reports/`
 
 ### 检测页已完成
 
@@ -231,6 +242,7 @@ Tab3 debug 日志节点统一使用 `TAB3_NODE` 前缀，重点节点包括：
   - 统一通信统计：状态、接收包、缺包/失败、丢包率、最近 Comm
   - 时间同步检验：首包、最新同序号和平均 `FIP-eDAS` 时间差
   - FIP、eDAS 和联合存储控制
+  - 存储参数三列布局与 `清空统计` 按钮
 - `Tab3 / 检测`
   - 特征勾选
   - 检测独立预处理参数
@@ -310,6 +322,9 @@ VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve
 - View 默认 Curve1：`FIP1`
 - View 默认 Curve2：`DAS Channel`
 - View 默认 Curve2 eDAS 通道：`10`
+- View 默认时域窗口：`1.0 s`
+- View 默认 Space-Time 总窗口：`1.0 s`
+- View 默认 FIP/eDAS 刷新间隔：`1.0 s`
 - View 时域曲线点数上限：`8000`
 - View PSD 刷新节流：`1.0 s`
 - 检测页默认启用特征：`short_energy`
@@ -322,6 +337,9 @@ VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve
 - FIP/eDAS 默认联合原始存储时间窗：`2.0 s`
 - FIP/eDAS 默认联合存储格式：`bin`
 - FIP/eDAS 默认对齐缓存保留时长：`10.0 s`
+- FIP 独立存储默认格式：`npz`（唯一选项）
+- eDAS 独立存储默认格式：`bin + json`（唯一选项）
+- 联合存储默认 FIP 降采样：`1`（不降采样）
 
 ## 文档索引
 
@@ -342,6 +360,8 @@ VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve
 - `首包时间差（FIP-eDAS）` 使用 TCP 完整收包时间戳并固定首个匹配包
 - 联合存储默认使用裸流式 `bin`；`npz` 和 `h5` 适合短时验证或低数据率压缩归档，缺少 `h5py` 时会自动回退 `bin`
 - eDAS Space-Time 空 payload 不会清空已显示画面；滚动缓存按实际溢出列裁剪，避免周期性空白图
+- FIP/eDAS 双路在线时，View 采用配对门控刷新；任一路 payload 未到或超出对齐漂移阈值时会短暂等待，不再用单路数据覆盖整屏
+- PSD 缓存按当前可见曲线维护，FIP1/FIP2/DAS Channel 切换或隐藏另一曲线时不会误清 PSD 输入
 - Tab1 显示队列采用丢旧保新策略，存储队列采用无损背压策略；显示跳帧不代表存储丢帧
 - Setting 页全局显示设置保存后需重启软件生效
 - `run.py --config` 尚未完整接入自定义配置文件加载

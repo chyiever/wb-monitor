@@ -994,3 +994,40 @@ View 页 DAS Space-Time 图长期以深蓝或深红为主，手动 V 范围从 `
 - 长时间运行：裁剪 UI 同步统计 `_sync_matched_counts`，保留首包和最近 2000 个匹配序号。
 - 清理：删除“首点为 0”的旧调试告警，删除 FIP TCP 未使用导入。
 - 验证：`python -m py_compile ...` 通过；`python src\tools\validate_tab3_pipeline.py` 输出 `VALIDATION_OK packets_received=3 plot_payloads=3 last_shape=(16, 800) last_curve_points=2400`；Tab2 丢包时间轴内存级校验通过。
+
+## 2026-10-14 Data 存储参数三列布局、联合 FIP 降采样、独立格式下拉、清空统计
+
+- 更新范围：`src/ui/main_window.py`、`src/das/joint_formats.py`、`src/das/storage_worker.py`、`src/das/manager.py`、`src/das/tcp_server.py`、`src/fip/tcp_server.py`、`src/alignment/aligned_session_coordinator.py`、`src/main.py`、`README.md`、`docs/FIP／eDAS 通信协议与数据存储机制.md`、`docs/dev_log.md`。
+
+### 更新摘要
+
+1. Data 页存储参数三列布局（`src/ui/main_window.py`）：
+   - `存储参数` 拆为三列：`FIP独立存储` / `eDAS独立存储` / `联合存储`，列内参数只影响各自链路。
+   - 第一列：`FIP间隔(s)`、`FIP降采样`、`存储格式`。
+   - 第二列：`eDAS块/文件`、`eDAS队列`、`存储格式`。
+   - 第三列：`联合间隔(s)`、`FIP降采样`、`缓存(s)`、`联合格式`、`H5压缩`。
+2. 独立存储格式下拉框：
+   - FIP 独立存储新增 `存储格式` 下拉框，当前仅 `npz`（无压缩）。
+   - eDAS 独立存储新增 `存储格式` 下拉框，当前仅 `bin + json`。
+   - 均为唯一选项，作为后续格式扩展入口，暂不改变写盘行为。
+3. 联合存储 FIP 降采样（`src/das/joint_formats.py`、`src/das/storage_worker.py`、`src/das/manager.py`）：
+   - 新增 `联合存储` 列 `FIP降采样`（默认 `1`，范围 `1~100`），只抽取联合文件的 FIP（`arr[::factor]`）。
+   - `save_joint`/`save_bin`/`save_npz`/`save_h5` 新增 `fip_downsample` 参数；文件内 `fip_sample_rate_hz` 同步除以 `factor`，h5 attrs 新增 `fip_downsample`。
+   - `DASStorageRequest` 携带 `fip_downsample`；`EDASManager.sync_from_ui()` 从 `storage.joint_fip_downsample` 读取并下发。
+   - 该参数与 `FIP独立存储` 列的 `FIP降采样` 互相独立；eDAS 数据不受影响。
+4. 联合体积估算修正（`src/ui/main_window.py`）：
+   - `预计文件` 的 `联合` 估算改用**联合** FIP 降采样计算 FIP 速率；`FIP` 估算仍用独立存储降采样，两者不再混用。
+5. `清空统计` 按钮（`src/ui/main_window.py`、`src/main.py`、`src/das/tcp_server.py`、`src/fip/tcp_server.py`、`src/alignment/aligned_session_coordinator.py`）：
+   - Data 页 `通信控制` 新增 `清空统计` 按钮，清零通信/存储统计计数与显示。
+   - 新增 `data_clear_statistics_requested` 信号；主控 `_clear_statistics()` 同步重置 FIP TCP、eDAS TCP 接收计数与对齐缺口记录。
+   - 重置时保留 `_last_comm_count` 缺口跟踪基准，避免清空掩盖下一次真实缺包。
+6. 设置持久化：新参数 `joint_fip_downsample`、FIP/eDAS 独立格式写入 `get_tab3_settings()`/`get_current_config()` 并支持恢复。
+7. 文档：更新 `docs/FIP／eDAS 通信协议与数据存储机制.md`（9.2/9.4/9.5/9.6/9.7、11.1、11.5、13 节）和 `README.md`。
+
+### 验证
+
+1. 编译检查通过：`python -X utf8 -m py_compile src\das\joint_formats.py src\das\storage_worker.py src\das\manager.py src\das\tcp_server.py src\fip\tcp_server.py src\alignment\aligned_session_coordinator.py src\ui\main_window.py src\main.py`。
+2. 联合写盘降采样合成测试通过：`fip_downsample=2` 时 bin 帧 `pts` 由 10→5、`fip_rate` 1000000→500000；npz `fip1_raw_data` 长度 5 且 `fip_sample_rate_hz=500000`；h5 `fip1_raw` shape `(2,5)`、attrs `fip_downsample=2`。
+3. 离屏 GUI 检查通过：`tab3_joint_fip_downsample_spin`/`fip_storage_format_combo`/`edas_storage_format_combo`/`clear_stats_btn` 均存在；`get_tab3_settings()['storage']['joint_fip_downsample']=1`。
+4. 估算修正验证通过：`FIP降采样` 不变时联合 FIP 降采样 1→10，`FIP` 估算不变、`联合` 估算由 ~30.5 MB→~3.1 MB。
+5. 计数重置验证通过：FIP/eDAS TCP `reset_statistics()` 置零计数并保留 `_last_comm_count`；对齐协调器缺口记录清空；`_on_clear_statistics_clicked()` 不抛异常。

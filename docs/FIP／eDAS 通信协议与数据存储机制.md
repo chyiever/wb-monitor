@@ -1,6 +1,6 @@
 # FIP/eDAS 通信协议与数据存储机制
 
-> 更新时间：2026-09-23
+> 更新时间：2026-10-14
 > 适用代码：当前 `src/fip`、`src/das`、`src/alignment`、`src/ui` 实现
 
 ## 1. 文档范围
@@ -10,10 +10,13 @@
 - FIP TCP 协议与包体格式。
 - eDAS TCP 协议与包体格式。
 - FIP 独立 `.npz`、eDAS 独立 `.bin + .json`、FIP+eDAS 联合三种格式（`.bin` / `.npz` / `.h5`）的文件结构。
+- 联合 `.bin` 的字节级布局（文件头、50 字节帧记录头、逐路 FIP 数组、eDAS 矩阵）与完整读取示例。
 - 后台线程、无损背压、增量 chunk、内存预算等连续存储机制。
 - 联合存储游标只在写盘成功后推进，并且只写连续完整 FIP/eDAS 配对帧的修复机制。
 - 2026-09-22 测试日志、Space-Time 滚动显示、H5 缺依赖回退、joint `.npz` 只含 1s eDAS 的连续性修正。
 - 2026-09-23 Tab1 波形刷新节流、FIP 独立存储无压缩 `.npz`、停止 drain 尾段保护修正。
+- 2026-09-23 最近测试日志复盘后的 View 联合刷新门控、PSD 缓存修正、1s 默认显示窗口与运行日志目录规范。
+- 2026-10-14 Data 页存储参数三列布局（FIP独立 / eDAS独立 / 联合）、联合存储 FIP 降采样、独立存储格式下拉框、`清空统计` 按钮。
 - Data 页（Tab2）内通信、同步、存储相关参数和按钮含义。
 - Tab2 存储参数推荐设置。
 - 联调时应检查的通信连续性、对齐状态和文件字段。
@@ -563,6 +566,7 @@ AlignedSessionCoordinator.get_frames_since(last_saved_end_comm)
 - joint 写盘线程为 `DASStorageWorker`。
 - 正常情况下主线程只封装 `DASStorageRequest` 并快速入队；若写盘线程长期跟不上，会触发无损背压以保护连续性。
 - 联合格式由 Tab2 `联合格式` 下拉框切换：`bin` / `npz` / `h5`。
+- **联合 FIP 降采样**由 `联合存储` 列的 `FIP降采样` 控制（默认 `1`，范围 `1~100`）：写盘时对每个 FIP 传感器数组取 `arr[::factor]`，并把文件内 `fip_sample_rate_hz` 同步除以 `factor`。该参数只影响 joint 文件，与 `FIP独立存储` 列的 `FIP降采样` 互不影响；eDAS 数据不受影响。
 - `bin` 为裸二进制流式写盘（无压缩），支持最高吞吐（目标 500 MB/s+，受磁盘限制）。
 - `npz` 为压缩归档（`np.savez_compressed`），兼容旧格式字段，但高数据率时 CPU/内存压力明显高于 `bin`。
 - `h5` 为 HDF5 容器，可选 `gzip` 压缩（`H5压缩` 下拉框，仅对 h5 生效）；若运行环境缺少 `h5py`，会记录 warning 并自动回退为 `bin` 保存当前 chunk。
@@ -601,44 +605,175 @@ FIPeDAS-YYYYMMDD-HHMMSS.mmm.h5    # 联合格式=h5
 说明：
 
 - `fip_channel_count`、`fip_sample_rate_hz`、`fip_duration_seconds` 从 chunk 内首个实际存在的 FIP packet 提取。
+- `fip_sample_rate_hz` 是**应用了联合 FIP 降采样之后**的有效采样率，即 `原始采样率 / 联合FIP降采样`；`fip_duration_seconds`（单帧时长）不变。
 - `das_channel_count`、`das_sample_rate_hz`、`das_duration_seconds` 从 chunk 内首个实际存在的 eDAS packet 提取。
 - 当前 joint 写盘只接受完整 FIP/eDAS 配对帧，正常文件内 `fip_present` / `das_present` 均应为 `True`；读旧文件或异常文件时仍应以这两个字段为准。
 
-### 9.5 bin 格式（`FIPeDAS-*.bin`）
+同一份元数据在三种格式中的存放位置：
 
-布局（little-endian，自描述，无需外部 JSON）：
+| 格式 | 元数据位置 | 读取方式 |
+|---|---|---|
+| `bin` | 文件头的 `header_json`（UTF-8 JSON） | 读 `magic`/`header_len` 后解析 JSON（见 9.5.1） |
+| `npz` | `metadata_json` 字段（字符串），关键项同时展开为独立字段 | `np.load(..., allow_pickle=True)` |
+| `h5` | 根部 `attrs`（列表/字典项序列化为 JSON 字符串），另有 `metadata_json` | `dict(h5file.attrs)` |
+
+三种格式的 `format_version`：`bin`=`wb-monitor-joint-bin-v1`，`npz`=`wb-monitor-joint-v6`，`h5`=`wb-monitor-joint-h5-v1`。
+
+### 9.5 bin 格式（`FIPeDAS-*.bin`，默认格式）
+
+`.bin` 是自描述的裸二进制流，**无需外部 JSON**。整个文件由「文件头」+「连续帧记录」组成，全部数值均为 **little-endian**。写入路径为纯顺序 `write()`，不做压缩、不做随机寻址，因此吞吐最高（NVMe/SSD 目标 500 MB/s+）。写入函数为 `save_bin()` / `_write_bin_frame()`（`src/das/joint_formats.py`）。
+
+#### 9.5.1 文件整体布局
 
 ```text
-magic(8B "FIPeDAS1") | header_len(u32) | header_json(UTF-8) | 逐帧记录...
+字节偏移 0
+┌──────────────────────────────────────────────┐
+│ magic          8 B   固定 "FIPeDAS1"          │
+├──────────────────────────────────────────────┤
+│ header_len     4 B   uint32 (LE)              │  header_json 的字节长度
+├──────────────────────────────────────────────┤
+│ header_json    header_len 字节  UTF-8 JSON    │  含 9.4 节全部元数据
+├──────────────────────────────────────────────┤
+│ frame record #0                               │  ← 见 9.5.2
+├──────────────────────────────────────────────┤
+│ frame record #1                               │
+├──────────────────────────────────────────────┤
+│ ...                                           │  直到 EOF
+└──────────────────────────────────────────────┘
 ```
 
-每个帧记录：
+文件头字段：
+
+| 字段 | 类型 | 字节数 | 说明 |
+|---|---|---:|---|
+| `magic` | ASCII | 8 | 固定 `FIPeDAS1`，用于快速识别格式 |
+| `header_len` | `uint32` | 4 | 紧随其后的 `header_json` 长度，小端 |
+| `header_json` | UTF-8 JSON | 变长 | 与 9.4 节完全相同的元数据；`format_version` 为 `wb-monitor-joint-bin-v1` |
+
+`header_json` 内已经包含 `frame_count`、`comm_counts`、`packet_start_times`、`fip_present`、`das_present` 等**帧级冗余索引**，读取端可先用它校验帧数；真正的主数据在后续帧记录中，二者可交叉校验。
+
+#### 9.5.2 帧记录布局
+
+每个帧记录 = 固定 50 字节头 + 变长数据区：
 
 ```text
-comm(i32) start(f64) duration(f64) fip_present(u8) das_present(u8)
-fip_sensor_count(i32) fip_sample_rate(f64) das_channel_count(i32) das_sample_rate(f64) n_fip_arrays(i32)
-对每个 FIP 传感器: pts(i32) + raw float64 数据
-然后 eDAS: rows(i32) cols(i32) + raw float64 矩阵
+frame record
+┌────────────────────────────────────────────────────┐
+│ 固定头 50 B（struct "<iddBBididi"）                  │
+├────────────────────────────────────────────────────┤
+│ FIP 数据区：重复写 n_fip_arrays 次                    │
+│   ┌──────────────────────────────────────────────┐ │
+│   │ pts(i32) + float64[pts]   每路 FIP 原始相位    │ │
+│   └──────────────────────────────────────────────┘ │
+├────────────────────────────────────────────────────┤
+│ eDAS 数据区                                         │
+│   rows(i32) cols(i32) + float64[rows*cols]          │
+│   （缺失时 rows=0 cols=0，无后续字节）               │
+└────────────────────────────────────────────────────┘
 ```
 
-- 数据均为 little-endian `float64`（与协议原始单位一致：FIP 为解码相位，eDAS 为弧度）。
-- 纯顺序写盘，不做任何压缩；吞吐取决于磁盘，NVMe 下可支撑 500 MB/s+。
-- 读取示例：
+固定头 50 字节字段（格式串 `"<iddBBididi"`，`<` 关闭对齐填充，长度恰为 `4+8+8+1+1+4+8+4+8+4=50`）：
+
+| 偏移 | 字节数 | 类型 | 字段 | 说明 |
+|---:|---:|---|---|---|
+| 0 | 4 | `int32` | `comm` | 该帧 `comm_count` |
+| 4 | 8 | `float64` | `start` | 帧逻辑起始时间（秒），=`comm_count * duration` |
+| 12 | 8 | `float64` | `duration` | 单帧时长（秒） |
+| 20 | 1 | `uint8` | `fip_present` | `1`=本帧含 FIP（`fip_packet is not None`） |
+| 21 | 1 | `uint8` | `das_present` | `1`=本帧含 eDAS（`das_packet is not None`） |
+| 22 | 4 | `int32` | `fip_sensor_count` | FIP 传感器数量（取 `fip_packet.sensor_count`，缺 FIP 时为 0） |
+| 26 | 8 | `float64` | `fip_sample_rate` | FIP 每路采样率 Hz（缺 FIP 时为 0.0） |
+| 34 | 4 | `int32` | `das_channel_count` | eDAS 通道数（缺 eDAS 时为 0） |
+| 38 | 8 | `float64` | `das_sample_rate` | eDAS 每通道采样率 Hz（缺 eDAS 时为 0.0） |
+| 46 | 4 | `int32` | `n_fip_arrays` | 紧随其后的 FIP 数组个数 |
+
+**FIP 数据区**：
+
+- 紧接固定头，连续写 `n_fip_arrays` 个 FIP 数组。
+- 每个数组 = `pts(int32, 4 B)` + `pts` 个 little-endian `float64`（共 `4 + 8*pts` 字节）。
+- 数组顺序即**传感器顺序**：第 0 个为 FIP1，第 1 个为 FIP2，以此类推。
+- 数据取自对齐层 `FIPSessionPacket.unwrapped_by_sensor`（历史命名，实际存放的是**未滤波、未相位展开的原始解码相位**），来自 `RawDataPacket.phase_data` 拆分结果。
+- 若 `联合存储` 的 `FIP降采样=factor>1`，写出的数组为 `原始数组[::factor]`，即 `pts` 已按 `factor` 抽取；固定头里的 `fip_sample_rate` 同步为 `原采样率/factor`。
+- 单 FIP 时 `n_fip_arrays=1`；`fip_present=0` 时 `n_fip_arrays=0`，此区无任何字节。
+
+**eDAS 数据区**：
+
+- 紧跟 FIP 数组之后，先写 `rows(int32) + cols(int32)`，再写 `rows*cols` 个 little-endian `float64`。
+- `rows = channel_count`，`cols = samples_per_channel`，矩阵按 **C-order（行优先 / 空间优先）** 写出：先通道 0 的全部时间样本，再通道 1，……与 4.2 节接收矩阵的内存布局一致。
+- 单位弧度，取自对齐层 `DASSessionPacket.matrix`。
+- `das_present=0` 时写 `rows=0, cols=0`，无数据字节。
+
+#### 9.5.3 单帧字节数计算
+
+```text
+frame_bytes = 50
+            + Σ_k ( 4 + 8 * pts_k )      # k = 0 .. n_fip_arrays-1
+            + 8                          # rows + cols 两个 i32
+            + 8 * rows * cols            # eDAS 矩阵
+```
+
+示例（单 FIP、1 s/包、1 MHz、eDAS 51ch × 10000pt）：
+
+```text
+FIP1 : 4 + 8 * 1_000_000      = 8_000_004 B  (~7.63 MiB)
+eDAS : 8 + 8 * 51 * 10000     = 4_080_008 B  (~3.89 MiB)
+固定头: 50 B
+单帧合计: ≈ 12.08 MB（≈ 1 s 数据）
+```
+
+即 `联合间隔=2.0s`（2 帧）时单个 `.bin` 约 24 MB。`.bin` 不压缩，落盘量约等于原始数据率。
+
+#### 9.5.4 读取示例（完整逐帧解析）
 
 ```python
-import json, struct, numpy as np
+import json
+import struct
+import numpy as np
 
-with open("FIPeDAS-20260917-120000.000.bin", "rb") as f:
-    assert f.read(8) == b"FIPeDAS1"
-    header = json.loads(f.read(struct.unpack("<I", f.read(4))[0]))
-    # 逐帧读取记录，直到 EOF
-    while True:
-        rec = f.read(50)
-        if len(rec) < 50:
-            break
-        comm, start, dur, fip_p, das_p, fip_s, fip_r, das_c, das_r, n = struct.unpack("<iddBBididi", rec)
-        # 读 n 个 FIP 数组，再读 eDAS 矩阵
+FIXED = struct.Struct("<iddBBididi")
+assert FIXED.size == 50
+
+def read_joint_bin(path):
+    with open(path, "rb") as f:
+        assert f.read(8) == b"FIPeDAS1", "bad magic"
+        header_len = struct.unpack("<I", f.read(4))[0]
+        header = json.loads(f.read(header_len).decode("utf-8"))
+        frames = []
+        while True:
+            raw = f.read(FIXED.size)
+            if len(raw) < FIXED.size:
+                break  # 正常 EOF
+            comm, start, dur, fip_p, das_p, fip_s, fip_r, das_c, das_r, n = FIXED.unpack(raw)
+            fip_arrays = []
+            for _ in range(n):
+                pts = struct.unpack("<i", f.read(4))[0]
+                fip_arrays.append(np.frombuffer(f.read(pts * 8), dtype="<f8").copy())
+            rows, cols = struct.unpack("<ii", f.read(8))
+            if rows > 0 and cols > 0:
+                das = np.frombuffer(f.read(rows * cols * 8), dtype="<f8").reshape(rows, cols).copy()
+            else:
+                das = None
+            frames.append({
+                "comm": comm, "start": start, "duration": dur,
+                "fip": fip_arrays,          # 传感器顺序：fip[0]=FIP1, fip[1]=FIP2
+                "das": das,                 # (channel, samples) 弧度矩阵
+                "fip_sample_rate": fip_r,
+                "das_sample_rate": das_r,
+            })
+    return header, frames
+
+header, frames = read_joint_bin("FIPeDAS-20260917-120000.000.bin")
+print(header["format_version"], header["frame_count"], len(frames))
+print(frames[0]["comm"], frames[0]["fip"][0].shape, frames[0]["das"].shape)
 ```
+
+#### 9.5.5 读取注意事项
+
+- 帧记录**无结束标记**：读到不足 50 字节即视为正常 EOF；总长度应与 `header["frame_count"]` 及逐帧 `frame_bytes` 计算一致。
+- `header_json` 的 `comm_counts` 与逐帧 `comm` 冗余，可用于交叉校验文件完整性。
+- 所有数值均为 little-endian `float64`；FIP 为解码相位，eDAS 为弧度。
+- FIP 各传感器数组长度可不等长（`pts` 逐路单独存储），读取时按每路的 `pts` 就地切分，不要假设所有传感器等长。
+- 正常联合文件只写入完整配对帧，`fip_present` / `das_present` 均为 `True`；读旧文件或异常文件时仍应以这两个标志为准。
 
 ### 9.6 npz 格式（`FIPeDAS-*.npz`）
 
@@ -652,10 +787,10 @@ with open("FIPeDAS-20260917-120000.000.bin", "rb") as f:
 | `fip_present` / `das_present` | `bool[]` | 对应帧是否有 FIP/eDAS 数据 |
 | `fip_sensor_count` | `int32[]` | 每帧 FIP 传感器数量 |
 | `fip_selected_sensor` | `int32[]` | 每帧 Tab1 选中的 FIP 编号 |
-| `fip1_raw_data` | object array | FIP1 原始解码数据（未滤波、未相位展开） |
+| `fip1_raw_data` | object array | FIP1 原始解码数据（未滤波、未相位展开）；已应用联合 FIP 降采样 `[::factor]` |
 | `fip2_raw_data` | object array | FIP2 原始解码数据；单 FIP 或缺失时为空数组 |
 | `das_raw_matrix` | object array | eDAS 矩阵，通常为 `channel_count x samples_per_channel` |
-| `fip_sample_rate_hz` | `float64[]` | FIP 每帧采样率 |
+| `fip_sample_rate_hz` | `float64[]` | FIP 每帧采样率（= 原始采样率 / 联合FIP降采样） |
 | `das_sample_rate_hz` | `float64[]` | eDAS 每帧采样率 |
 | `das_channel_count` | `int32[]` | eDAS 每帧通道数 |
 | `incremental` | bool | `True` 表示增量 chunk |
@@ -685,10 +820,11 @@ HDF5 容器，根部 attrs 存 9.4 节全部元数据，数据集：
 | `comm_counts` | `(N,)` | 帧序号 |
 | `packet_start_times` | `(N,)` | 每帧逻辑起始时间 |
 | `fip_present` / `das_present` | `(N,)` | 帧是否有对应数据 |
-| `fip1_raw` / `fip2_raw` | `(N, pts)` | 每路 FIP 原始数据（按最大点数补齐） |
+| `fip1_raw` / `fip2_raw` | `(N, pts)` | 每路 FIP 原始数据（按最大点数补齐）；`pts` 已按联合 FIP 降采样抽取 |
 | `das_raw` | `(N, channel_count, samples)` | eDAS 矩阵 |
 
 - `fip_points_per_sensor`、`das_samples_per_channel` 存在 attrs 中。
+- attrs 另含 `fip_downsample`（本次联合写盘使用的 FIP 抽取因子）与经其修正的 `fip_sample_rate_hz`。
 - `H5压缩=none`（默认）：写入最快；`gzip`：体积更小但吞吐下降。
 - 读取示例：
 
@@ -722,7 +858,12 @@ with h5py.File("FIPeDAS-20260917-120000.000.h5", "r") as h:
 - Tab1 时域波形和 PSD 按真实 `packet_duration_seconds` 动态节流：0.2 s/包时约每 1 s 刷新一次，1 s/包时每包刷新一次；队列满时丢旧保新，避免画面落后。
 - 这些显示丢帧不等价于存储丢帧。FIP 独立存储、eDAS 独立存储和 joint 联合存储均走独立原始数据路径。
 - eDAS Space-Time 滚动缓存只裁剪刚好溢出的列数，不再额外按 shift window 大步跳动；空 payload 不会把画面重置成空白图。
+- View 默认时域窗口、eDAS Space-Time 总窗口、FIP/eDAS UI 刷新间隔均为 `1.0 s`。`DASPlotWorker` 内部默认 `display_seconds` 与 `space_time_total_seconds` 也同步为 `1.0`，避免配置缺省时退回 2 秒。
+- FIP 与 eDAS 同时通信时，View 主线程不再按单路 payload 单独刷新整屏；两路 payload 都新鲜且 `comm_count` 漂移在阈值内时，才统一刷新两幅时域图与 Space-Time。若任一路未到，会短暂等待下一次 payload 或重试计时器。
+- PSD 由 View 页当前可见曲线缓存计算。隐藏的 FIP/DAS 曲线项只清空自身显示，不再覆盖同一个 Curve 槽位的 PSD 缓存，因此勾选 PSD 后 FIP1/FIP2/DAS Channel 均可按 1 秒节流更新。
 - 因此：实时波形在机器负载高时可能跳帧或降低刷新率，但修复后的存储链路不会因为显示队列丢帧而丢失落盘数据。
+
+运行日志由 `src/main.py` 启动时自动创建：源码运行时位于项目根目录 `logs/`，打包运行时位于 exe 同级 `logs/`；自动测试报告写入同目录下的 `test_reports/`。
 
 ### 10.3 三条存储链路对比
 
@@ -751,6 +892,7 @@ with h5py.File("FIPeDAS-20260917-120000.000.h5", "r") as h:
 | `同时启动FIP+eDAS` / `停止同时通信` | 同时启动或停止 FIP 与 eDAS 通信链路 |
 | `启动FIP通信` / `停止FIP通信` | 只控制 FIP TCP Server |
 | `启动eDAS通信` / `停止eDAS通信` | 只控制 eDAS TCP Server |
+| `清空统计` | 清零 Data 页的 FIP/eDAS 通信统计与存储统计计数；同步重置 TCP 接收计数和对齐缺口记录，不影响正在收发的数据，也不重置 `comm_count` 缺口跟踪基准 |
 
 ### 11.2 FIP 通信参数
 
@@ -809,16 +951,45 @@ with h5py.File("FIPeDAS-20260917-120000.000.h5", "r") as h:
 
 **存储参数**
 
+`存储参数` 按数据链路拆成三列，分别对应三条存储链路，列内参数只影响各自链路：
+
+```text
+┌────────────────┬────────────────┬──────────────────────┐
+│ FIP独立存储     │ eDAS独立存储    │ 联合存储              │
+│ FIP间隔(s)      │ eDAS块/文件     │ 联合间隔(s)           │
+│ FIP降采样        │ eDAS队列        │ FIP降采样             │
+│ 存储格式         │ 存储格式         │ 缓存(s)               │
+│                 │                │ 联合格式 / H5压缩      │
+└────────────────┴────────────────┴──────────────────────┘
+```
+
+第一列 `FIP独立存储`（只影响 FIP 独立 `.npz`）：
+
 | 控件 | 默认 | 作用 |
 |---|---|---|
 | `FIP间隔(s)` | `2`（范围 `1~300`） | FIP 独立 `.npz` 目标 chunk 时长 |
-| `联合间隔(s)` | `2.0`（范围 `1.0~60.0`） | joint 文件目标 chunk 时长；默认每文件约 `2 s` 数据 |
-| `缓存(s)` | `10.0` | 对齐缓存时间；代码保证至少大于 joint 间隔并自动放大以覆盖写盘延迟 |
+| `FIP降采样` | `1`（范围 `1~100`） | FIP 独立存储抽取因子；默认 `1` 表示不降采样。**不影响联合文件** |
+| `存储格式` | `npz` | FIP 独立存储格式下拉框；当前仅 `npz` 一个选项，保留以便后续扩展 |
+
+第二列 `eDAS独立存储`（只影响 eDAS 独立 `.bin + .json`）：
+
+| 控件 | 默认 | 作用 |
+|---|---|---|
 | `eDAS块/文件` | `50` | eDAS `.bin` 每个文件包含的完整包数 |
 | `eDAS队列` | `200` | eDAS 独立存储有效队列容量 |
-| `FIP降采样` | `1` | FIP 独立存储抽取因子，范围 `1~100`；默认 `1` 表示不降采样 |
+| `存储格式` | `bin` | eDAS 独立存储格式下拉框；当前仅 `bin + json` 一个选项，保留以便后续扩展 |
+
+第三列 `联合存储`（只影响 joint 文件）：
+
+| 控件 | 默认 | 作用 |
+|---|---|---|
+| `联合间隔(s)` | `2.0`（范围 `1.0~60.0`） | joint 文件目标 chunk 时长；默认每文件约 `2 s` 数据 |
+| `FIP降采样` | `1`（范围 `1~100`） | joint 文件的 FIP 抽取因子（`arr[::factor]`），并同步修正文件内 FIP 采样率。**不影响 FIP 独立存储** |
+| `缓存(s)` | `10.0` | 对齐缓存时间；代码保证至少大于 joint 间隔并自动放大以覆盖写盘延迟 |
 | `联合格式` | `bin` | joint 存储格式：`bin`（裸二进制流式，最高吞吐）、`npz`（压缩归档）、`h5`（HDF5） |
 | `H5压缩` | `none` | 仅对 `h5` 生效：`none`（最快）/ `gzip`（体积小但慢） |
+
+> 注意存在两个同名 `FIP降采样`：第一列的控制**独立存储**，第三列的控制**联合存储**，二者互不影响。
 
 **存储状态与日志**
 
@@ -864,8 +1035,9 @@ with h5py.File("FIPeDAS-20260917-120000.000.h5", "r") as h:
 | 短时验证压缩归档 | `联合格式=npz`，`联合间隔=2.0s`；适合小数据量快速检查字段，不建议满速长期运行 |
 | 追求存储体积小 | `联合格式=h5` + `H5压缩=gzip`；或 `联合格式=npz`；注意压缩会降低写盘吞吐 |
 | 只存一路（FIP 或 eDAS） | 关闭 `同时存储FIP+eDAS`，只开对应单路存储，避免无谓的对齐等待 |
-| 单独验证 FIP | `FIP存储=ON`，`FIP间隔=2s`，`FIP降采样=1` |
+| 单独验证 FIP | `FIP存储=ON`，`FIP间隔=2s`，`FIP独立存储`列 `FIP降采样=1` |
 | 单独验证 eDAS | `eDAS存储=ON`，`eDAS块/文件=50`，`eDAS队列=200` |
+| FIP 数据量过大、想减小联合文件 | 联合存储列 `FIP降采样=2~10`，`联合格式=bin`；只压缩联合文件的 FIP，eDAS 不受影响 |
 
 **参数设置要点**：
 
@@ -876,9 +1048,14 @@ with h5py.File("FIPeDAS-20260917-120000.000.h5", "r") as h:
 3. **联合格式**：默认 `bin`，现场长期、满速记录必须用 `bin`；
    `npz` 适合短时验证和字段检查，`h5` 适合需要标准库读取且有压缩需求的场景。
 4. **H5压缩**：仅当 `联合格式=h5` 时生效。数据率低可用 `gzip`，高数据率必须 `none`。
-5. **FIP降采样**：默认 `1`（不降采样）。仅当 FIP 数据量过大、存储压力高时才调大，
-   例如 `2` 表示每 2 点存 1 点（存储采样率减半）。
-6. **路径**：三条路径分开放置，避免联合与独立文件相互覆盖；建议放到非系统盘。
+5. **FIP降采样（两个，互不影响）**：
+   - `FIP独立存储`列：只影响 FIP 独立 `.npz`。
+   - `联合存储`列：只影响 joint 文件的 FIP；写入时按 `arr[::factor]` 抽取并把文件内 FIP 采样率同步除以 `factor`。
+   默认均为 `1`（不降采样）；仅当 FIP 数据量过大、存储压力高时才调大。
+6. **存储格式下拉框**：`FIP独立存储`只提供 `npz`，`eDAS独立存储`只提供 `bin + json`；
+   当前为唯一选项，作为后续格式扩展入口，暂不改变行为。
+7. **清空统计**：仅清零计数与显示，不删除已写文件，也不改变 `comm_count` 缺口跟踪基准。
+8. **路径**：三条路径分开放置，避免联合与独立文件相互覆盖；建议放到非系统盘。
 
 ## 14. 代码位置
 

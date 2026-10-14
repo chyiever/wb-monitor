@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import logging
+import time
+from dataclasses import dataclass, field, replace
 from collections import OrderedDict
 from pathlib import Path
 from typing import Optional
@@ -16,8 +18,13 @@ from .data_loader import (
     concatenate_das_channel,
     concatenate_fip_frames,
     load_data_file,
+    merge_joint_data,
 )
+from .logger import get_logger
 from .preprocess import PreprocessSpec, decimate_for_plot, preprocess_space_matrix, preprocess_waveform, robust_levels
+
+
+logger = get_logger()
 
 
 @dataclass(frozen=True)
@@ -45,7 +52,7 @@ class SpaceRequest:
 @dataclass(frozen=True)
 class RedrawRequest:
     seq: int
-    path: str
+    paths: tuple[str, ...]
     curve1: CurveRequest
     curve2: CurveRequest
     space: SpaceRequest
@@ -61,7 +68,7 @@ class CurveResult:
 @dataclass
 class RedrawResult:
     seq: int
-    path: str
+    paths: tuple[str, ...]
     file_info: str
     has_fip: bool
     has_das: bool
@@ -86,16 +93,34 @@ class ReplayWorker(QObject):
     def __init__(self, cache_size: int = 4) -> None:
         super().__init__()
         self._cache_size = max(1, int(cache_size))
-        self._data_cache: "OrderedDict[str, JointReplayData]" = OrderedDict()
+        self._data_cache: "OrderedDict[tuple[str, ...], JointReplayData]" = OrderedDict()
+        # 缓存已计算好的绘图结果（仅保存降采样后的数组，体积小），重复请求可秒回
+        self._result_cache: "OrderedDict[tuple, RedrawResult]" = OrderedDict()
+        self._result_cache_size = 8
 
     @pyqtSlot(object)
     def redraw(self, request: RedrawRequest) -> None:
         self.redrawStarted.emit()
         try:
-            data = self._load_cached(request.path)
+            signature = _request_signature(request)
+            cached = self._result_cache.get(signature)
+            if cached is not None:
+                self._result_cache.move_to_end(signature)
+                self.redrawDone.emit(replace(cached, seq=request.seq))
+                return
+            started = time.perf_counter()
+            data = self._load_cached(request.paths)
             result = _compute_redraw(request, data)
+            self._store_result(signature, result)
+            logger.info(
+                "重绘完成 seq=%s 文件=%d 用时 %.3fs",
+                request.seq,
+                len(request.paths),
+                time.perf_counter() - started,
+            )
             self.redrawDone.emit(result)
         except Exception as exc:
+            logger.exception("重绘失败 seq=%s: %s", request.seq, exc)
             self.failed.emit(str(exc), request.seq)
 
     def submit(self, request: RedrawRequest) -> None:
@@ -109,15 +134,26 @@ class ReplayWorker(QObject):
     @pyqtSlot()
     def invalidate_cache(self) -> None:
         self._data_cache.clear()
+        self._result_cache.clear()
 
-    def _load_cached(self, path_str: str) -> JointReplayData:
-        path = Path(path_str)
-        key = str(path.resolve())
+    def _store_result(self, signature: tuple, result: RedrawResult) -> None:
+        self._result_cache[signature] = result
+        self._result_cache.move_to_end(signature)
+        while len(self._result_cache) > self._result_cache_size:
+            self._result_cache.popitem(last=False)
+
+    def _load_cached(self, paths: tuple[str, ...]) -> JointReplayData:
+        key = tuple(str(Path(path).resolve()) for path in paths)
         cached = self._data_cache.get(key)
         if cached is not None:
             self._data_cache.move_to_end(key)
             return cached
-        data = load_data_file(path)
+        started = time.perf_counter()
+        if len(key) == 1:
+            data = load_data_file(Path(key[0]))
+        else:
+            data = merge_joint_data([load_data_file(Path(path)) for path in key])
+        logger.info("加载 %d 个文件用时 %.3fs", len(key), time.perf_counter() - started)
         self._data_cache[key] = data
         self._evict_cache()
         return data
@@ -146,13 +182,18 @@ class ReplayWorker(QObject):
         return max(size, file_bytes)
 
 
+def _request_signature(request: RedrawRequest) -> tuple:
+    paths = tuple(str(Path(path).resolve()) for path in request.paths)
+    return (paths, request.curve1, request.curve2, request.space)
+
+
 def _compute_redraw(request: RedrawRequest, data: JointReplayData) -> RedrawResult:
     curve1 = _compute_curve(1, request.curve1, data)
     curve2 = _compute_curve(2, request.curve2, data)
     matrix, rect, levels = _compute_space(request.space, data)
     return RedrawResult(
         seq=request.seq,
-        path=request.path,
+        paths=request.paths,
         file_info=_file_info_text(data),
         has_fip=data.has_fip,
         has_das=data.has_das,
@@ -181,7 +222,10 @@ def _compute_curve(curve_index: int, request: CurveRequest, data: JointReplayDat
             data.das_rates_hz,
             request.das_channel,
         )
-    rel_t, y, effective_rate = preprocess_waveform(raw_y, rate, request.preprocess)
+    max_filter_samples = max(4 * int(request.max_points), 200_000)
+    rel_t, y, effective_rate = preprocess_waveform(
+        raw_y, rate, request.preprocess, max_samples=max_filter_samples
+    )
     if raw_t.size == raw_y.size and y.size:
         step = max(1, int(request.preprocess.downsample))
         times = raw_t[::step][: y.size]
@@ -232,7 +276,13 @@ def _file_info_text(data: JointReplayData) -> str:
     fip_samples = _sum_samples(data.fip1_frames)
     das_samples = _sum_samples(data.das_frames)
     duration = max(0.0, data.end_time - data.start_time)
-    file_size = int(data.path.stat().st_size) if data.path.exists() else 0
+    sources = data.source_paths or [data.path]
+    file_size = 0
+    for source in sources:
+        try:
+            file_size += int(source.stat().st_size)
+        except OSError:
+            pass
     created = (data.created_at or "").strip() or "n/a"
     kind = []
     if data.has_fip:
@@ -242,10 +292,14 @@ def _file_info_text(data: JointReplayData) -> str:
     lines = [
         f"格式: {data.format_version}",
         f"数据: {'+'.join(kind) if kind else '未知'}",
-        f"采集时刻: {created}",
+    ]
+    if len(sources) > 1:
+        lines.append(f"文件: {len(sources)} 个（已按时间拼接）")
+    lines += [
+        f"开始采集时刻: {created}",
         f"时长: {duration:.3f} s（{data.frame_count} 帧）",
         f"采样率: FIP {fip_rate}  |  DAS {das_rate}",
-        f"通道数: {das_channels}",
+        f"DAS通道数: {das_channels}",
         f"数据量: FIP {_human_samples(fip_samples)}  |  DAS {_human_samples(das_samples)}  |  文件 {_human_bytes(file_size)}",
     ]
     return "\n".join(lines)

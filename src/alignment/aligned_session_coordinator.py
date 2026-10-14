@@ -173,6 +173,12 @@ class AlignedSessionCoordinator(QObject):
                 das_online=self._das_online,
             )
 
+    def reset_statistics(self) -> None:
+        """Clear recorded missing ranges for the Data tab without resetting comm tracking."""
+        with self._lock:
+            self._missing_ranges.clear()
+        self._emit_status(self._derive_alignment_status())
+
     def _record_missing_ranges(self, source: str, last_comm_count: Optional[int], new_comm_count: int) -> None:
         if last_comm_count is None:
             return

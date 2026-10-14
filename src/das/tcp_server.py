@@ -350,6 +350,25 @@ class DASTCPServer(QObject):
             "avg_receive_time_ms": self._last_avg_receive_time_ms,
         }
 
+    def reset_statistics(self) -> None:
+        """Reset UI-facing counters while preserving comm_count gap tracking.
+
+        ``_last_comm_count`` is intentionally left intact so a manual statistics
+        clear does not hide a real subsequent gap. The fresh payload is emitted
+        so the Data tab immediately shows zeroed counters.
+        """
+        self.packets_received = 0
+        self.missing_packets = 0
+        self.total_data_received = 0
+        self.last_stats_time = time.monotonic()
+        self._stats_packets_at_last_log = 0
+        self._receive_times_ms.clear()
+        self._last_packet_rate = 0.0
+        self._last_data_rate_mbps = 0.0
+        self._last_avg_receive_time_ms = 0.0
+        self.logger.debug("TAB3_NODE das_tcp.reset_statistics")
+        self.statistics_updated.emit(self._statistics_payload(connected=self._connected))
+
     def _log_performance_stats(self) -> None:
         if self.packets_received <= 0 or self.packets_received % 50 != 0:
             return

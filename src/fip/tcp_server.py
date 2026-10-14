@@ -569,3 +569,21 @@ class OptimizedTCPServer(QObject):
     def is_connected(self) -> bool:
         """Check connection status"""
         return self._connected and self.client_socket is not None
+
+    def reset_statistics(self) -> None:
+        """Reset UI-facing counters while preserving comm_count gap tracking.
+
+        ``_last_comm_count`` and the raw/normalized comm counters are kept so a
+        manual statistics clear does not mask a real subsequent gap.
+        """
+        self.packets_received = 0
+        self.missing_packets = 0
+        self.total_data_received = 0
+        self.total_data_received_lifetime = 0
+        self.performance_stats['receive_times'].clear()
+        self.performance_stats['tcp_queue_sizes'].clear()
+        self._stats_packets_at_last_log = 0
+        self._last_statistics_snapshot_time = time.time()
+        self._last_statistics_snapshot_packets = 0
+        self._last_statistics_snapshot_bytes = 0
+        self.logger.info("TCP statistics counters were cleared by the operator")

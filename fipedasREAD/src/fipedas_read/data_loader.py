@@ -47,6 +47,11 @@ class JointReplayData:
     das_channel_counts: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.int32))
     fip_present: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))
     das_present: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))
+    source_paths: list[Path] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.source_paths:
+            self.source_paths = [self.path]
 
     @property
     def frame_count(self) -> int:
@@ -393,6 +398,89 @@ def load_joint_h5(path: Path) -> JointReplayData:
         das_channel_counts=das_counts,
         fip_present=fip_present,
         das_present=das_present,
+    )
+
+
+def merge_joint_data(datasets: list[JointReplayData]) -> JointReplayData:
+    """Merge several replay datasets into one time-ordered dataset.
+
+    Files are ordered by their first packet start time (falling back to
+    ``created_at`` then file name). Frames are then concatenated and, when the
+    next file overlaps the previous one, its timeline is shifted so the merged
+    x-axis stays monotonic and contiguous.
+    """
+    datasets = [data for data in datasets if data is not None]
+    if not datasets:
+        raise ValueError("没有可合并的数据文件")
+    if len(datasets) == 1:
+        return datasets[0]
+
+    ordered = sorted(datasets, key=lambda d: (d.start_time, d.created_at or "", str(d.path)))
+
+    fip1_frames: list[np.ndarray] = []
+    fip2_frames: list[np.ndarray] = []
+    das_frames: list[np.ndarray] = []
+    comms: list[int] = []
+    starts: list[float] = []
+    durations: list[float] = []
+    fip_rates: list[float] = []
+    das_rates: list[float] = []
+    das_counts: list[int] = []
+    fip_present: list[bool] = []
+    das_present: list[bool] = []
+
+    cursor_end: Optional[float] = None
+    for data in ordered:
+        base = np.asarray(data.packet_start_times, dtype=np.float64)
+        offset = 0.0
+        if base.size and cursor_end is not None:
+            first = float(np.nanmin(base))
+            if np.isfinite(first) and first < cursor_end:
+                offset = cursor_end - first
+        shifted = base + offset if offset else base
+
+        fip1_frames.extend(data.fip1_frames)
+        fip2_frames.extend(data.fip2_frames)
+        das_frames.extend(data.das_frames)
+        comms.extend(int(value) for value in data.comm_counts)
+        starts.extend(float(value) for value in shifted)
+        durations.extend(float(value) for value in data.packet_duration_seconds)
+        fip_rates.extend(float(value) for value in data.fip_rates_hz)
+        das_rates.extend(float(value) for value in data.das_rates_hz)
+        das_counts.extend(int(value) for value in data.das_channel_counts)
+        fip_present.extend(bool(value) for value in data.fip_present)
+        das_present.extend(bool(value) for value in data.das_present)
+
+        count = min(shifted.size, data.packet_duration_seconds.size)
+        if count:
+            ends = shifted[:count] + data.packet_duration_seconds[:count]
+            block_end = float(np.nanmax(ends))
+        elif shifted.size:
+            block_end = float(np.nanmax(shifted))
+        else:
+            block_end = None
+        if block_end is not None:
+            cursor_end = block_end if cursor_end is None else max(cursor_end, block_end)
+
+    format_version = " + ".join(dict.fromkeys(data.format_version for data in ordered))
+    created_at = next((data.created_at for data in ordered if (data.created_at or "").strip()), "")
+
+    return JointReplayData(
+        path=ordered[0].path,
+        format_version=format_version,
+        created_at=created_at,
+        comm_counts=np.asarray(comms, dtype=np.int32),
+        packet_start_times=np.asarray(starts, dtype=np.float64),
+        packet_duration_seconds=np.asarray(durations, dtype=np.float64),
+        fip1_frames=fip1_frames,
+        fip2_frames=fip2_frames,
+        das_frames=das_frames,
+        fip_rates_hz=np.asarray(fip_rates, dtype=np.float64),
+        das_rates_hz=np.asarray(das_rates, dtype=np.float64),
+        das_channel_counts=np.asarray(das_counts, dtype=np.int32),
+        fip_present=np.asarray(fip_present, dtype=bool),
+        das_present=np.asarray(das_present, dtype=bool),
+        source_paths=[data.path for data in ordered],
     )
 
 

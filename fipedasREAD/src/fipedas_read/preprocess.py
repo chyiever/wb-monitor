@@ -123,12 +123,24 @@ def preprocess_waveform(
     values: np.ndarray,
     sample_rate_hz: float,
     spec: PreprocessSpec,
+    max_samples: Optional[int] = None,
 ) -> tuple[np.ndarray, np.ndarray, float]:
-    """Return time, processed values, and effective sample rate."""
+    """Return time, processed values, and effective sample rate.
+
+    ``max_samples`` bounds the number of samples that enter the (expensive)
+    zero-phase filter. When the raw series is longer the signal is decimated
+    first and the effective sample rate is reduced accordingly, which keeps the
+    displayed frequency band unchanged while greatly speeding up long files.
+    """
     arr = finite_1d(values)
     rate = float(sample_rate_hz) if np.isfinite(sample_rate_hz) and sample_rate_hz > 0 else 1.0
     if arr.size == 0:
         return np.array([], dtype=np.float64), arr, rate
+    if max_samples and arr.size > max_samples > 0:
+        pre_step = int(np.ceil(arr.size / float(max_samples)))
+        if pre_step > 1:
+            arr = np.ascontiguousarray(arr[::pre_step])
+            rate = rate / pre_step
     if spec.remove_mean:
         arr = arr - float(np.mean(arr))
     arr = _apply_filter(arr, rate, spec.filter_spec)

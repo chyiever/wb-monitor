@@ -37,11 +37,29 @@ pip install -r .\fipedasREAD\requirements.txt
 - numpy
 - scipy
 
+## 打包为独立 exe
+
+使用 PyInstaller 打包（需先 `pip install pyinstaller pillow`）：
+
+```powershell
+python .\fipedasREAD\build_exe.py
+```
+
+生成的 exe 位于 `fipedasREAD\dist\FIPeDASReplay-YYYY.M.D.exe`（名称默认含当天日期），可在未安装 Python 的 Windows 机器上直接运行。常用变体：
+
+```powershell
+python .\fipedasREAD\build_exe.py --console      # 带控制台的调试版
+python .\fipedasREAD\build_exe.py --onedir       # 文件夹版（启动更快）
+python .\fipedasREAD\build_exe.py --clean-only   # 仅清理旧产物
+python .\fipedasREAD\build_exe.py --name 自定义名称
+```
+
 ## 功能
 
 - 兼容 FIP 独立 `*.npz`、eDAS 独立 `*.bin + *.json`、FIP+eDAS 联合 `*.npz` / `*.bin` / `*.h5`（自动识别，缺失数据源正常显示）。
 - 左侧提供数据路径、文件列表、时域曲线源、FIP 预处理、EDAS 预处理和 timespace 参数。
-- 文件信息栏显示数据类型、采集时刻、时长、采样率、通道数与数据量。
+- 文件信息栏显示数据类型、开始采集时刻、时长、采样率、DAS通道数与数据量。
+- 文件列表支持多选（Ctrl/Shift）：多个文件按时间拼接后统一绘图，时间轴单调连续。
 - 右侧显示两张时域图和一张 DAS timespace 图。
 - 三张图共用横轴时间范围：任意一张图矩形放大或平移后，其余两张同步。
 - 三张图采用垂直分割器，默认高度比例为 `1:1:2`，可手动拖动调整。
@@ -51,5 +69,8 @@ pip install -r .\fipedasREAD\requirements.txt
 - timespace 默认 `Seismic` 色图，可切换 `RdBu`、`CoolWarm`、`Viridis`、`Plasma`、`Inferno`、`Magma`、`Gray` 或 `Jet`。
 - 两张时域图右侧保留与 timespace 色标等宽的空白区，保证三张图真实绘图区宽度一致。
 - 顶部标题栏显示软件名称与版本号（当前 `v1.2.0 · 2026-09-17`）。
+- **参数记忆**：所有界面参数自动保存，下次打开沿用上次设置；数据路径也会记忆（命令行参数仍优先）。
+- **运行日志**：软件在本目录 `logs/fipedas_read.log` 生成运行日志（2MB 轮转、保留 3 份）。
+- **性能**：超长序列先降采样再滤波，并缓存绘图结果，切换/重复查看文件更快。
 
 更多字段说明和 GUI 细节见 [docs/README.md](docs/README.md)。
