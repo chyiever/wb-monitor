@@ -569,7 +569,7 @@ AlignedSessionCoordinator.get_frames_since(last_saved_end_comm)
 - **联合 FIP 降采样**由 `联合存储` 列的 `FIP降采样` 控制（默认 `1`，范围 `1~100`）：写盘时对每个 FIP 传感器数组取 `arr[::factor]`，并把文件内 `fip_sample_rate_hz` 同步除以 `factor`。该参数只影响 joint 文件，与 `FIP独立存储` 列的 `FIP降采样` 互不影响；eDAS 数据不受影响。
 - `bin` 为裸二进制流式写盘（无压缩），支持最高吞吐（目标 500 MB/s+，受磁盘限制）。
 - `npz` 为压缩归档（`np.savez_compressed`），兼容旧格式字段，但高数据率时 CPU/内存压力明显高于 `bin`。
-- `h5` 为 HDF5 容器，可选 `gzip` 压缩（`H5压缩` 下拉框，仅对 h5 生效）；若运行环境缺少 `h5py`，会记录 warning 并自动回退为 `bin` 保存当前 chunk。
+- `h5` 为 HDF5 容器，可选 `gzip` 压缩（`H5压缩` 下拉框，仅对 h5 生效）；若运行环境缺少 `h5py`，会记录一次 warning 并把本会话后续 chunk 固定回退为 `bin`（不再每个 chunk 重复告警或重试）。
 - joint 使用增量 chunk，不再每次写最近 N 秒全量快照，避免相邻文件大量重叠。
 - 停止时写盘线程会 drain 已入队请求，降低尾部 chunk 丢失风险。
 

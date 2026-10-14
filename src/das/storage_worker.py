@@ -113,6 +113,8 @@ class DASStorageWorker(QThread):
         self._format = "bin"
         self._h5_compression = "none"
         self._h5_compression_level = 4
+        # 运行环境缺少 h5py 时，一旦检测到回退就固定为 bin，避免每个 chunk 重复告警和重试。
+        self._h5py_unavailable = False
 
         # 统计信息
         self.stats: Dict[str, int] = {
@@ -229,8 +231,12 @@ class DASStorageWorker(QThread):
             frames = request.frames
             if not frames:
                 return
+            # h5py 缺失时本次会话固定回退 bin，避免每个 chunk 重复尝试与告警。
+            effective_format = self._format
+            if effective_format == "h5" and self._h5py_unavailable:
+                effective_format = "bin"
             max_request_bytes = (
-                self.MAX_BIN_REQUEST_BYTES if self._format == "bin" else self.MAX_SINGLE_REQUEST_BYTES
+                self.MAX_BIN_REQUEST_BYTES if effective_format == "bin" else self.MAX_SINGLE_REQUEST_BYTES
             )
             if request.estimated_bytes > max_request_bytes:
                 message = (
@@ -246,7 +252,7 @@ class DASStorageWorker(QThread):
 
             created_at = datetime.now().isoformat(timespec="milliseconds")
             file_path = save_joint(
-                self._format,
+                effective_format,
                 frames,
                 request.output_dir,
                 created_at=created_at,
@@ -255,6 +261,13 @@ class DASStorageWorker(QThread):
                 h5_compression_level=self._h5_compression_level,
                 fip_downsample=request.fip_downsample,
             )
+            if effective_format == "h5" and str(file_path).lower().endswith(".bin"):
+                # save_joint 内部因缺少 h5py 已回退为 bin；锁定会话格式并只告警一次。
+                self._h5py_unavailable = True
+                self._format = "bin"
+                self.logger.warning(
+                    "h5py is not installed; joint storage switched to bin for the rest of this session"
+                )
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self.stats["requests_saved"] += 1
             self.storage_saved.emit(str(file_path))
@@ -267,7 +280,7 @@ class DASStorageWorker(QThread):
             )
             self.logger.debug(
                 "TAB3_NODE storage.joint_saved fmt=%s frames=%d end_comm=%s file=%s elapsed_ms=%.2f saved=%d failures=%d",
-                self._format,
+                effective_format,
                 len(frames),
                 request.end_comm,
                 Path(file_path).name,
@@ -278,7 +291,7 @@ class DASStorageWorker(QThread):
             if elapsed_ms > 300.0:
                 self.logger.warning(
                     "TAB3_NODE storage.joint_slow fmt=%s frames=%d end_comm=%s elapsed_ms=%.2f file=%s",
-                    self._format,
+                    effective_format,
                     len(frames),
                     request.end_comm,
                     elapsed_ms,

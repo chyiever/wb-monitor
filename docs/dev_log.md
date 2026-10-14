@@ -1031,3 +1031,34 @@ View 页 DAS Space-Time 图长期以深蓝或深红为主，手动 V 范围从 `
 3. 离屏 GUI 检查通过：`tab3_joint_fip_downsample_spin`/`fip_storage_format_combo`/`edas_storage_format_combo`/`clear_stats_btn` 均存在；`get_tab3_settings()['storage']['joint_fip_downsample']=1`。
 4. 估算修正验证通过：`FIP降采样` 不变时联合 FIP 降采样 1→10，`FIP` 估算不变、`联合` 估算由 ~30.5 MB→~3.1 MB。
 5. 计数重置验证通过：FIP/eDAS TCP `reset_statistics()` 置零计数并保留 `_last_comm_count`；对齐协调器缺口记录清空；`_on_clear_statistics_clicked()` 不抛异常。
+
+## 2026-10-14 老版本运行日志复盘：内存保留与 h5 反复回退修复
+
+- 分析文件：`logs/pccp_monitor_2026-10-14_21-48-48 - 副本.log`（2320 行，2026-10-14 21:48:48 ~ 22:30:21，约 41 分钟，comm 0 → 2450）。
+- 更新范围：`src/das/manager.py`、`src/das/storage_worker.py`、`docs/dev_log.md`。
+
+### 日志分析
+
+1. 通信链连续、无缺口：FIP `FIP_PROCESS_STATS` 全程 `queue_dropped=0`、`gaps=0`；eDAS `das_tcp.stats` 全程 `missing=0`；`plot_worker.stats` 全程 `dropped=0`。
+2. 数值范围正常：FIP 解码相位无 `INT64_MIN`、无首样本 0 告警；eDAS `manager.das_values` 全程 `nan=0 inf=0`。
+3. 唯一异常告警是 `h5py is not installed; falling back joint storage from h5 to bin` 出现 **68 次**，联合存储配置为 `h5` 时每个 chunk 都回退并重复告警，日志被刷屏且每 chunk 重复尝试导入。
+4. `storage.joint_slow` 出现 **6 次**（`elapsed_ms` 2051 / 2648 / 3441 / 953 等）：这些时刻 `.bin` 顺序写盘耗时从常态 ~150 ms 突增到 2~3.4 s，与外因（磁盘/杀软）叠加，但进程长期保留大量无用数据会抬高内存并间接加重写盘抖动。
+5. 发现内存保留问题：`EDASManager._fip_recent_packets` 是 `deque(maxlen=64)`，**只被 append 和 `len()` 打印，从未被读取**。每包 `FIPSessionPacket` 持有 2 路 × 100 万点 × float64 ≈ 16 MB 的原始相位数组；填满 64 包后常驻约 1 GB，且与对齐缓存重复持有同一批数组（对齐缓存本身只保留约 10 s）。
+
+### 更新摘要
+
+1. 移除无用的大内存保留（`src/das/manager.py`）：
+   - 删除 `EDASManager._fip_recent_packets` 字段、`reset()` 中的 `clear()`、`process_fip_raw_packet()` 中的 `append()`，以及相关 `recent=%d` 日志字段。
+   - 联合存储所需的 FIP 包仍由 `AlignedSessionCoordinator` 按 `comm_count` 缓存，功能不受影响。
+   - 同时清理不再使用的 `deque`/`Deque` 导入。
+2. h5 缺依赖一次性回退（`src/das/storage_worker.py`）：
+   - `DASStorageWorker` 新增 `_h5py_unavailable` 标志；`_save()` 计算 `effective_format`，当会话内已检测到 h5py 缺失时直接走 `bin`。
+   - 首次检测到 `save_joint` 返回 `.bin`（说明内部已回退）后，锁定 `_format="bin"` 并只告警一次；此后即使 UI 再次同步为 `h5` 也不会再重复告警或重复尝试。
+   - `joint_saved`/`joint_slow` 日志改用 `effective_format`，避免日志显示与实际写盘格式不一致。
+
+### 验证
+
+1. 编译检查通过：`python -X utf8 -m compileall -q src`。
+2. 内存保留清理验证通过：`EDASManager` 不再含 `_fip_recent_packets`；推送一个原始 FIP 包后 `AlignedSessionCoordinator` 正常记录 `fip_last_comm_count`。
+3. h5 回退验证通过：`_format="h5"` 首次保存（模拟 `save_joint` 返回 `.bin`）后 `_format="bin"`、`_h5py_unavailable=True` 且仅告警一次；再次 `set_format("h5")` 后仍直接写 `bin`，不再重复告警。
+4. 回归：`python src\tools\validate_tab3_pipeline.py` 输出 `VALIDATION_OK`；`PCCPMonitorApp` 离屏构建与 `清空统计` 端到端通过。

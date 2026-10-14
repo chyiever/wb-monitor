@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import logging
 import time
-from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Deque, Optional
+from typing import Optional
 
 import numpy as np
 from PyQt5.QtCore import QObject, QTimer
@@ -53,7 +52,6 @@ class EDASManager(QObject):
         self._edas_storage_path = "D:/PCCP/eDASDATA"
         self._edas_blocks_per_file = 50
         self._edas_queue_packets = 200
-        self._fip_recent_packets: Deque[FIPSessionPacket] = deque(maxlen=64)
         self._storage_timer = QTimer()
         self._storage_timer.setInterval(1000)
         self._storage_timer.timeout.connect(self._maybe_store_snapshot)
@@ -146,7 +144,6 @@ class EDASManager(QObject):
 
     def reset(self) -> None:
         """Reset local state for a new monitoring session."""
-        self._fip_recent_packets.clear()
         self._last_snapshot_end_comm = -1
         self._joint_write_pending = False
         self._pending_wall_start = None
@@ -272,19 +269,17 @@ class EDASManager(QObject):
                 unwrapped_by_sensor=raw_by_sensor,
                 display_by_sensor=raw_by_sensor,
             )
-            self._fip_recent_packets.append(packet)
             self.coordinator.push_fip_packet(packet)
             if raw_packet.comm_count % 50 == 0:
                 self.logger.info(
                     "TAB3_NODE manager.fip_raw_storage comm=%s sensors=%s selected=FIP%s "
-                    "points=%d sample_rate=%.1f duration=%.6f recent=%d",
+                    "points=%d sample_rate=%.1f duration=%.6f",
                     raw_packet.comm_count,
                     sensor_count,
                     selected_sensor,
                     len(selected_raw),
                     sample_rate_hz,
                     packet_duration_seconds,
-                    len(self._fip_recent_packets),
                 )
         except Exception as exc:
             self.logger.error(
@@ -327,14 +322,13 @@ class EDASManager(QObject):
         }
         self.logger.debug(
             "TAB3_NODE manager.fip_packet comm=%s sensors=%s selected=FIP%s display_points=%d "
-            "sample_rate=%.1f duration=%.6f recent=%d source=display_processed first=%.9g",
+            "sample_rate=%.1f duration=%.6f source=display_processed first=%.9g",
             processed_data.comm_count,
             getattr(processed_data, "sensor_count", 1),
             selected_sensor,
             len(selected_display),
             display_sample_rate,
             packet_duration_seconds,
-            len(self._fip_recent_packets),
             float(selected_display[0]) if len(selected_display) else float("nan"),
         )
         if processed_data.comm_count % 50 == 0:
