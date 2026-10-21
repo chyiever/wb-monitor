@@ -1062,3 +1062,14 @@ View 页 DAS Space-Time 图长期以深蓝或深红为主，手动 V 范围从 `
 2. 内存保留清理验证通过：`EDASManager` 不再含 `_fip_recent_packets`；推送一个原始 FIP 包后 `AlignedSessionCoordinator` 正常记录 `fip_last_comm_count`。
 3. h5 回退验证通过：`_format="h5"` 首次保存（模拟 `save_joint` 返回 `.bin`）后 `_format="bin"`、`_h5py_unavailable=True` 且仅告警一次；再次 `set_format("h5")` 后仍直接写 `bin`，不再重复告警。
 4. 回归：`python src\tools\validate_tab3_pipeline.py` 输出 `VALIDATION_OK`；`PCCPMonitorApp` 离屏构建与 `清空统计` 端到端通过。
+
+## 2026-10-21 GUI 美化与分支同步
+
+- 移除标题和 Logo 区域下边线，标题样式限定到 appHeader，避免边框传给子控件。
+- 图件轴标签、刻度及色标统一 Times New Roman；保持现有字号设置可调。
+- Tab3 默认隐藏，Setting 增加显示开关；配置新增 setting.show_tab3，纳入自动保存及恢复，旧配置默认隐藏。
+- Setting 五个参数输入框统一 120 px，右对齐；设置卡片紧凑且左上对齐。
+- 上传范围沿用 docs、fipedasREAD、resources、src、README.md、requirements.txt、run.py；排除 fipedasREAD/dist，并加入 .gitignore。
+- 分支安排：master1/dev1 同步最新版本；master2/dev2 保留本次上传前远程 master/dev 的版本。
+- 验证通过：Python 编译、离屏 GUI 构建、Tab3 切换及配置兼容、自动保存信号、全部坐标轴和色标字体、输入框宽度与页面渲染。未进行现场设备联调。
+- 详细记录见 docs/2026-9-17-GUI美化记录(不断更新).md。

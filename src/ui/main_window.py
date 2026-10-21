@@ -353,7 +353,9 @@ class MainWindow(QMainWindow):
         """创建标题栏"""
         header_widget = QWidget()
         header_widget.setFixedHeight(80)
-        header_widget.setStyleSheet("background-color: #ffffff; border-bottom: 2px solid #2563eb;")
+        header_widget.setObjectName("appHeader")
+        header_widget.setStyleSheet("QWidget#appHeader { background-color: #ffffff; border: none; }\n"
+                                   "QWidget#appHeader QLabel { border: none; text-decoration: none; }")
 
         header_layout = QHBoxLayout(header_widget)
         header_layout.setContentsMargins(20, 10, 20, 10)
@@ -1338,6 +1340,7 @@ class MainWindow(QMainWindow):
     def _create_tab3(self):
         # Old Tab2 signal detection is now the third tab and remains off by default.
         tab3 = QWidget()
+        self.detection_tab = tab3
         self.tab_widget.addTab(tab3, "Tab3")
         main_layout = QHBoxLayout(tab3)
         left_panel = self._create_detection_params_panel()
@@ -1536,8 +1539,12 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(12)
         group = QGroupBox("全局显示设置")
+        group.setMaximumWidth(620)
         grid = QGridLayout(group)
-        grid.setColumnStretch(1, 1)
+        grid.setContentsMargins(20, 26, 20, 20)
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(14)
+        grid.setColumnStretch(2, 1)
         grid.addWidget(QLabel("GUI字体(pt)"), 0, 0)
         self.setting_gui_font_spin = QSpinBox()
         self.setting_gui_font_spin.setRange(8, 28)
@@ -1566,9 +1573,31 @@ class MainWindow(QMainWindow):
         self.setting_apply_btn = QPushButton("应用并保存全局设置")
         self.setting_apply_btn.setMinimumHeight(42)
         self._style_action_button(self.setting_apply_btn, False, min_height=42, min_width=190, font_size=15)
-        grid.addWidget(self.setting_apply_btn, 5, 0, 1, 2)
-        layout.addWidget(group)
+        self.setting_show_tab3_check = QCheckBox("显示 Tab3（信号检测）")
+        self.setting_show_tab3_check.setChecked(False)
+        self.setting_show_tab3_check.setToolTip("仅控制页面显示；不会启动或停止信号检测。")
+        grid.addWidget(self.setting_show_tab3_check, 5, 0, 1, 3)
+        for spin in (self.setting_gui_font_spin, self.setting_plot_title_font_spin,
+                     self.setting_axis_label_font_spin, self.setting_tick_font_spin,
+                     self.setting_psd_downsample_spin):
+            spin.setFixedWidth(120)
+            spin.setAlignment(Qt.AlignRight)
+        grid.addWidget(self.setting_apply_btn, 6, 0, 1, 3, Qt.AlignLeft)
+        layout.addWidget(group, alignment=Qt.AlignLeft)
         layout.addStretch()
+        self.setting_show_tab3_check.toggled.connect(self._apply_tab3_visibility)
+        self._apply_tab3_visibility()
+
+    def _apply_tab3_visibility(self) -> None:
+        """Show or hide the detection page without changing its runtime state."""
+        visible = self.setting_show_tab3_check.isChecked()
+        index = self.tab_widget.indexOf(self.detection_tab)
+        if visible and index < 0:
+            self.tab_widget.insertTab(2, self.detection_tab, "Tab3")
+        elif not visible and index >= 0:
+            if self.tab_widget.currentWidget() is self.detection_tab:
+                self.tab_widget.setCurrentIndex(0)
+            self.tab_widget.removeTab(index)
 
     def _init_menu(self):
         """初始化菜单栏"""
@@ -2056,6 +2085,7 @@ class MainWindow(QMainWindow):
             "axis_label_px": self.setting_axis_label_font_spin.value(),
             "tick_font_pt": self.setting_tick_font_spin.value(),
             "psd_downsample_factor": self.get_psd_downsample_factor(),
+            "show_tab3": self.setting_show_tab3_check.isChecked(),
         }
 
     def _persist_payload(self, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -2374,6 +2404,8 @@ class MainWindow(QMainWindow):
         self._set_spin_value(getattr(self, "setting_axis_label_font_spin", None), setting.get("axis_label_px"))
         self._set_spin_value(getattr(self, "setting_tick_font_spin", None), setting.get("tick_font_pt"))
         self._set_spin_value(getattr(self, "setting_psd_downsample_spin", None), setting.get("psd_downsample_factor"))
+        self._set_checked(self.setting_show_tab3_check, setting.get("show_tab3", False))
+        self._apply_tab3_visibility()
 
     def _apply_gui_config(self, config: Dict[str, Any]) -> None:
         """Restore saved GUI parameters while keeping communication stopped."""
@@ -2459,6 +2491,7 @@ class MainWindow(QMainWindow):
             self.setting_gui_font_spin, self.setting_plot_title_font_spin,
             self.setting_axis_label_font_spin, self.setting_tick_font_spin,
             self.setting_psd_downsample_spin,
+            self.setting_show_tab3_check,
         ]
         for controls in getattr(self, "detection_feature_checkboxes", {}).values():
             widgets.extend([controls.get("compute"), controls.get("plot")])
@@ -4384,7 +4417,7 @@ class MainWindow(QMainWindow):
         title_size = int(self.setting_plot_title_font_spin.value())
         axis_size = int(self.setting_axis_label_font_spin.value())
         tick_size = int(self.setting_tick_font_spin.value())
-        tick_font = QFont()
+        tick_font = QFont('Times New Roman')
         tick_font.setPointSize(tick_size)
         for plot in self._iter_plot_widgets():
             item = plot.getPlotItem()
@@ -4397,7 +4430,9 @@ class MainWindow(QMainWindow):
                 axis = item.getAxis(axis_name)
                 axis.setStyle(tickFont=tick_font)
                 try:
-                    axis.label.setFont(QFont('', axis_size))
+                    axis.labelStyle.update({'font-family': 'Times New Roman', 'font-size': f'{axis_size}px'})
+                    axis.label.setFont(QFont('Times New Roman'))
+                    axis._updateLabel()
                 except Exception:
                     pass
         histogram = getattr(self, "tab3_space_time_histogram", None)
@@ -4406,6 +4441,9 @@ class MainWindow(QMainWindow):
         if histogram_axis is not None:
             try:
                 histogram_axis.setStyle(tickFont=tick_font)
+                histogram_axis.labelStyle.update({'font-family': 'Times New Roman', 'font-size': f'{axis_size}px'})
+                histogram_axis.label.setFont(QFont('Times New Roman'))
+                histogram_axis._updateLabel()
             except Exception:
                 pass
 
