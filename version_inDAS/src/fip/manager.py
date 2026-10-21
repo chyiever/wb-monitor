@@ -1788,7 +1788,9 @@ class DataStorageThread(QThread):
 
             self.saved_sample_count += sample_count
             self.saved_duration_seconds += duration_seconds
-            self.stats['saved_file_count'] = self.saved_file_count
+            # Filename sequence includes failed attempts; the dashboard counts
+            # only successful file completions.
+            self.stats['saved_file_count'] += 1
             self.stats['saved_sample_count'] = self.saved_sample_count
 
             self.logger.info(
@@ -1969,7 +1971,7 @@ class OptimizedTab1ThreadManager(QObject):
 
         self.logger.info(
             'Storage drain finished. Saved files=%d, saved samples=%d',
-            self.storage_thread.saved_file_count,
+            self.storage_thread.stats['saved_file_count'],
             self.storage_thread.saved_sample_count,
         )
 

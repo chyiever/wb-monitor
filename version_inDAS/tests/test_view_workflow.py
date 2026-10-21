@@ -77,7 +77,7 @@ class ViewWorkflowTests(unittest.TestCase):
             w.tab_widget.setCurrentIndex(0)
             self.app.processEvents()
             visible = [g.title() for g in w.param_widget.findChildren(QGroupBox) if g.isVisible()]
-            self.assertEqual(visible, ['曲线选择', '联合采集'])
+            self.assertEqual(visible, ['曲线选择', '运行状态', '联合采集'])
             self.assertTrue(all(g.isHidden() for g in w._view_model_groups))
             self.assertTrue(w.param_widget.isAncestorOf(w.data_comm_both_btn))
             self.assertTrue(w.tab3_start_stop_btn.isHidden())

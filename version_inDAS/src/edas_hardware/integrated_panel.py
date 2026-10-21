@@ -31,6 +31,8 @@ class IntegratedEDASPanel(HardwareWindow):
         self._plot_font_size = 12
         self._timespace_unit = 'points'
         self._timespace_origin = 0.0
+        self._storage_session_serial = 0
+        self._last_storage_snapshot = {'session': 0, 'files': 0, 'failures': 0, 'error': ''}
         super().__init__(simulation_mode=simulation_mode)
         self.setMinimumSize(0, 0)
         self.pipeline_fault.connect(self._stop_on_pipeline_fault)
@@ -237,6 +239,32 @@ class IntegratedEDASPanel(HardwareWindow):
     def _save_local_params(self):
         if not self._applying_acquisition_settings:
             super()._save_local_params()
+            host = self.appearance_host
+            if host is not None and getattr(host, '_parameters_ready', False) and not getattr(host, '_parameter_transaction', False):
+                host._write_persisted_configuration(host.get_current_config())
+
+    def storage_snapshot(self):
+        saver = self.data_saver
+        if saver is None: return dict(self._last_storage_snapshot)
+        return {'session': self._storage_session_serial, 'files': saver.completed_file_count,
+                'failures': saver.dropped_blocks + int(bool(saver._write_error)), 'error': saver._write_error}
+
+    def _start_data_saver(self, params):
+        result = super()._start_data_saver(params)
+        if result:
+            self._storage_session_serial += 1
+            self._last_storage_snapshot = self.storage_snapshot()
+        return result
+
+    def _stop_data_saver(self):
+        saver = self.data_saver
+        super()._stop_data_saver()
+        if saver is not None:
+            self._last_storage_snapshot = {'session': self._storage_session_serial,
+                'files': saver.completed_file_count, 'failures': saver.dropped_blocks + int(bool(saver._write_error)),
+                'error': saver._write_error}
+            if self.appearance_host is not None and hasattr(self.appearance_host, 'record_das_storage'):
+                self.appearance_host.record_das_storage(self._last_storage_snapshot)
 
     def _collect_params(self):
         params = super()._collect_params()

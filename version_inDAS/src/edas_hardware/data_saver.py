@@ -112,6 +112,7 @@ class DataSaver:
         self._blocks_written = 0
         self._dropped_blocks = 0
         self._write_error = ""
+        self.completed_file_count = 0
         self._enqueue_count = 0
         self._max_queue_size_seen = 0
         self._last_write_ms = 0.0
@@ -164,6 +165,7 @@ class DataSaver:
         self._blocks_written = 0
         self._dropped_blocks = 0
         self._write_error = ""
+        self.completed_file_count = 0
         self._enqueue_count = 0
         self._max_queue_size_seen = 0
         self._last_write_ms = 0.0
@@ -209,16 +211,25 @@ class DataSaver:
             self._save_thread = None
 
         # Close file after the save thread has finished all pending writes.
-        if self._file_handle is not None:
-            self._file_handle.flush()
-            os.fsync(self._file_handle.fileno())
-            self._file_handle.close()
-            self._file_handle = None
+        self._close_output_file()
 
         log.info(f"Stopped saving. Bytes written: {self._bytes_written}, "
                  f"Blocks: {self._blocks_written}, Dropped: {self._dropped_blocks}, "
                  f"Max queue: {self._max_queue_size_seen}/{self.buffer_size}, "
                  f"Last write: {self._last_write_ms:.1f}ms/{self._last_write_bytes}B")
+
+    def _close_output_file(self):
+        if self._file_handle is not None:
+            try:
+                self._file_handle.flush()
+                os.fsync(self._file_handle.fileno())
+                self._file_handle.close()
+                self._file_handle = None
+                has_data = self._file_frames_written > 0 if hasattr(self, '_file_frames_written') else self._bytes_written > 0
+                if has_data: self.completed_file_count += 1
+            except OSError as exc:
+                self._write_error = str(exc)
+                raise
 
     def save(self, data: np.ndarray) -> bool:
         """Queue one owned array reference for background saving."""
@@ -578,6 +589,7 @@ class BlockBasedFileSaver(DataSaver):
         self._blocks_written = 0
         self._dropped_blocks = 0
         self._write_error = ""
+        self.completed_file_count = 0
         self._enqueue_count = 0
         self._max_queue_size_seen = 0
         self._last_write_ms = 0.0
@@ -738,10 +750,7 @@ class BlockBasedFileSaver(DataSaver):
                 f"{self._points_per_frame:04d}pt-{timestamp_str}.{milliseconds:03d}.bin")
 
     def _rotate_file(self):
-        if self._file_handle is not None:
-            self._file_handle.flush()
-            os.fsync(self._file_handle.fileno())
-            self._file_handle.close()
+        self._close_output_file()
         self._total_bytes_all_files += self._bytes_written
         self._file_no += 1
         self._current_filename = self._generate_filename()
@@ -982,6 +991,7 @@ class BitshuffleZstdFileSaver(DataSaver):
         self._blocks_written = 0
         self._dropped_blocks = 0
         self._write_error = ""
+        self.completed_file_count = 0
         self._enqueue_count = 0
         self._max_queue_size_seen = 0
         self._last_write_ms = 0.0
@@ -1079,10 +1089,7 @@ class BitshuffleZstdFileSaver(DataSaver):
         log.info(f"Opened .bz file: {filepath}")
 
     def _rotate_file(self):
-        if self._file_handle is not None:
-            self._file_handle.flush()
-            os.fsync(self._file_handle.fileno())
-            self._file_handle.close()
+        self._close_output_file()
         self._total_bytes_all_files += self._bytes_written
         self._file_no += 1
         self._open_new_file()
@@ -1215,11 +1222,7 @@ class BitshuffleZstdFileSaver(DataSaver):
             self._join_thread_until_stopped(self._writer_thread, "BZ writer thread")
             self._writer_thread = None
 
-        if self._file_handle is not None:
-            self._file_handle.flush()
-            os.fsync(self._file_handle.fileno())
-            self._file_handle.close()
-            self._file_handle = None
+        self._close_output_file()
 
         log.info(
             f"Stopped .bz saving. Files={self._total_files_created}, packets={self._packets_written}, "
@@ -1760,10 +1763,7 @@ class TimedFileSaver(DataSaver):
         self._total_bytes_all_files += self._bytes_written
 
         # Close current file
-        if self._file_handle is not None:
-            self._file_handle.flush()
-            os.fsync(self._file_handle.fileno())
-            self._file_handle.close()
+        self._close_output_file()
 
         # Increment file number and create new file
         self._file_no += 1

@@ -265,6 +265,8 @@ class PCCPMonitorApp:
 
         # Initialize processors
         self._initialize_processors()
+        if hasattr(self.main_window, 'bind_runtime_sources'):
+            self.main_window.bind_runtime_sources(self)
 
     def _application_root(self) -> Path:
         """Return the local application directory used for runtime artifacts."""
@@ -847,6 +849,7 @@ class PCCPMonitorApp:
                 self.fip_tab2_manager.stop()
             if self.tab1_manager:
                 self.tab1_manager.stop()
+                self.main_window.update_thread_stats(self.tab1_manager.get_thread_stats())
 
             # Stop TCP server
             if self.tcp_server:

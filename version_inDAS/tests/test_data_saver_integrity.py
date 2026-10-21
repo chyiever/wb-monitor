@@ -30,6 +30,14 @@ class DataSaverIntegrityTests(unittest.TestCase):
     PACKET_FRAMES = 5
     FILE_FRAMES = 10
 
+    def test_empty_file_is_not_counted_as_completed(self):
+        for saver_type in (BlockBasedFileSaver, BitshuffleZstdFileSaver):
+            with tempfile.TemporaryDirectory() as temporary:
+                saver = saver_type(temporary, packet_frames=5, file_frames_per_file=10)
+                self._start(saver)
+                saver.stop()
+                self.assertEqual(saver.completed_file_count, 0)
+
     @classmethod
     def _source_and_expected(cls) -> tuple[np.ndarray, np.ndarray]:
         source = np.arange(
@@ -79,6 +87,9 @@ class DataSaverIntegrityTests(unittest.TestCase):
 
             files = sorted(Path(temp_dir).glob("*.bin"))
             self.assertEqual(len(files), 2)
+            self.assertEqual(saver.completed_file_count, 2)
+            saver.stop()
+            self.assertEqual(saver.completed_file_count, 2)
             matrices = [
                 np.fromfile(path, dtype=np.int32).reshape(-1, self.SAVE_POINTS * self.CHANNELS)
                 for path in files

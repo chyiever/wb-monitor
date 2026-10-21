@@ -6,3 +6,4 @@ pandas==1.5.3
 psutil==5.9.4
 psutil>=5.9.0
 zstandard>=0.22.0
+cryptography>=3.4.8

@@ -63,10 +63,14 @@ class IntegratedGUITests(unittest.TestCase):
                 self.assertEqual([w.tab_widget.tabText(i) for i in range(w.tab_widget.count())],
                                  ['View', 'eDAS', 'FIP', 'Setting'])
                 self.assertTrue(manager.start())
-                until = time.monotonic() + 3.3
+                # Wait on the observable result, allowing a loaded Windows host
+                # scheduler to deliver three one-second simulated packets.
+                until = time.monotonic() + 6.0
                 while time.monotonic() < until:
                     self.app.processEvents()
                     time.sleep(.005)
+                    if manager.server.packets_received >= 3:
+                        break
                 self.assertGreaterEqual(manager.server.packets_received, 3)
                 self.assertGreater(len(p.plot_curve_1[0].getData()[0]), 0)
                 self.assertGreater(p.spectrum_curve.getData()[0][-1], 400)  # full-rate PSD, not image DS

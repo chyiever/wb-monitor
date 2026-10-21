@@ -294,7 +294,7 @@ class AcquisitionSettingsDialog(QDialog):
         self.panel._sync_length_frame_fields(config)
         return config
 
-    def validate_draft(self, config):
+    def validate_draft(self, config, fip_period=None):
         valid, message = self.panel._validate_params(config)
         if not valid: return message
         if config.time_space.distance_range_end <= config.time_space.distance_range_start:
@@ -314,7 +314,7 @@ class AcquisitionSettingsDialog(QDialog):
                 config.phase_demod.merge_point_num), config.phase_demod.crop_distance_start, config.phase_demod.crop_distance_end)
             if not 0 <= config.comm.channel_start <= config.comm.channel_end < width:
                 return f'共享通道范围须在 0～{width - 1} 内。'
-            expected = self.panel.fip_period_provider() if hasattr(self.panel, 'fip_period_provider') else config.comm.length_comm_s
+            expected = (self.panel.fip_period_provider() if hasattr(self.panel, 'fip_period_provider') else config.comm.length_comm_s) if fip_period is None else fip_period
             if abs(config.comm.length_comm_s - expected) > 1e-6:
                 return f'共享周期必须与 FIP 包时长一致（当前 {expected:g} s）。'
         return ''

@@ -121,6 +121,9 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if app is None:
             return
+        if app.property('wb_monitor_theme_installed'):
+            return
+        app.setProperty('wb_monitor_theme_installed', True)
         app.setStyleSheet(
             app.styleSheet()
             + """

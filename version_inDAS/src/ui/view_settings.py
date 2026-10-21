@@ -37,10 +37,13 @@ VIEW_FIELDS = (
 
 
 class ViewSettingsDialog(QDialog):
+    fields = VIEW_FIELDS
+    dialog_title = 'View 参数设置'
+
     def __init__(self, window):
         super().__init__(window)
         self.host = window
-        self.setWindowTitle('View 参数设置')
+        self.setWindowTitle(self.dialog_title)
         self.setFont(window.font())
         self.resize(840, 640)
         self.editors = {}
@@ -50,7 +53,7 @@ class ViewSettingsDialog(QDialog):
         layout.addWidget(notice)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
-        for title, fields in VIEW_FIELDS:
+        for title, fields in self.fields:
             page = QWidget()
             form = QFormLayout(page)
             form.setContentsMargins(20, 20, 20, 20)
@@ -81,9 +84,10 @@ class ViewSettingsDialog(QDialog):
         self.buttons.accepted.connect(self.apply_settings)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
-        self.editors['tab3_auto_levels_check'].toggled.connect(
-            lambda enabled: self.editors['tab3_v_range_edit'].setEnabled(not enabled))
-        self.editors['tab3_v_range_edit'].setEnabled(not self.editors['tab3_auto_levels_check'].isChecked())
+        if 'tab3_auto_levels_check' in self.editors:
+            self.editors['tab3_auto_levels_check'].toggled.connect(
+                lambda enabled: self.editors['tab3_v_range_edit'].setEnabled(not enabled))
+            self.editors['tab3_v_range_edit'].setEnabled(not self.editors['tab3_auto_levels_check'].isChecked())
 
     @staticmethod
     def clone_editor(source):
