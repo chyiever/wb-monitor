@@ -1,0 +1,63 @@
+#!/usr/bin/env python
+"""
+PCCP Wire Break Monitoring Software
+Quick launch script
+
+Usage:
+    python run.py              # Hardware mode
+    python run.py --simulate   # Simulated eDAS without hardware
+    python run.py --debug      # Enable debug logging
+    python run.py --log FILE   # Save log to file
+    python run.py --config FILE # Use custom config file
+"""
+
+import sys
+import os
+import argparse
+from pathlib import Path
+
+os.chdir(Path(__file__).resolve().parent)
+
+# Add src to path
+sys.path.insert(0, str(Path(__file__).parent / "src"))
+
+from src.main import main
+
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="PCCP Wire Break Monitoring Software",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__
+    )
+
+    parser.add_argument(
+        '--debug',
+        action='store_true',
+        help='Enable debug logging'
+    )
+
+    parser.add_argument(
+        '--log',
+        type=str,
+        metavar='FILE',
+        help='Save log to specified file'
+    )
+
+    parser.add_argument(
+        '--config',
+        type=str,
+        metavar='FILE',
+        help='Use custom configuration file'
+    )
+
+    parser.add_argument("--simulate", action="store_true", help="Simulate PCIe eDAS acquisition without hardware")
+    return parser.parse_args()
+
+
+if __name__ == '__main__':
+    args = parse_arguments()
+
+    # Pass arguments to main function. src.main owns logging configuration.
+    sys.exit(main(args))

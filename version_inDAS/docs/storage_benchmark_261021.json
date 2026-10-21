@@ -1,0 +1,44 @@
+{
+  "target_input_MB_s": 600,
+  "seconds": 10,
+  "joint_format": "bin32",
+  "block_bytes": 60000000,
+  "directory": "E:\\codes\\pccpHOST\\wb-monitor\\work\\disk-benchmark",
+  "modes": {
+    "das": {
+      "elapsed_s": 10.047,
+      "written_bytes": 6000000000,
+      "output_MB_s": 597.19,
+      "equivalent_input_MB_s": 597.19,
+      "final_drain_s": 0.031,
+      "peak_raw_queue_blocks": 1,
+      "producer_errors": [],
+      "dropped_blocks": 0,
+      "continuity_gap": 0,
+      "frames_received": 500000,
+      "frames_written": 500000
+    },
+    "joint": {
+      "elapsed_s": 5.0,
+      "written_bytes": 6000013120,
+      "output_MB_s": 1200.0,
+      "equivalent_input_MB_s": 1200.0,
+      "final_drain_s": 0.0,
+      "peak_raw_queue_blocks": 0,
+      "producer_errors": []
+    },
+    "combined": {
+      "elapsed_s": 10.063,
+      "written_bytes": 12000013120,
+      "output_MB_s": 1192.49,
+      "equivalent_input_MB_s": 596.24,
+      "final_drain_s": 0.047,
+      "peak_raw_queue_blocks": 1,
+      "producer_errors": [],
+      "dropped_blocks": 0,
+      "continuity_gap": 0,
+      "frames_received": 500000,
+      "frames_written": 500000
+    }
+  }
+}

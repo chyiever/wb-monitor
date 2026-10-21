@@ -263,12 +263,15 @@ def load_joint_bin(path: Path) -> JointReplayData:
     path = Path(path)
     with open(path, "rb") as f:
         magic = f.read(8)
-        if magic != b"FIPeDAS1":
+        if magic not in (b"FIPeDAS1", b"FIPeDAS2"):
             raise ValueError(f"不是 FIPeDAS joint bin 文件: {path.name}")
         header_len = struct.unpack("<I", f.read(4))[0]
         header = json.loads(f.read(header_len).decode("utf-8"))
         format_version = str(header.get("format_version", "wb-monitor-joint-bin-v1"))
         created_at = str(header.get("created_at", "") or header.get("wall_clock_start", ""))
+        das_dtype = np.dtype("<f4" if magic == b"FIPeDAS2" else "<f8")
+        if magic == b"FIPeDAS2" and header.get("das_dtype") != "<f4":
+            raise ValueError("joint bin v2 DAS dtype must be float32")
 
         fip1_frames: list[np.ndarray] = []
         fip2_frames: list[np.ndarray] = []
@@ -299,7 +302,7 @@ def load_joint_bin(path: Path) -> JointReplayData:
                     f2 = sensors[1]
             rows, cols = struct.unpack("<ii", f.read(8))
             if rows > 0 and cols > 0:
-                das = np.frombuffer(f.read(rows * cols * 8), dtype="<f8").reshape(rows, cols)
+                das = np.frombuffer(f.read(rows * cols * das_dtype.itemsize), dtype=das_dtype).reshape(rows, cols)
             else:
                 das = np.empty((0, 0), dtype=np.float32)
 

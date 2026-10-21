@@ -74,3 +74,7 @@ python .\fipedasREAD\build_exe.py --name 自定义名称
 - **性能**：超长序列先降采样再滤波，并缓存绘图结果，切换/重复查看文件更快。
 
 更多字段说明和 GUI 细节见 [docs/README.md](docs/README.md)。
+
+## 2026-10-21 双版本存储格式
+
+内置版联合存储新增 `FIPeDAS2` 魔数与 `bin32` 格式（DAS float32、FIP float64）。当前 data_loader.py 同时支持旧 `FIPeDAS1` 与新格式。历史 dist EXE 未重打包；回放新格式请从当前源码运行。

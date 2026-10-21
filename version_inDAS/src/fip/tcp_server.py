@@ -1,0 +1,589 @@
+"""
+Optimized TCP Server Module for PCCP Monitoring System
+
+Simplified and efficient TCP server for high-throughput data reception.
+Based on reference TCP.py implementation.
+
+Author: Claude
+Date: 2026-03-11
+Updated: 2026-03-12 - Performance optimizations for packet loss prevention
+"""
+
+import socket
+import struct
+import threading
+import time
+import logging
+import numpy as np
+from typing import Optional, Tuple
+from PyQt5.QtCore import QObject, pyqtSignal
+
+
+class DataPacket:
+    """Data packet structure"""
+    def __init__(
+        self,
+        data_array: np.ndarray,
+        timestamp: float,
+        packet_count: int,
+        raw_packet_count: Optional[int] = None,
+        receive_timestamp: Optional[float] = None,
+    ):
+        self.phase_data = data_array
+        self.timestamp = timestamp
+        self.comm_count = packet_count
+        self.raw_comm_count = packet_count if raw_packet_count is None else raw_packet_count
+        self.receive_timestamp = time.time() if receive_timestamp is None else float(receive_timestamp)
+        self.data_size = len(data_array) * 8
+
+
+COMM_INTERVAL = 1.0  # Default FIP packet duration; runtime value is configured in Tab1.
+MAX_DATA_LENGTH_BYTES = 128 * 1024 * 1024
+FIP_FIXED_POINT_FRACTION_BITS = 24
+FIP_FIXED_POINT_SCALE = float(2 ** FIP_FIXED_POINT_FRACTION_BITS)
+
+
+class OptimizedTCPServer(QObject):
+    """Optimized TCP Server for PCCP data reception"""
+
+    # Signals
+    data_received = pyqtSignal(DataPacket)
+    connection_status = pyqtSignal(bool, str)
+    error_occurred = pyqtSignal(str)
+
+    def __init__(self, ip: str = "0.0.0.0", port: int = 3677):
+        super().__init__()
+
+        self.ip = ip
+        self.port = port
+
+        # Sockets
+        self.server_socket: Optional[socket.socket] = None
+        self.client_socket: Optional[socket.socket] = None
+        self.client_address: Optional[Tuple[str, int]] = None
+
+        # Control flags
+        self._running = False
+        self._connected = False
+        self._server_thread: Optional[threading.Thread] = None
+
+        # Statistics
+        self.packets_received = 0
+        self.total_data_received = 0
+        self.total_data_received_lifetime = 0
+        self.last_stats_time = time.time()
+        self._stats_packets_at_last_log = 0
+        self._last_statistics_snapshot_time = time.time()
+        self._last_statistics_snapshot_packets = 0
+        self._last_statistics_snapshot_bytes = 0
+
+        # Communication counter normalization (per connection/session)
+        self._comm_base_raw: Optional[int] = None
+        self._last_raw_comm_count: Optional[int] = None
+        self._last_comm_count: Optional[int] = None
+        self.missing_packets = 0
+
+        # Performance monitoring
+        self.performance_stats = {
+            'receive_times': [],
+            'tcp_queue_sizes': [],
+            'last_monitor_time': time.time()
+        }
+
+        self.logger = logging.getLogger(__name__)
+
+    def start_server(self) -> bool:
+        """启动 TCP 服务器，监听指定地址和端口。
+
+        Returns:
+            True 表示启动成功，False 表示启动失败。
+
+        端口可用性检查（X-02）：
+            快速重启时旧 socket 可能还处于 TIME_WAIT 状态，
+            虽然 SO_REUSEADDR 通常能解决此问题，但若系统不支持，
+            会在 bind 前做最多 3 次（共约 3 s）的重试，
+            超时后给出明确错误提示，避免静默失败。
+        """
+        try:
+            if self._running:
+                return True
+
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # SO_REUSEADDR：允许快速重用处于 TIME_WAIT 的端口（X-02）
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+            # 尝试绑定端口，最多重试 3 次（X-02）
+            bind_attempts = 3
+            for attempt in range(1, bind_attempts + 1):
+                try:
+                    self.server_socket.bind((self.ip, self.port))
+                    break
+                except OSError as bind_err:
+                    if attempt < bind_attempts:
+                        self.logger.warning(
+                            "Port %d bind failed (attempt %d/%d): %s. Retrying in 1 s...",
+                            self.port, attempt, bind_attempts, bind_err,
+                        )
+                        time.sleep(1.0)
+                    else:
+                        raise OSError(
+                            f"Port {self.port} is still occupied after {bind_attempts} attempts. "
+                            "Please wait a few seconds and try again. "
+                            f"Last error: {bind_err}"
+                        ) from bind_err
+
+            self.server_socket.listen(1)
+
+            self._running = True
+            self.logger.info(f"TCP Server started on {self.ip}:{self.port}")
+
+            self._server_thread = threading.Thread(target=self._server_loop, daemon=True)
+            self._server_thread.start()
+
+            self.connection_status.emit(True, f"Server started on {self.ip}:{self.port}")
+            return True
+
+        except Exception as e:
+            self.logger.error(f"Failed to start server: {e}")
+            self.error_occurred.emit(f"Failed to start server: {e}")
+            return False
+
+    def stop_server(self):
+        """Stop TCP server"""
+        self._running = False
+
+        if self.client_socket:
+            try:
+                self.client_socket.close()
+            except:
+                pass
+            self.client_socket = None
+
+        if self.server_socket:
+            try:
+                self.server_socket.close()
+            except:
+                pass
+            self.server_socket = None
+
+        self._connected = False
+        self.connection_status.emit(False, "Server stopped")
+
+    def _server_loop(self):
+        """Main server loop"""
+        while self._running and self.server_socket:
+            try:
+                self.logger.info("Waiting for client connection...")
+                self.connection_status.emit(False, "Waiting for connection...")
+
+                self.client_socket, self.client_address = self.server_socket.accept()
+
+                # Optimize TCP settings for high-throughput data reception
+                self.client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
+                # Increase TCP receive buffer to 8MB (was 1MB) to prevent packet loss
+                self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8388608)  # 8MB
+
+                # Get actual buffer size for monitoring
+                actual_buffer_size = self.client_socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
+                self.logger.info(f"TCP receive buffer set to {actual_buffer_size} bytes")
+
+                self._connected = True
+                self.logger.info(f"Client connected from {self.client_address}")
+                self.connection_status.emit(True, f"Connected to {self.client_address}")
+
+                # Reset statistics on new connection
+                self.packets_received = 0
+                self.total_data_received = 0
+                self.total_data_received_lifetime = 0
+                self.last_stats_time = time.time()
+                self._stats_packets_at_last_log = 0
+                self._last_statistics_snapshot_time = self.last_stats_time
+                self._last_statistics_snapshot_packets = 0
+                self._last_statistics_snapshot_bytes = 0
+                self._comm_base_raw = None
+                self._last_raw_comm_count = None
+                self._last_comm_count = None
+                self.missing_packets = 0
+                self.performance_stats = {
+                    'receive_times': [],
+                    'tcp_queue_sizes': [],
+                    'last_monitor_time': time.time()
+                }
+
+                self._receive_loop()
+
+            except Exception as e:
+                if self._running:
+                    self.logger.error(f"Server error: {e}")
+                    self._handle_disconnection()
+
+    def _receive_loop(self):
+        """Data reception loop - simplified without duplicate packet detection"""
+        while self._running and self._connected and self.client_socket:
+            try:
+                packet_start_time = time.time()
+                self.client_socket.settimeout(1.0)
+
+                # Monitor TCP receive queue size
+                self._monitor_tcp_queue()
+
+                # Receive 8-byte header: comm_count + data_length
+                header_bytes = self._recv_exact(8)
+                if not header_bytes:
+                    time.sleep(0.001)
+                    continue
+
+                raw_comm_count, data_length = struct.unpack('>II', header_bytes)
+
+                # Normalize comm_count so each new communication session starts from 0.
+                comm_count = self._normalize_comm_count(raw_comm_count)
+
+                # Basic validation only
+                if data_length == 0 or data_length > MAX_DATA_LENGTH_BYTES:
+                    # 非法包长会导致字节流永久失步：后续 recv 会把包体误当包头解析。
+                    # 正确处理：关闭连接，由外层 _server_loop 重新等待新连接，恢复同步。
+                    self.logger.error(
+                        f"Invalid data_length={data_length} from {self.client_address}, "
+                        f"max_allowed={MAX_DATA_LENGTH_BYTES}, "
+                        "closing connection to resync byte stream."
+                    )
+                    break
+
+                # Receive data body
+                data_buff = self._recv_exact(data_length)
+                if not data_buff:
+                    self.logger.warning("Failed to receive complete data packet")
+                    continue
+                packet_receive_time = time.time()
+
+                # Process data - no duplicate checking, accept all valid packets
+                packet = self._process_data(data_buff, data_length, comm_count, raw_comm_count, packet_receive_time)
+                if packet:
+                    self._update_gap_stats(comm_count)
+                    self.packets_received += 1
+                    self.total_data_received += data_length
+                    self.total_data_received_lifetime += data_length
+
+                    # Record performance metrics
+                    packet_time = (time.time() - packet_start_time) * 1000.0
+                    self.performance_stats['receive_times'].append(packet_time)
+
+                    # Keep only recent performance data (last 100 packets)
+                    if len(self.performance_stats['receive_times']) > 100:
+                        self.performance_stats['receive_times'] = self.performance_stats['receive_times'][-100:]
+
+                    self.data_received.emit(packet)
+
+                    # Periodic performance reporting (every 50 packets)
+                    if self.packets_received % 50 == 0:
+                        self._log_performance_stats()
+
+            except socket.timeout:
+                continue
+            except Exception as e:
+                if self._running:
+                    self.logger.error(f"Receive error: {e}")
+                    break
+
+        self._handle_disconnection()
+
+    def _recv_exact(self, size: int) -> Optional[bytes]:
+        """精确接收指定字节数的数据，处理 TCP 拆包/粘包问题。
+
+        Args:
+            size: 需要接收的字节数。
+
+        Returns:
+            接收到的字节串（长度恰好为 size），或在以下情况返回 None：
+            - 连接断开（recv 返回空字节）
+            - _running 被置为 False（stop_server() 调用后快速退出）
+            - socket 错误
+
+        停止响应说明：
+            socket 超时间隔为 1 s。每次超时时主动检查 _running 标志，
+            若已置 False 立即返回 None，确保 stop_server() 后线程在 1 s
+            内退出，不会残留悬挂的 socket 句柄。
+        """
+        if not self.client_socket:
+            return None
+
+        data = bytearray()
+        bytes_needed = size
+
+        while bytes_needed > 0 and self._running:
+            try:
+                chunk_size = min(bytes_needed, 65536)  # 64KB 分块接收
+                chunk = self.client_socket.recv(chunk_size)
+                if not chunk:
+                    # 对端关闭连接
+                    return None
+                data.extend(chunk)
+                bytes_needed -= len(chunk)
+            except socket.timeout:
+                # 超时后检查停止标志，确保 stop_server() 后能快速退出
+                if not self._running:
+                    return None
+                continue
+            except socket.error:
+                return None
+
+        return bytes(data) if len(data) == size else None
+
+    def _normalize_comm_count(self, raw_comm_count: int) -> int:
+        """Normalize raw communication counter to start from 0 per connection.
+
+        The sender may begin from arbitrary raw values. We rebase the first packet
+        to 0 so upper-layer processing can assume session-local indexing.
+        """
+        if self._comm_base_raw is None:
+            self._comm_base_raw = raw_comm_count
+            self._last_raw_comm_count = raw_comm_count
+            self.logger.info(
+                f"Communication counter base initialized: raw_base={self._comm_base_raw}, normalized_start=0"
+            )
+            return 0
+
+        # If sender counter goes backward significantly, treat as sender-side reset.
+        if self._last_raw_comm_count is not None and raw_comm_count < self._last_raw_comm_count:
+            self.logger.info(
+                f"Detected raw comm_count reset: last_raw={self._last_raw_comm_count}, "
+                f"current_raw={raw_comm_count}. Re-basing normalized counter to 0."
+            )
+            self._comm_base_raw = raw_comm_count
+            self._last_raw_comm_count = raw_comm_count
+            return 0
+
+        self._last_raw_comm_count = raw_comm_count
+        return raw_comm_count - self._comm_base_raw
+
+    def _update_gap_stats(self, comm_count: int) -> None:
+        if self._last_comm_count is None:
+            self._last_comm_count = comm_count
+            return
+        if comm_count > self._last_comm_count + 1:
+            gap = comm_count - self._last_comm_count - 1
+            self.missing_packets += gap
+            self.logger.warning(
+                "FIP communication gap detected: last=%s current=%s missing=%s total_missing=%s",
+                self._last_comm_count,
+                comm_count,
+                gap,
+                self.missing_packets,
+            )
+        elif comm_count <= self._last_comm_count:
+            self.logger.info(
+                "FIP communication counter reset/out-of-order: last=%s current=%s",
+                self._last_comm_count,
+                comm_count,
+            )
+        self._last_comm_count = comm_count
+
+    def _process_data(
+        self,
+        data_buff: bytes,
+        data_length: int,
+        comm_count: int,
+        raw_comm_count: int,
+        receive_timestamp: float,
+    ) -> Optional[DataPacket]:
+        """Process received data"""
+        try:
+            # 每 50 包记录一次，避免 TCP 接收循环中高频 INFO 日志拖慢性能
+            if comm_count % 50 == 0:
+                self.logger.info(
+                    f"Processing data: length={data_length}, comm_count={comm_count}, raw_comm_count={raw_comm_count}"
+                )
+
+            # Check data length (must be multiple of 8 for signed Q40.24 fixed point)
+            if data_length % 8 != 0:
+                self.logger.warning(f"Invalid data length: {data_length} (not multiple of 8)")
+                return None
+
+            # Parse signed Q40.24 fixed point format (big endian)
+            point_count = data_length // 8
+            raw_values = np.frombuffer(data_buff, dtype=">i8", count=point_count)
+
+            # Convert signed Q40.24 fixed point to the FIP device engineering unit.
+            data_array = raw_values.astype(np.float64) / FIP_FIXED_POINT_SCALE
+
+            # 每 50 包记录一次解析结果
+            if comm_count % 50 == 0:
+                self.logger.info(
+                    "FIP_TCP_PARSE comm=%s raw_comm=%s points=%d raw_first=%d "
+                    "raw_range=[%d,%d] fixed_q=Q40.%d decoded_first=%.9g decoded_range=[%.9g,%.9g]",
+                    comm_count,
+                    raw_comm_count,
+                    point_count,
+                    int(raw_values[0]) if point_count else 0,
+                    int(np.min(raw_values)) if point_count else 0,
+                    int(np.max(raw_values)) if point_count else 0,
+                    FIP_FIXED_POINT_FRACTION_BITS,
+                    float(data_array[0]) if point_count else float("nan"),
+                    float(np.min(data_array)) if point_count else float("nan"),
+                    float(np.max(data_array)) if point_count else float("nan"),
+                )
+
+            # timestamp 仅作为绘图缓冲区的起始提示（seconds），
+            # 绘图缓冲区会以实际样本数连续延伸，此值只在首包或断连重锚时有意义。
+            # 用 0.0 即可，缓冲区内部自行维护连续时间轴。
+            return DataPacket(
+                data_array,
+                0.0,
+                comm_count,
+                raw_packet_count=raw_comm_count,
+                receive_timestamp=receive_timestamp,
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error processing data packet #{comm_count}: {e}")
+            self.logger.error(f"Data length: {data_length}, first 32 bytes: {data_buff[:32].hex() if len(data_buff) >= 32 else data_buff.hex()}")
+            return None
+
+    def _monitor_tcp_queue(self):
+        """Monitor TCP receive queue size"""
+        try:
+            if not self.client_socket:
+                return
+
+            # Get socket file descriptor
+            sockfd = self.client_socket.fileno()
+
+            # Try to get queue size using SIOCOUTQ (available bytes in receive buffer)
+            if hasattr(socket, 'SIOCOUTQ'):
+                import fcntl
+                try:
+                    # Get receive queue size (bytes waiting to be read)
+                    queue_size = struct.unpack('I', fcntl.ioctl(sockfd, socket.SIOCOUTQ, struct.pack('I', 0)))[0]
+                    self.performance_stats['tcp_queue_sizes'].append(queue_size)
+
+                    # Keep only recent queue size data
+                    if len(self.performance_stats['tcp_queue_sizes']) > 100:
+                        self.performance_stats['tcp_queue_sizes'] = self.performance_stats['tcp_queue_sizes'][-100:]
+
+                except (OSError, IOError):
+                    pass
+        except Exception:
+            # Queue monitoring is non-critical, continue on any error
+            pass
+
+    def _log_performance_stats(self):
+        """Log performance statistics"""
+        try:
+            current_time = time.time()
+            elapsed_time = current_time - self.last_stats_time
+
+            if elapsed_time > 0:
+                # Calculate interval throughput and packet rate.
+                data_rate_mbps = (self.total_data_received / elapsed_time) / (1024 * 1024)
+                interval_packets = self.packets_received - self._stats_packets_at_last_log
+                packet_rate = interval_packets / elapsed_time
+
+                # Calculate average receive time
+                avg_receive_time = 0
+                if self.performance_stats['receive_times']:
+                    avg_receive_time = sum(self.performance_stats['receive_times']) / len(self.performance_stats['receive_times'])
+
+                # Calculate average queue size
+                avg_queue_size = 0
+                if self.performance_stats['tcp_queue_sizes']:
+                    avg_queue_size = sum(self.performance_stats['tcp_queue_sizes']) / len(self.performance_stats['tcp_queue_sizes'])
+
+                # Log performance statistics
+                self.logger.info(
+                    f"Performance Stats - Packets: {self.packets_received}, "
+                    f"Rate: {packet_rate:.1f} pkt/s, "
+                    f"Throughput: {data_rate_mbps:.2f} MB/s, "
+                    f"Avg RX Time: {avg_receive_time:.1f}ms, "
+                    f"Avg Queue: {avg_queue_size:.0f} bytes"
+                )
+
+                # Reset counters for next interval
+                self.total_data_received = 0
+                self._stats_packets_at_last_log = self.packets_received
+                self.last_stats_time = current_time
+
+        except Exception as e:
+            self.logger.warning(f"Error logging performance stats: {e}")
+
+    def _handle_disconnection(self):
+        """Handle client disconnection"""
+        self._connected = False
+        if self.client_socket:
+            try:
+                self.client_socket.close()
+            except:
+                pass
+            self.client_socket = None
+            self.client_address = None
+
+        self.connection_status.emit(False, "Client disconnected")
+
+    def get_statistics(self) -> dict:
+        """Get connection statistics"""
+        current_time = time.time()
+        elapsed_time = current_time - self._last_statistics_snapshot_time
+
+        # Calculate interval rates for the UI. Logging statistics use their own
+        # 50-packet counters, so keep this snapshot independent.
+        data_rate_mbps = 0
+        packet_rate = 0
+        if elapsed_time > 0:
+            interval_packets = self.packets_received - self._last_statistics_snapshot_packets
+            interval_bytes = self.total_data_received_lifetime - self._last_statistics_snapshot_bytes
+            data_rate_mbps = (interval_bytes / elapsed_time) / (1024 * 1024)
+            packet_rate = interval_packets / elapsed_time
+            self._last_statistics_snapshot_time = current_time
+            self._last_statistics_snapshot_packets = self.packets_received
+            self._last_statistics_snapshot_bytes = self.total_data_received_lifetime
+
+        # Get average performance metrics
+        avg_receive_time = 0
+        if self.performance_stats['receive_times']:
+            avg_receive_time = sum(self.performance_stats['receive_times']) / len(self.performance_stats['receive_times'])
+
+        avg_queue_size = 0
+        max_queue_size = 0
+        if self.performance_stats['tcp_queue_sizes']:
+            avg_queue_size = sum(self.performance_stats['tcp_queue_sizes']) / len(self.performance_stats['tcp_queue_sizes'])
+            max_queue_size = max(self.performance_stats['tcp_queue_sizes'])
+        total_packet_slots = self.packets_received + self.missing_packets
+        loss_rate = (self.missing_packets / total_packet_slots * 100.0) if total_packet_slots > 0 else 0.0
+
+        return {
+            'connected': self._connected,
+            'packets_received': self.packets_received,
+            'missing_packets': self.missing_packets,
+            'packets_lost': self.missing_packets,
+            'loss_rate': loss_rate,
+            'last_comm_count': -1 if self._last_comm_count is None else self._last_comm_count,
+            'total_data_received': self.total_data_received_lifetime,
+            'packet_rate': packet_rate,
+            'data_rate_mbps': data_rate_mbps,
+            'avg_receive_time_ms': avg_receive_time,
+            'avg_tcp_queue_bytes': avg_queue_size,
+            'max_tcp_queue_bytes': max_queue_size,
+            'client_address': str(self.client_address) if self.client_address else None
+        }
+
+    def is_connected(self) -> bool:
+        """Check connection status"""
+        return self._connected and self.client_socket is not None
+
+    def reset_statistics(self) -> None:
+        """Reset UI-facing counters while preserving comm_count gap tracking.
+
+        ``_last_comm_count`` and the raw/normalized comm counters are kept so a
+        manual statistics clear does not mask a real subsequent gap.
+        """
+        self.packets_received = 0
+        self.missing_packets = 0
+        self.total_data_received = 0
+        self.total_data_received_lifetime = 0
+        self.performance_stats['receive_times'].clear()
+        self.performance_stats['tcp_queue_sizes'].clear()
+        self._stats_packets_at_last_log = 0
+        self._last_statistics_snapshot_time = time.time()
+        self._last_statistics_snapshot_packets = 0
+        self._last_statistics_snapshot_bytes = 0
+        self.logger.info("TCP statistics counters were cleared by the operator")
