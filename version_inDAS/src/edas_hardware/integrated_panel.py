@@ -26,7 +26,6 @@ class IntegratedEDASPanel(HardwareWindow):
         self._full_rate_wave_blocks = deque()
         super().__init__(simulation_mode=simulation_mode)
         self.setMinimumSize(0, 0)
-        self.setWindowFlags(Qt.Widget)
         self.pipeline_fault.connect(self._stop_on_pipeline_fault)
         self.tcp_tab3_manager.error_occurred.connect(self._shared_fault)
         self.mode_space_radio.setChecked(True)
@@ -41,6 +40,15 @@ class IntegratedEDASPanel(HardwareWindow):
         self.monitor_enable_check.hide()
         self.spectrum_enable_check.hide()
         self._refresh_parameter_summary()
+
+    def _init_device(self):
+        # A startup warning opens a nested event loop. Do not let it create a
+        # native window for this panel before QTabWidget has embedded it: on
+        # Windows that leaves the child controls with incorrect mouse targets.
+        QTimer.singleShot(0, self._init_embedded_device)
+
+    def _init_embedded_device(self):
+        super()._init_device()
 
     def _get_settings_path(self):
         return Path(__file__).resolve().parents[2] / 'config' / 'edas_last_params.json'
