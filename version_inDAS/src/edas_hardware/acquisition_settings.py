@@ -5,10 +5,10 @@ fresh child of this dialog, never a widget moved out of a hidden QTabWidget.
 """
 from copy import deepcopy
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QEvent
 from PyQt5.QtWidgets import (QDialog, QDialogButtonBox, QVBoxLayout, QFormLayout,
     QWidget, QScrollArea, QTabWidget, QLabel, QComboBox, QSpinBox, QDoubleSpinBox,
-    QLineEdit, QCheckBox, QListView, QHBoxLayout, QPushButton, QFileDialog)
+    QLineEdit, QCheckBox, QListView, QHBoxLayout, QPushButton, QFileDialog, QApplication)
 
 from .config import ClockSource, TriggerDirection, DataSource, calculate_phase_point_num, calculate_cropped_point_count
 from .realtime_filter import parse_filter_spec
@@ -38,7 +38,7 @@ SETTINGS_TABS = (
         ('差分阶数 DiffOrder', 'phase_demod.diff_order', 'diff_order_spin'),
         ('去趋势 Detrend (Hz)', 'phase_demod.detrend_bw', 'detrend_bw_spin'),
         ('裁剪起点 CropStart', 'phase_demod.crop_distance_start', 'crop_distance_start_spin'),
-        ('裁剪终点 CropEnd', 'phase_demod.crop_distance_end', 'crop_distance_end_spin'),
+        ('裁剪终点 CropEnd（不含）', 'phase_demod.crop_distance_end', 'crop_distance_end_spin'),
     )),
     ('时长设置', (
         ('DLL 读取块 Length/Load (s)', 'display.length_load_s', 'length_load_spin'),
@@ -93,20 +93,25 @@ def set_config_value(config, path, value):
     setattr(config, names[-1], value)
 
 
+def format_fiber_distance(meters):
+    return f'{meters / 1000:.2f} km' if meters > 10000 else f'{meters:.1f} m'
+
+
 class AcquisitionSettingsDialog(QDialog):
     def __init__(self, panel, parent=None):
         super().__init__(parent)
         self.panel = panel
         self.setObjectName('edasAcquisitionSettings')
         self.setWindowTitle('eDAS 采集参数设置')
-        self.setWindowModality(Qt.WindowModal)
+        self.setWindowModality(Qt.NonModal)
         self.setFont(panel.font())
-        self.resize(740, 600)
-        self.setMinimumSize(620, 480)
+        self.resize(840, 600)
+        self.setMinimumSize(740, 480)
         self.original_config = deepcopy(panel._collect_params())
         self.editors = {}
+        self.derived_labels = {}
         layout = QVBoxLayout(self)
-        self.notice = QLabel('修改后点击“应用并保存”；取消不会改变当前配置。硬件参数在下次启动采集时下发。')
+        self.notice = QLabel('仅点击“应用并保存”生效；点击窗口外或取消将关闭并放弃修改。硬件参数在下次启动采集时下发。')
         self.notice.setWordWrap(True)
         layout.addWidget(self.notice)
         self.tabs = QTabWidget()
@@ -139,6 +144,17 @@ class AcquisitionSettingsDialog(QDialog):
                     browse.clicked.connect(self._browse_path)
                     row.addWidget(browse)
                     form.addRow(label, holder)
+                elif path in ('basic.point_num_per_scan', 'phase_demod.merge_point_num', 'phase_demod.diff_order'):
+                    editor.setFixedWidth(220)
+                    holder = QWidget()
+                    row = QHBoxLayout(holder)
+                    row.setContentsMargins(0, 0, 0, 0)
+                    row.addWidget(editor)
+                    hint = QLabel()
+                    self.derived_labels[path] = hint
+                    row.addWidget(hint)
+                    row.addStretch()
+                    form.addRow(label, holder)
                 else:
                     form.addRow(label, editor)
             scroll = QScrollArea()
@@ -153,13 +169,46 @@ class AcquisitionSettingsDialog(QDialog):
         self.buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.buttons.button(QDialogButtonBox.Save).setText('应用并保存')
         self.buttons.button(QDialogButtonBox.Cancel).setText('取消')
+        self.buttons.button(QDialogButtonBox.Save).setAutoDefault(False)
+        self.buttons.button(QDialogButtonBox.Cancel).setAutoDefault(False)
         self.buttons.accepted.connect(self.apply_settings)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
+        for path in ('basic.point_num_per_scan', 'phase_demod.merge_point_num', 'phase_demod.diff_order'):
+            self.editors[path].valueChanged.connect(self._refresh_derived_labels)
+        self._refresh_derived_labels()
         if panel.acquisition_running():
             self.notice.setText('采集中：参数只读。请先关闭此窗口并停止采集，再修改参数，避免采集和文件格式在中途变化。')
             for editor in self.editors.values(): editor.setEnabled(False)
             self.buttons.button(QDialogButtonBox.Save).setEnabled(False)
+
+    def _refresh_derived_labels(self):
+        points = self.editors['basic.point_num_per_scan'].value()
+        dx = .4 * self.editors['phase_demod.merge_point_num'].value()
+        gl = dx * self.editors['phase_demod.diff_order'].value()
+        self.derived_labels['basic.point_num_per_scan'].setText('Fiber Length=' + format_fiber_distance(points * .4))
+        self.derived_labels['phase_demod.merge_point_num'].setText(f'dx={dx:.1f} m')
+        self.derived_labels['phase_demod.diff_order'].setText(f'GL={gl:.1f} m')
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QApplication.instance().installEventFilter(self)
+
+    def hideEvent(self, event):
+        QApplication.instance().removeEventFilter(self)
+        super().hideEvent(event)
+
+    def eventFilter(self, watched, event):
+        if self.isVisible():
+            if event.type() == QEvent.MouseButtonPress and isinstance(watched, QWidget):
+                # Combo popups and owned file dialogs are part of this editor.
+                if watched is not self and not self.isAncestorOf(watched):
+                    if not self.frameGeometry().contains(event.globalPos()):
+                        self.reject()
+                        return True
+            elif event.type() == QEvent.ApplicationDeactivate:
+                self.reject()
+        return super().eventFilter(watched, event)
 
     def _make_editor(self, path, original, value):
         if isinstance(original, QComboBox) or path in ('basic.clk_src', 'basic.trig_dir'):

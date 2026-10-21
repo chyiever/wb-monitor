@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
 from ui.integrated_window import MainWindow
 from edas_hardware.integrated_panel import IntegratedEDASPanel
-from edas_hardware.acquisition_settings import AcquisitionSettingsDialog, config_value
+from edas_hardware.acquisition_settings import AcquisitionSettingsDialog, config_value, format_fiber_distance
 from edas_hardware.acquisition_thread import SimulatedAcquisitionThread
 from edas_hardware.config import ClockSource, TriggerDirection, DataSource
 from edas_hardware.data_saver import BitshuffleZstdFileSaver
@@ -104,6 +104,59 @@ class AcquisitionSettingsTests(unittest.TestCase):
             self.assertEqual(asdict(p._collect_params()), before)
             d.reject()
             self.assertEqual(asdict(p._collect_params()), before)
+
+    def test_outside_click_discards_draft_and_live_distance_hints(self):
+        with self.window() as (w, folder):
+            p = w.edas_panel
+            p._save_local_params()
+            before = asdict(p._collect_params())
+            saved = (folder / 'edas.json').read_bytes()
+            p.open_acquisition_settings()
+            d = p._settings_dialog
+            d.move(w.mapToGlobal(QPoint(600, 300)))
+            self.app.processEvents()
+            self.assertGreaterEqual(d.width(), 840)
+            self.assertEqual(d.windowModality(), Qt.NonModal)
+            self.select(d, 'basic.point_num_per_scan', 32768)
+            self.select(d, 'phase_demod.merge_point_num', 4)
+            self.select(d, 'phase_demod.diff_order', 3)
+            self.assertEqual(d.derived_labels['basic.point_num_per_scan'].text(), 'Fiber Length=13.11 km')
+            self.assertEqual(d.derived_labels['phase_demod.merge_point_num'].text(), 'dx=1.6 m')
+            self.assertEqual(d.derived_labels['phase_demod.diff_order'].text(), 'GL=4.8 m')
+            # Internal input stays open. The actual outside mouse event cancels.
+            QTest.mouseClick(d.editors['basic.point_num_per_scan'], Qt.LeftButton)
+            self.assertTrue(d.isVisible())
+            bar = w.tab_widget.tabBar()
+            self.assertFalse(d.frameGeometry().contains(bar.mapToGlobal(QPoint(5, 5))))
+            QTest.mouseClick(bar, Qt.LeftButton, pos=QPoint(5, 5))
+            self.app.processEvents()
+            self.assertIsNone(p._settings_dialog)
+            self.assertEqual(asdict(p._collect_params()), before)
+            self.assertEqual((folder / 'edas.json').read_bytes(), saved)
+
+    def test_distance_units_and_seven_row_acquisition_summary(self):
+        self.assertEqual(format_fiber_distance(10000), '10000.0 m')
+        self.assertEqual(format_fiber_distance(10000.4), '10.00 km')
+        with self.window() as (w, folder):
+            p = w.edas_panel
+            d = AcquisitionSettingsDialog(p, w)
+            self.select(d, 'basic.point_num_per_scan', 32768)
+            self.select(d, 'phase_demod.merge_point_num', 4)
+            self.select(d, 'phase_demod.diff_order', 3)
+            self.select(d, 'phase_demod.crop_distance_start', 2)
+            self.select(d, 'phase_demod.crop_distance_end', 202)
+            self.select(d, 'phase_demod.polarization_diversity', False)
+            self.assertTrue(d.apply_settings(), d.error_label.text())
+            self.assertEqual(p.summary_labels['fiber_length'].text(), '13.11 km')
+            self.assertEqual(p.summary_labels['dx'].text(), '1.6 m')
+            self.assertEqual(p.summary_labels['gl'].text(), '4.8 m')
+            self.assertEqual(p.summary_labels['crop'].text(), 'CH 2~CH 201（Total: 200CH，320.0 m）')
+            self.assertIn('#ef4444', p.summary_labels['polar'].styleSheet())
+            self.assertNotIn('Pulse', p.summary_labels['acquisition'].text())
+            self.assertNotIn('Points', p.summary_labels['acquisition'].text())
+            self.assertNotIn('source', p.summary_labels)
+            self.assertNotIn('hardware', p.summary_labels)
+            self.assertEqual(p.summary_labels['acquisition'].parentWidget().layout().rowCount(), 7)
 
     def test_width_and_main_panel_appearance_match_view(self):
         with self.window() as (w, folder):
@@ -225,7 +278,7 @@ class AcquisitionSettingsTests(unittest.TestCase):
                 np.testing.assert_array_equal(saved, raw[:, 2:202:2])
                 self.assertEqual(saver.get_diagnostics_snapshot()['continuity_gap'], 0)
                 self.assertIn('0.2 s', p.summary_labels['storage'].text())
-                self.assertIn('2048', p.summary_labels['acquisition'].text())
+                self.assertEqual(p.summary_labels['fiber_length'].text(), '819.2 m')
                 p.save_enable_check.setChecked(True)
                 compressed = AcquisitionSettingsDialog(p, w)
                 self.select(compressed, 'save.storage_format', 'bz')

@@ -42,6 +42,8 @@ def native_probe():
             # Device initialization must wait until embedding is complete.
             assert api.open.call_count == 0
             window._persist_config_path = folder / 'gui.json'
+            # Keep other desktop windows from obscuring native hit-test points.
+            window.setWindowFlag(Qt.WindowStaysOnTopHint, True)
             window.showMaximized()
             window.tab_widget.setCurrentWidget(window.edas_panel)
             QTest.qWait(300)
@@ -64,8 +66,22 @@ def native_probe():
                 assert len(warnings) == 1
                 click_at_screen_position(panel.acquisition_settings_btn)
                 assert panel._settings_dialog.isVisible()
-                panel._settings_dialog.reject()
+                dialog = panel._settings_dialog
+                original = panel._collect_params().basic.point_num_per_scan
+                editor = dialog.editors['basic.point_num_per_scan']
+                editor.setValue(original + 1024)
+                # Use a native screen hit outside the dialog, not reject().
+                dialog.move(window.mapToGlobal(QPoint(600, 300)))
                 QTest.qWait(100)
+                bar = window.tab_widget.tabBar()
+                position = bar.mapToGlobal(QPoint(10, 10))
+                assert not dialog.frameGeometry().contains(position)
+                target = app.widgetAt(position)
+                assert target is bar
+                QTest.mouseClick(target, Qt.LeftButton, pos=target.mapFromGlobal(position))
+                QTest.qWait(100)
+                assert panel._settings_dialog is None
+                assert panel._collect_params().basic.point_num_per_scan == original
                 requested = QSignalSpy(window.tab3_start_requested)
                 click_at_screen_position(panel.start_btn)
                 assert len(requested) == 1

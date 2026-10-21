@@ -11,7 +11,8 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QFormLayout, QSizePolicy)
 
 from .main_window import MainWindow as HardwareWindow
-from .acquisition_settings import AcquisitionSettingsDialog
+from .acquisition_settings import AcquisitionSettingsDialog, format_fiber_distance
+from .config import calculate_phase_point_num, resolve_phase_crop_bounds
 from scipy import signal
 
 
@@ -88,7 +89,8 @@ class IntegratedEDASPanel(HardwareWindow):
         left_layout.addWidget(control_group)
         self.summary_labels = {}
         for title, fields in (
-            ('采集参数', (('采样与点数', 'acquisition'), ('上传数据', 'source'), ('硬件配置', 'hardware'), ('相位处理', 'phase'))),
+            ('采集参数', (('Scan', 'acquisition'), ('Fiber Length', 'fiber_length'), ('dx', 'dx'),
+                         ('GL', 'gl'), ('Polardiv', 'polar'), ('Detrend / 绘图滤波', 'filter'), ('crop：', 'crop'))),
             ('DAS 独立存储', (('存储路径', 'path'), ('文件分段', 'storage'), ('保存设置', 'format'))),
             ('共享与显示', (('共享参数', 'shared'), ('绘图参数', 'display'))),
         ):
@@ -104,6 +106,9 @@ class IntegratedEDASPanel(HardwareWindow):
                 label.setMinimumWidth(0)
                 label.setWordWrap(True)
                 self.summary_labels[key] = label
+                if key == 'polar':
+                    label.setFixedSize(14, 14)
+                    label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
                 form.addRow(caption, label)
             if title == 'DAS 独立存储':
                 form.addRow(self.save_enable_check)
@@ -182,7 +187,7 @@ class IntegratedEDASPanel(HardwareWindow):
             self._refresh_parameter_summary()
             dialog.deleteLater()
         dialog.finished.connect(finished)
-        dialog.open()
+        dialog.show()
 
     def apply_acquisition_settings(self, params):
         if self.acquisition_running():
@@ -209,11 +214,22 @@ class IntegratedEDASPanel(HardwareWindow):
         if not hasattr(self, 'summary_labels') or not hasattr(self, '_point_num_label'):
             return
         params = self._collect_params()
+        dx = .4 * params.phase_demod.merge_point_num
+        start, end = resolve_phase_crop_bounds(
+            calculate_phase_point_num(params.basic.point_num_per_scan, params.phase_demod.merge_point_num),
+            params.phase_demod.crop_distance_start, params.phase_demod.crop_distance_end)
+        count = end - start
+        crop = (f'CH {start}~CH {end - 1}（Total: {count}CH，{format_fiber_distance(count * dx)}）'
+                if count else '无有效通道（Total: 0CH，0.0 m）')
         summary = {
-            'acquisition': f'Scan {params.basic.scan_rate:g} Hz · Points {params.basic.point_num_per_scan}\nPulse {params.basic.pulse_width_ns:g} ns',
-            'source': f'{self.data_source_combo.currentText()} · {params.upload.channel_num} 通道\nDataRate {self.data_rate_combo.currentText()}',
-            'hardware': f'Clock {"Ext" if self.clk_external_radio.isChecked() else "Int"} · Trig {"In" if self.trig_in_radio.isChecked() else "Out"}\nBypass {params.basic.bypass_point_num} · Center {params.basic.center_freq_mhz:g} MHz',
-            'phase': f'SpaceAvg {params.phase_demod.space_avg_order} · Merge {params.phase_demod.merge_point_num}\nRate2Phase {params.phase_demod.rate2phase} · PolarDiv {"开" if params.phase_demod.polarization_diversity else "关"}',
+            'acquisition': f'{params.basic.scan_rate:g} Hz',
+            'fiber_length': format_fiber_distance(params.basic.point_num_per_scan * .4),
+            'dx': f'{dx:.1f} m',
+            'gl': f'{dx * params.phase_demod.diff_order:.1f} m',
+            'polar': '',
+            'filter': f'{params.phase_demod.detrend_bw:g} Hz；' +
+                      (params.time_space.filter_spec + ' Hz' if params.time_space.filter_enabled else '关闭'),
+            'crop': crop,
             'path': params.save.path or '未设置',
             'storage': f'每 {params.save.length_file_s:g} s 一个文件\n每 {params.save.length_save_s:g} s 一个保存包',
             'format': f'{self.storage_format_combo.currentText()} · Save DS {params.save.storage_downsample_factor}\nLoad {params.display.length_load_s:g} s · 满盘覆盖 {"开" if params.save.overwrite_oldest_when_full else "关"}',
@@ -224,11 +240,16 @@ class IntegratedEDASPanel(HardwareWindow):
             self.summary_labels[key].setText(text)
             self.summary_labels[key].setToolTip(text)
             self.summary_labels[key].setWordWrap(True)
+        polar = self.summary_labels['polar']
+        enabled = params.phase_demod.polarization_diversity
+        polar.setStyleSheet('background-color: ' + ('#22c55e' if enabled else '#ef4444') + '; border-radius: 7px;')
+        polar.setToolTip('Polardiv：' + ('开启' if enabled else '关闭'))
         self.shared_stream_check.setChecked(self.tab3_comm_enable_check.isChecked())
         self.settings_state_label.setText('采集中：配置只读；停止后可编辑。' if self.acquisition_running() else '停止采集后可修改硬件和存储配置。')
         self._apply_panel_appearance()
 
     def _apply_panel_appearance(self):
+        self.summary_labels['polar'].setFixedSize(14, 14)
         if self.appearance_host is None:
             return
         self.setFont(self.appearance_host.font())
