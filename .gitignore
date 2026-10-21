@@ -7,3 +7,6 @@ version_*/config/gui_last_state.json*
 version_*/config/edas_last_params.json
 version_*/logs/
 version_*/backup/
+
+/config/gui_last_state.json*
+/logs/

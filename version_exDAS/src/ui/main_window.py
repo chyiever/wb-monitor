@@ -363,7 +363,7 @@ class MainWindow(QMainWindow):
         # 左侧Logo
         logo_label = QLabel()
         # 尝试加载logo，如果文件不存在则显示默认文本
-        logo_path = "resources/logo.png"
+        logo_path = str(Path(__file__).resolve().parents[2] / "resources" / "logo.png")
         if os.path.exists(logo_path):
             pixmap = QIcon(logo_path).pixmap(60, 60)
             logo_label.setPixmap(pixmap)
