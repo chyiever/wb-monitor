@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / 'src'))
 sys.path.insert(0, str(ROOT.parent / 'fipedasREAD' / 'src'))
 from ui.integrated_window import MainWindow
 from edas_hardware.integrated_panel import IntegratedEDASPanel
+from edas_hardware.acquisition_settings import AcquisitionSettingsDialog
 from alignment import AlignedSessionCoordinator, FIPSessionPacket
 from das import EDASManager
 from fipedas_read.data_loader import load_joint_bin
@@ -35,15 +36,14 @@ class IntegratedGUITests(unittest.TestCase):
                 w = MainWindow(simulation_mode=True)
             w._persist_config_path = folder / 'gui.json'
             p = w.edas_panel
-            p.scan_rate_spin.setValue(1000)
-            p.point_num_spin.setValue(2048)
-            p.merge_points_spin.setValue(4)
-            p.length_load_spin.setValue(.1)
-            p.length_plot_spin.setValue(1.)
-            p.tab3_length_comm_spin.setValue(1.)
-            p.tab3_channel_start_spin.setValue(0)
-            p.tab3_channel_end_spin.setValue(99)
-            p.save_path_edit.setText(str(folder / 'das'))
+            dialog = AcquisitionSettingsDialog(p, w)
+            for key, value in {'basic.scan_rate': 1000, 'basic.point_num_per_scan': 2048,
+                'phase_demod.merge_point_num': 4, 'display.length_load_s': .1,
+                'display.length_plot_s': 1., 'comm.length_comm_s': 1.,
+                'comm.channel_start': 0, 'comm.channel_end': 99}.items():
+                dialog.editors[key].setValue(value)
+            dialog.editors['save.path'].setText(str(folder / 'das'))
+            self.assertTrue(dialog.apply_settings(), dialog.error_label.text())
             p.save_enable_check.setChecked(True)
             p._set_combo_to_data(p.storage_format_combo, 'bin')
             w.tab3_storage_path_edit.setText(str(folder / 'joint'))

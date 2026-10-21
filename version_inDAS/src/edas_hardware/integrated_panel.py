@@ -1,21 +1,27 @@
 """PCIe control, acquisition and plots hosted inside the wb-monitor eDAS tab."""
 from collections import deque
+from copy import deepcopy
 from pathlib import Path
 import time
 
 import numpy as np
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QScrollArea, QSplitter, QGroupBox, QLabel, QComboBox, QCheckBox)
+    QScrollArea, QSplitter, QGroupBox, QLabel, QComboBox, QCheckBox, QPushButton,
+    QFormLayout, QSizePolicy)
 
 from .main_window import MainWindow as HardwareWindow
+from .acquisition_settings import AcquisitionSettingsDialog
 from scipy import signal
 
 
 class IntegratedEDASPanel(HardwareWindow):
     pipeline_fault = pyqtSignal(str)
 
-    def __init__(self, simulation_mode=False):
+    def __init__(self, simulation_mode=False, appearance_host=None):
+        self.appearance_host = appearance_host
+        self._settings_dialog = None
+        self._applying_acquisition_settings = False
         self._monitor_history = deque(maxlen=10000)
         self._full_rate_wave_blocks = deque()
         super().__init__(simulation_mode=simulation_mode)
@@ -27,46 +33,87 @@ class IntegratedEDASPanel(HardwareWindow):
         self.mode_time_radio.hide()
         self.mode_space_radio.hide()
         self.tab3_comm_enable_check.setText('共享数据至 View / 联合存储')
-        self.tab3_comm_enable_check.setChecked(True)
+        self.tab3_comm_enable_check.setChecked(self.params.comm.enabled if getattr(self, '_restored_local_params', False) else True)
         if not self.time_space_widget.is_plot_enabled():
             self.time_space_widget.plot_btn.click()
         self._on_source_changed()
         self.waveform_enable_check.hide()
         self.monitor_enable_check.hide()
         self.spectrum_enable_check.hide()
+        self._refresh_parameter_summary()
 
     def _get_settings_path(self):
         return Path(__file__).resolve().parents[2] / 'config' / 'edas_last_params.json'
 
+    def _load_local_params(self):
+        self._restored_local_params = self._settings_path.is_file()
+        super()._load_local_params()
+
     def _setup_ui(self):
+        self.setWindowFlags(Qt.Widget)
         super()._setup_ui()
         old_central = self.centralWidget()
-        original_splitter = old_central.findChild(QSplitter)
-        params_panel = original_splitter.widget(0)
-        settings_page = self.plot_tabs.widget(3)
         central = QWidget()
         outer = QHBoxLayout(central)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(0)
         self.integrated_splitter = QSplitter(Qt.Horizontal)
+        self.integrated_splitter.setChildrenCollapsible(False)
+        self.integrated_splitter.setHandleWidth(6)
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        left_layout.addWidget(params_panel)
-        left_layout.addWidget(settings_page)
-        shared = QGroupBox('进程内数据共享')
-        shared_layout = QGridLayout(shared)
-        shared_layout.addWidget(self.tab3_comm_enable_check, 0, 0, 1, 2)
-        fields = [('通道起点', self.tab3_channel_start_spin), ('通道终点', self.tab3_channel_end_spin),
-            ('时间降采样', self.tab3_time_downsample_spin), ('空间降采样', self.tab3_space_downsample_spin),
-            ('对齐周期(s)', self.tab3_length_comm_spin)]
-        for row, (text, control) in enumerate(fields, 1):
-            shared_layout.addWidget(QLabel(text), row, 0)
-            shared_layout.addWidget(control, row, 1)
-        shared_layout.addWidget(self.tab3_comm_message_label, 6, 0, 1, 2)
-        left_layout.addWidget(shared)
+        left_layout.setContentsMargins(8, 8, 8, 8)
+        left_layout.setSpacing(8)
+        control_group = QGroupBox('采集控制')
+        control_layout = QVBoxLayout(control_group)
+        self.acquisition_settings_btn = QPushButton('采集参数设置…')
+        self.acquisition_settings_btn.clicked.connect(self.open_acquisition_settings)
+        control_layout.addWidget(self.acquisition_settings_btn)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.start_btn)
+        buttons.addWidget(self.stop_btn)
+        self.start_btn.show()
+        self.stop_btn.show()
+        control_layout.addLayout(buttons)
+        self.settings_state_label = QLabel('停止采集后可修改硬件和存储配置。')
+        control_layout.addWidget(self.settings_state_label)
+        left_layout.addWidget(control_group)
+        self.summary_labels = {}
+        for title, fields in (
+            ('采集参数', (('采样与点数', 'acquisition'), ('上传数据', 'source'), ('硬件配置', 'hardware'), ('相位处理', 'phase'))),
+            ('DAS 独立存储', (('存储路径', 'path'), ('文件分段', 'storage'), ('保存设置', 'format'))),
+            ('共享与显示', (('共享参数', 'shared'), ('绘图参数', 'display'))),
+        ):
+            group = QGroupBox(title)
+            form = QFormLayout(group)
+            form.setContentsMargins(10, 16, 10, 10)
+            form.setSpacing(8)
+            for caption, key in fields:
+                label = QLabel()
+                label.setTextFormat(Qt.PlainText)
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+                label.setMinimumWidth(0)
+                label.setWordWrap(True)
+                self.summary_labels[key] = label
+                form.addRow(caption, label)
+            if title == 'DAS 独立存储':
+                form.addRow(self.save_enable_check)
+                self.save_enable_check.show()
+            if title == '共享与显示':
+                self.shared_stream_check = QCheckBox('共享数据至 View / 联合存储')
+                self.shared_stream_check.toggled.connect(self.tab3_comm_enable_check.setChecked)
+                self.tab3_comm_enable_check.toggled.connect(self.shared_stream_check.setChecked)
+                form.addRow(self.shared_stream_check)
+            left_layout.addWidget(group)
         left_layout.addStretch()
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setMinimumWidth(360)
-        scroll.setWidget(left)
+        self.parameter_scroll = QScrollArea()
+        self.parameter_scroll.setWidgetResizable(True)
+        self.parameter_scroll.setFrameShape(QScrollArea.NoFrame)
+        self.parameter_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.parameter_scroll.setMinimumWidth(360)
+        self.parameter_scroll.setMaximumWidth(720)
+        self.parameter_scroll.setWidget(left)
         right = QWidget()
         right_layout = QVBoxLayout(right)
         controls = QHBoxLayout()
@@ -97,19 +144,111 @@ class IntegratedEDASPanel(HardwareWindow):
         grid.setRowStretch(1, 1)
         grid.setRowStretch(2, 3)
         right_layout.addLayout(grid, 1)
-        # Keep Time-Space controls on the parameter side while its plot lives
-        # in the shared grid. Original analysis and filtering callbacks remain.
-        left_layout.insertWidget(2, ts)
-        self.integrated_splitter.addWidget(scroll)
+        self.integrated_splitter.addWidget(self.parameter_scroll)
         self.integrated_splitter.addWidget(right)
-        self.integrated_splitter.setSizes([420, 1100])
+        self.integrated_splitter.setStretchFactor(0, 0)
+        self.integrated_splitter.setStretchFactor(1, 1)
+        self._parameter_width = 448
+        self.integrated_splitter.setSizes([self._parameter_width, 1100])
         outer.addWidget(self.integrated_splitter)
         self.takeCentralWidget()
         self.setCentralWidget(central)
         self._unused_original_ui = old_central
+        old_central.setParent(self)
         old_central.hide()
         self.wave_source_combo.currentIndexChanged.connect(self._on_source_changed)
         self.integrated_psd_check.toggled.connect(self._set_psd_visible)
+
+    def acquisition_running(self):
+        return self.acq_thread is not None and self.acq_thread.isRunning()
+
+    def open_acquisition_settings(self):
+        if self._settings_dialog is not None:
+            self._settings_dialog.raise_()
+            self._settings_dialog.activateWindow()
+            return
+        dialog = AcquisitionSettingsDialog(self, self.window())
+        self._settings_dialog = dialog
+        def finished(_result):
+            self._settings_dialog = None
+            self._refresh_parameter_summary()
+            dialog.deleteLater()
+        dialog.finished.connect(finished)
+        dialog.open()
+
+    def apply_acquisition_settings(self, params):
+        if self.acquisition_running():
+            raise RuntimeError('请停止采集后再修改参数')
+        self._applying_acquisition_settings = True
+        try:
+            self.params = deepcopy(params)
+            self._apply_params_to_ui(self.params)
+            self.mode_space_radio.setChecked(True)
+            self._sync_shared_filter_settings(reset_tab1=True)
+            self._sync_tcp_tab3_availability()
+            self._configure_display_timer(self.params)
+        finally:
+            self._applying_acquisition_settings = False
+        self._save_local_params()
+        self._refresh_parameter_summary()
+        self.statusBar.showMessage('采集参数已保存，下次启动采集时生效', 5000)
+
+    def _save_local_params(self):
+        if not self._applying_acquisition_settings:
+            super()._save_local_params()
+
+    def _refresh_parameter_summary(self):
+        if not hasattr(self, 'summary_labels') or not hasattr(self, '_point_num_label'):
+            return
+        params = self._collect_params()
+        summary = {
+            'acquisition': f'Scan {params.basic.scan_rate:g} Hz · Points {params.basic.point_num_per_scan}\nPulse {params.basic.pulse_width_ns:g} ns',
+            'source': f'{self.data_source_combo.currentText()} · {params.upload.channel_num} 通道\nDataRate {self.data_rate_combo.currentText()}',
+            'hardware': f'Clock {"Ext" if self.clk_external_radio.isChecked() else "Int"} · Trig {"In" if self.trig_in_radio.isChecked() else "Out"}\nBypass {params.basic.bypass_point_num} · Center {params.basic.center_freq_mhz:g} MHz',
+            'phase': f'SpaceAvg {params.phase_demod.space_avg_order} · Merge {params.phase_demod.merge_point_num}\nRate2Phase {params.phase_demod.rate2phase} · PolarDiv {"开" if params.phase_demod.polarization_diversity else "关"}',
+            'path': params.save.path or '未设置',
+            'storage': f'每 {params.save.length_file_s:g} s 一个文件\n每 {params.save.length_save_s:g} s 一个保存包',
+            'format': f'{self.storage_format_combo.currentText()} · Save DS {params.save.storage_downsample_factor}\nLoad {params.display.length_load_s:g} s · 满盘覆盖 {"开" if params.save.overwrite_oldest_when_full else "关"}',
+            'shared': f'通道 {params.comm.channel_start}–{params.comm.channel_end} · 周期 {params.comm.length_comm_s:g} s\n时间/空间降采样 {params.comm.time_downsample}/{params.comm.space_downsample}',
+            'display': f'Plot {params.display.length_plot_s:g} s · Region {params.display.region_index}\n时空时间/空间降采样 {params.time_space.time_downsample}/{params.time_space.space_downsample}',
+        }
+        for key, text in summary.items():
+            self.summary_labels[key].setText(text)
+            self.summary_labels[key].setToolTip(text)
+            self.summary_labels[key].setWordWrap(True)
+        self.shared_stream_check.setChecked(self.tab3_comm_enable_check.isChecked())
+        self.settings_state_label.setText('采集中：配置只读；停止后可编辑。' if self.acquisition_running() else '停止采集后可修改硬件和存储配置。')
+        self._apply_panel_appearance()
+
+    def _apply_panel_appearance(self):
+        if self.appearance_host is None:
+            return
+        self.setFont(self.appearance_host.font())
+        self.start_btn.setText('采集中' if self.acquisition_running() else '启动采集')
+        self.stop_btn.setText('停止采集')
+        self.save_enable_check.setText('DAS 独立存储：' + ('ON' if self.save_enable_check.isChecked() else 'OFF'))
+        for button, active in ((self.acquisition_settings_btn, False), (self.start_btn, False),
+                               (self.stop_btn, True), (self.save_enable_check, self.save_enable_check.isChecked())):
+            button.setMinimumWidth(0)
+            button.setMaximumWidth(16777215)
+            self.appearance_host._style_action_button(button, active, min_height=34, min_width=80, font_size=14)
+        for label in self.summary_labels.values(): label.setWordWrap(True)
+
+    def _on_tcp_tab3_error(self, message):
+        # The legacy callback is still the shared manager's UI slot; its visible
+        # wording must describe the local data stream rather than a TCP sender.
+        self.tab3_comm_last_error_label.setText(message)
+        self.statusBar.showMessage('数据共享：' + message, 15000)
+
+    def set_parameter_width(self, width):
+        self._parameter_width = max(360, min(int(width), 720))
+        total = max(sum(self.integrated_splitter.sizes()), self._parameter_width + 400)
+        self.integrated_splitter.setSizes([self._parameter_width, total - self._parameter_width])
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        width = self.appearance_host._current_param_panel_width() if self.appearance_host is not None else self._parameter_width
+        self.set_parameter_width(width)
 
     def _set_psd_visible(self, visible):
         self.plot_widget_2.setVisible(visible)
@@ -210,6 +349,7 @@ class IntegratedEDASPanel(HardwareWindow):
         self._on_source_changed()
         if self.acq_thread is not None:
             for control in self._shared_shape_controls(): control.setEnabled(False)
+        self._refresh_parameter_summary()
 
     def _shared_shape_controls(self):
         return (self.tab3_channel_start_spin, self.tab3_channel_end_spin,
@@ -219,9 +359,11 @@ class IntegratedEDASPanel(HardwareWindow):
     def _on_stop(self):
         super()._on_stop()
         for control in self._shared_shape_controls(): control.setEnabled(True)
+        self._refresh_parameter_summary()
 
     def _update_status(self):
         super()._update_status()
+        self._refresh_parameter_summary()
         saver = self.data_saver
         if saver and getattr(saver, '_write_error', '') and self.acq_thread is not None:
             self.pipeline_fault.emit('DAS写盘故障：' + saver._write_error)

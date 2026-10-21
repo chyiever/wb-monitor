@@ -59,7 +59,7 @@ class SharedStreamManager(QObject):
             while self._queue or self._busy:
                 self._condition.wait(0.1)
         if self._frames:
-            self.error_occurred.emit(f'采集停止：共享尾部 {self._frames} 帧不足一个对齐周期，未写入联合文件；DAS独立存储保留原始块')
+            self.error_occurred.emit(f'采集停止：共享尾部 {self._frames} 帧不足一个对齐周期，未写入联合文件；原始尾部仅在启用DAS独立存储时保存')
         self._parts.clear()
         self._frames = 0
 

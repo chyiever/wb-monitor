@@ -1,5 +1,6 @@
 """wb-monitor with the acquisition host integrated as its second tab."""
 from PyQt5.QtWidgets import QLabel, QGroupBox
+from PyQt5.QtCore import QTimer
 from .main_window import MainWindow as BaseWindow
 from edas_hardware.integrated_panel import IntegratedEDASPanel
 
@@ -14,10 +15,16 @@ class MainWindow(BaseWindow):
         self.edas_panel.start_btn.clicked.connect(self.tab3_start_requested.emit)
         self.edas_panel.stop_btn.clicked.connect(self.tab3_stop_requested.emit)
         self.edas_panel.pipeline_fault.connect(lambda _message: self.tab3_stop_requested.emit())
+        self.view_param_splitter.splitterMoved.connect(self._view_width_changed)
+        self.edas_panel.integrated_splitter.splitterMoved.connect(self._edas_width_changed)
+        self._view_width_changed()
+        QTimer.singleShot(0, self._view_width_changed)
 
     def _init_ui(self):
         super()._init_ui()
-        self.edas_panel = IntegratedEDASPanel(self.simulation_mode)
+        self.edas_panel = IntegratedEDASPanel(self.simulation_mode, appearance_host=self)
+        self.edas_panel.parameter_scroll.setMinimumWidth(self.VIEW_PARAM_PANEL_MIN_WIDTH)
+        self.edas_panel.parameter_scroll.setMaximumWidth(self.VIEW_PARAM_PANEL_MAX_WIDTH)
         self.edas_panel.fip_period_provider = lambda: self.fip_packet_duration_spin.value()
         self.tab_widget.insertTab(1, self.edas_panel, 'eDAS')
         self.tab_widget.setTabText(2, 'FIP')
@@ -36,6 +43,22 @@ class MainWindow(BaseWindow):
         for label in self.findChildren(QLabel):
             if label.text() == 'eDAS路径': label.hide()
             label.setText(label.text().replace('eDAS通信', 'eDAS采集'))
+
+    def _view_width_changed(self, *_args):
+        self.edas_panel.set_parameter_width(self._current_param_panel_width())
+        self._schedule_auto_save()
+
+    def _edas_width_changed(self, *_args):
+        width = self.edas_panel.integrated_splitter.sizes()[0]
+        self.edas_panel._parameter_width = width
+        self._apply_param_panel_width(width)
+        self._schedule_auto_save()
+
+    def _apply_global_display_runtime_settings(self):
+        super()._apply_global_display_runtime_settings()
+        if hasattr(self, 'edas_panel'):
+            self.edas_panel._apply_panel_appearance()
+            self.edas_panel._refresh_parameter_summary()
 
     def _apply_tab3_visibility(self):
         super()._apply_tab3_visibility()
