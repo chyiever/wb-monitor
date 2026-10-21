@@ -20,6 +20,7 @@ class MainWindow(BaseWindow):
         self.simulation_mode = simulation_mode
         self._view_settings_dialog = None
         self._joint_start_pending = False
+        self._joint_start_stage = None
         self._joint_start_timer = None
         self._storage_settings_dialog = None
         self._parameters_ready = False
@@ -334,6 +335,20 @@ class MainWindow(BaseWindow):
     def _toggle_both_communication(self, _checked=False):
         if self._joint_start_pending or (self.monitoring_active and self._edas_monitoring_active):
             return
+        if self.monitoring_active or self._edas_monitoring_active or self.edas_panel.acquisition_running():
+            # Stop handlers drain synchronously. Arm the restart only after both
+            # have returned, since their state callbacks cancel pending starts.
+            self._stop_joint_acquisition()
+            self._both_comm_requested = True
+            self._joint_start_pending = True
+            self._joint_start_stage = 'restart_fip'
+            self.joint_state_label.setText('两路已停止，等待 1 s 重新启动 FIP…')
+            self._joint_start_timer.start()
+            self._update_data_comm_buttons()
+            return
+        self._start_joint_fip()
+
+    def _start_joint_fip(self):
         self._both_comm_requested = True
         self._reset_sync_tracking()
         self._start_monitoring()
@@ -343,18 +358,20 @@ class MainWindow(BaseWindow):
             self._both_comm_requested = False
             self._update_data_comm_buttons()
             return
-        if self._edas_monitoring_active:
-            self.joint_state_label.setText('FIP 与 eDAS 已启动。')
-            self._update_data_comm_buttons()
-            return
         self._joint_start_pending = True
+        self._joint_start_stage = 'start_edas'
         self.joint_state_label.setText('FIP 已启动，等待 1 s 启动 eDAS…')
         self._joint_start_timer.start()
         self._update_data_comm_buttons()
 
     def _finish_joint_start(self):
         pending = self._joint_start_pending
+        stage = self._joint_start_stage
         self._joint_start_pending = False
+        self._joint_start_stage = None
+        if pending and self._both_comm_requested and stage == 'restart_fip':
+            self._start_joint_fip()
+            return
         if pending and self.monitoring_active and self._both_comm_requested:
             if not self._edas_monitoring_active:
                 self.tab3_start_requested.emit()
@@ -363,6 +380,7 @@ class MainWindow(BaseWindow):
 
     def _stop_joint_acquisition(self):
         self._joint_start_pending = False
+        self._joint_start_stage = None
         self._both_comm_requested = False
         if self._joint_start_timer is not None: self._joint_start_timer.stop()
         # Drain eDAS first, then stop FIP; both stop handlers are idempotent.
@@ -385,6 +403,7 @@ class MainWindow(BaseWindow):
         super().set_fip_monitoring_active(active)
         if not active:
             self._joint_start_pending = False
+            self._joint_start_stage = None
             self._both_comm_requested = False
             if self._joint_start_timer is not None: self._joint_start_timer.stop()
             if hasattr(self, 'joint_state_label'):
@@ -553,6 +572,7 @@ class MainWindow(BaseWindow):
 
     def closeEvent(self, event):
         self._joint_start_pending = False
+        self._joint_start_stage = None
         if self._joint_start_timer is not None: self._joint_start_timer.stop()
         if self._view_settings_dialog is not None: self._view_settings_dialog.reject()
         if self._storage_settings_dialog is not None: self._storage_settings_dialog.reject()

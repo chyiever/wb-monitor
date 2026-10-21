@@ -61,6 +61,73 @@ class ViewWorkflowTests(unittest.TestCase):
             self.assertIn('失败', w.joint_state_label.text())
             self.assertEqual(len(das), 0)
 
+    def test_each_partial_running_state_restarts_both_with_two_delays(self):
+        for active_source in ('fip', 'das'):
+            with self.subTest(active_source=active_source), self.helper.window() as (w, folder):
+                events = []
+                def record(name): events.append((name, time.monotonic()))
+                def fip_start():
+                    record('fip')
+                    w.set_fip_monitoring_active(True)
+                def das_start():
+                    record('das')
+                    w.set_tab3_monitoring_active(True)
+                def fip_stop():
+                    record('fip_stop')
+                    w.set_fip_monitoring_active(False)
+                def das_stop():
+                    record('das_stop')
+                    w.set_tab3_monitoring_active(False)
+                w.start_monitoring.connect(fip_start)
+                w.tab3_start_requested.connect(das_start)
+                w.stop_monitoring.connect(fip_stop)
+                w.tab3_stop_requested.connect(das_stop)
+                w.set_fip_monitoring_active(active_source == 'fip')
+                w.set_tab3_monitoring_active(active_source == 'das')
+                w.data_comm_both_btn.click()
+                w._toggle_both_communication()  # Repeated requests cannot skip the waits.
+                self.assertEqual([e[0] for e in events], ['das_stop', 'fip_stop'])
+                QTest.qWait(450)
+                self.assertEqual(len(events), 2)
+                QTest.qWait(650)
+                self.assertEqual([e[0] for e in events], ['das_stop', 'fip_stop', 'fip'])
+                QTest.qWait(1050)
+                self.assertEqual([e[0] for e in events], ['das_stop', 'fip_stop', 'fip', 'das'])
+                self.assertGreaterEqual(events[2][1] - events[1][1], 1.0)
+                self.assertGreaterEqual(events[3][1] - events[2][1], 1.0)
+                w._toggle_both_communication()
+                self.assertEqual(len(events), 4)  # Both active is an exact no-op.
+
+    def test_stop_or_close_during_restart_wait_cancels_all_stages(self):
+        for action in ('stop', 'close'):
+            with self.subTest(action=action), self.helper.window() as (w, folder):
+                fip = QSignalSpy(w.start_monitoring)
+                das = QSignalSpy(w.tab3_start_requested)
+                w.set_tab3_monitoring_active(True)
+                w.data_comm_both_btn.click()
+                self.assertEqual(w._joint_start_stage, 'restart_fip')
+                if action == 'stop': w.joint_stop_btn.click()
+                else: w.close()
+                QTest.qWait(1150)
+                self.assertEqual(len(fip), 0)
+                self.assertEqual(len(das), 0)
+                self.assertFalse(w._joint_start_timer.isActive())
+
+    def test_independent_tab_buttons_do_not_start_the_other_source(self):
+        with self.helper.window() as (w, folder):
+            fip = QSignalSpy(w.start_monitoring)
+            das = QSignalSpy(w.tab3_start_requested)
+            w.edas_panel.start_btn.click()
+            self.assertEqual(len(das), 1)
+            self.assertEqual(len(fip), 0)
+            w.set_tab3_monitoring_active(True)
+            w.start_stop_btn.click()
+            self.assertEqual(len(fip), 1)
+            self.assertEqual(len(das), 1)
+            self.assertTrue(w._edas_monitoring_active)
+            w.start_stop_btn.click()
+            self.assertTrue(w._edas_monitoring_active)
+
     def test_fip_stop_and_window_close_cancel_pending_das_start(self):
         with self.helper.window() as (w, folder):
             das = QSignalSpy(w.tab3_start_requested)
