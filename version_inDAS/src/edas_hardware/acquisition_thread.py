@@ -1037,7 +1037,10 @@ class AcquisitionThread(QThread):
             # Carry only ONE full-rate temporal channel alongside the decimated
             # image. PSD must not inherit Time-Space display decimation.
             waveform = np.array(history[:, region], dtype=np.float32, copy=True)
-            display_meta = (source_frame_count, block_duration_s, distance_start, distance_end, waveform)
+            # Retain one full-resolution spatial profile for TIME mode, alongside
+            # the selected full-rate channel used by SPACE waveform/PSD.
+            spatial_profile = np.array(history[-1], dtype=np.float32, copy=True)
+            display_meta = (source_frame_count, block_duration_s, distance_start, distance_end, waveform, spatial_profile)
         elif channel_num == 1:
             display_data = np.ascontiguousarray(history.reshape(-1))
         else:

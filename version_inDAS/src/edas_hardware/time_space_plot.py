@@ -111,6 +111,9 @@ class TimeSpacePlotWidget(QWidget):
         self._vmin = -0.02
         self._vmax = 0.02
         self._scan_rate_hz = 2000.0
+        self._axis_unit = 'points'
+        self._axis_origin = 0.0
+        self._axis_dx = 1.0
         self._filter_enabled = False
         self._filter_spec_text = "1-"
         self._filter_error_text = ""
@@ -820,17 +823,29 @@ class TimeSpacePlotWidget(QWidget):
         self.image_item.setImage(display_data, autoLevels=False)
         self._apply_color_levels()
         self._update_histogram_range(display_data)
+        scale = self._axis_dx / (1000.0 if self._axis_unit == 'km' else 1.0) if self._axis_unit != 'points' else 1.0
+        origin = self._axis_origin if self._axis_unit != 'points' else 0.0
+        spatial_step = max(1, self._space_downsample)
         self.image_item.setRect(
             QRectF(
                 0.0,
-                float(distance_start),
+                float((distance_start - spatial_step / 2) * scale + origin),
                 float(max(total_duration_s, 1.0 / max(self._scan_rate_hz, 1.0))),
-                float(max(distance_end - distance_start, 1)),
+                float(display_data.shape[0] * spatial_step * scale),
             )
         )
         if not self._zoom_locked:
             self._view_box.enableAutoRange(x=True, y=True)
             self._view_box.autoRange(padding=0.0)
+
+    def set_vertical_axis(self, unit='points', dx=1.0, origin=0.0):
+        """Transform image coordinates only; buffers/cropping keep channel indices."""
+        self._axis_unit = unit if unit in ('points', 'm', 'km') else 'points'
+        self._axis_dx = float(dx)
+        self._axis_origin = float(origin)
+        title = 'Points' if self._axis_unit == 'points' else f'Distance ({self._axis_unit})'
+        self.plot_widget.setLabel('left', title)
+        self._update_display()
 
     def get_parameters(self):
         filter_spec_text = (

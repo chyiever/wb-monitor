@@ -57,6 +57,7 @@ class MainWindow(BaseWindow):
     def _apply_global_display_runtime_settings(self):
         super()._apply_global_display_runtime_settings()
         if hasattr(self, 'edas_panel'):
+            self.edas_panel._apply_extra_plot_settings()
             self.edas_panel._apply_panel_appearance()
             self.edas_panel._refresh_parameter_summary()
 

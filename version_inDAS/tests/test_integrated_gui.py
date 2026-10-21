@@ -73,7 +73,7 @@ class IntegratedGUITests(unittest.TestCase):
                 self.assertGreater(p.time_space_widget._valid_block_count, 0)
                 self.assertFalse(p.tab3_channel_start_spin.isEnabled())
                 for plot in (p.plot_widget_1, p.time_space_widget.plot_widget):
-                    self.assertEqual(plot.getAxis('left').width(), 70)
+                    self.assertEqual(plot.getAxis('left').width(), p.plot_widget_2.getAxis('left').width())
                 p.integrated_psd_check.setChecked(False)
                 self.assertTrue(p.plot_widget_2.isHidden())
                 p.integrated_psd_check.setChecked(True)

@@ -57,6 +57,9 @@ SETTINGS_TABS = (
         ('BZ 压缩线程数', 'save.bz_compression_workers', 'bz_compression_workers_spin'),
     )),
     ('绘图显示', (
+        ('刻度与轴标签字号 (pt)', 'display.tick_font_size', None),
+        ('时空图纵轴', 'time_space.axis_unit', None),
+        ('纵轴起点偏移 x0', 'time_space.axis_origin', None),
         ('波形位置 Region', 'display.region_index', 'region_index_spin'),
         ('相位显示为弧度 rad', 'display.rad_enable', 'rad_check'),
         ('显示滤波', 'time_space.filter_enabled', None),
@@ -177,6 +180,8 @@ class AcquisitionSettingsDialog(QDialog):
         for path in ('basic.point_num_per_scan', 'phase_demod.merge_point_num', 'phase_demod.diff_order'):
             self.editors[path].valueChanged.connect(self._refresh_derived_labels)
         self._refresh_derived_labels()
+        self.editors['time_space.axis_unit'].currentIndexChanged.connect(self._update_origin_unit)
+        self._update_origin_unit()
         if panel.acquisition_running():
             self.notice.setText('采集中：参数只读。请先关闭此窗口并停止采集，再修改参数，避免采集和文件格式在中途变化。')
             for editor in self.editors.values(): editor.setEnabled(False)
@@ -189,6 +194,13 @@ class AcquisitionSettingsDialog(QDialog):
         self.derived_labels['basic.point_num_per_scan'].setText('Fiber Length=' + format_fiber_distance(points * .4))
         self.derived_labels['phase_demod.merge_point_num'].setText(f'dx={dx:.1f} m')
         self.derived_labels['phase_demod.diff_order'].setText(f'GL={gl:.1f} m')
+
+    def _update_origin_unit(self):
+        unit = self.editors['time_space.axis_unit'].currentData()
+        editor = self.editors['time_space.axis_origin']
+        editor.setSuffix(' ' + unit if unit != 'points' else ' m / km')
+        editor.setEnabled(unit != 'points' and not self.panel.acquisition_running())
+        editor.setToolTip('x0 使用当前纵轴单位；Points 模式不应用偏移。距离=点号×dx+x0（km 模式中 dx 换算为 km）。')
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -211,6 +223,25 @@ class AcquisitionSettingsDialog(QDialog):
         return super().eventFilter(watched, event)
 
     def _make_editor(self, path, original, value):
+        if path == 'display.tick_font_size':
+            editor = QSpinBox()
+            editor.setRange(8, 28)
+            editor.setValue(value)
+            return editor
+        if path == 'time_space.axis_unit':
+            editor = QComboBox()
+            editor.setView(QListView(editor))
+            editor.setStyleSheet('QComboBox { combobox-popup: 0; }')
+            for label, unit in [('Points', 'points'), ('Distance (m)', 'm'), ('Distance (km)', 'km')]:
+                editor.addItem(label, unit)
+            editor.setCurrentIndex(max(0, editor.findData(value)))
+            return editor
+        if path == 'time_space.axis_origin':
+            editor = QDoubleSpinBox()
+            editor.setDecimals(6)
+            editor.setRange(-1e9, 1e9)
+            editor.setValue(value)
+            return editor
         if isinstance(original, QComboBox) or path in ('basic.clk_src', 'basic.trig_dir'):
             editor = QComboBox()
             editor.setView(QListView(editor))

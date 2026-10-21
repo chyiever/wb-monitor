@@ -6,13 +6,14 @@ import time
 
 import numpy as np
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QScrollArea, QSplitter, QGroupBox, QLabel, QComboBox, QCheckBox, QPushButton,
-    QFormLayout, QSizePolicy)
+    QFormLayout, QSizePolicy, QSpinBox)
 
 from .main_window import MainWindow as HardwareWindow
 from .acquisition_settings import AcquisitionSettingsDialog, format_fiber_distance
-from .config import calculate_phase_point_num, resolve_phase_crop_bounds
+from .config import calculate_phase_point_num, resolve_phase_crop_bounds, DisplayMode, DataSource
 from scipy import signal
 
 
@@ -25,18 +26,23 @@ class IntegratedEDASPanel(HardwareWindow):
         self._applying_acquisition_settings = False
         self._monitor_history = deque(maxlen=10000)
         self._full_rate_wave_blocks = deque()
+        self._plot_controls_ready = False
+        self._plot_font_size = 12
+        self._timespace_unit = 'points'
+        self._timespace_origin = 0.0
         super().__init__(simulation_mode=simulation_mode)
         self.setMinimumSize(0, 0)
         self.pipeline_fault.connect(self._stop_on_pipeline_fault)
         self.tcp_tab3_manager.error_occurred.connect(self._shared_fault)
-        self.mode_space_radio.setChecked(True)
+        self._plot_controls_ready = True
+        self._sync_plot_controls(self.params)
         self.mode_time_radio.hide()
         self.mode_space_radio.hide()
         self.tab3_comm_enable_check.setText('共享数据至 View / 联合存储')
         self.tab3_comm_enable_check.setChecked(self.params.comm.enabled if getattr(self, '_restored_local_params', False) else True)
         if not self.time_space_widget.is_plot_enabled():
             self.time_space_widget.plot_btn.click()
-        self._on_source_changed()
+        self._on_source_changed(persist=False)
         self.waveform_enable_check.hide()
         self.monitor_enable_check.hide()
         self.spectrum_enable_check.hide()
@@ -132,19 +138,39 @@ class IntegratedEDASPanel(HardwareWindow):
         controls = QHBoxLayout()
         controls.addWidget(QLabel('波形数据源'))
         self.wave_source_combo = QComboBox()
-        self.wave_source_combo.addItems(['PHASE / RAW', 'Monitor（选定位置趋势）'])
+        for label, source in [('Phase', 'phase'), ('RAW', 'raw'), ('Monitor', 'monitor')]:
+            self.wave_source_combo.addItem(label, source)
+        self.wave_source_combo.setToolTip('Phase/RAW 为采集卡不同上传数据，切换需先停止采集。Phase 和 Monitor 可在线切换。')
         controls.addWidget(self.wave_source_combo)
         self.integrated_psd_check = QCheckBox('显示 PSD')
         self.integrated_psd_check.setChecked(True)
         controls.addWidget(self.integrated_psd_check)
+        self.phase_mode_combo = QComboBox()
+        self.phase_mode_combo.addItem('TIME', int(DisplayMode.TIME))
+        self.phase_mode_combo.addItem('SPACE', int(DisplayMode.SPACE))
+        self.phase_mode_combo.setToolTip('TIME：每帧沿光纤的波形；SPACE：所选通道随时间变化，与时空图时间轴对齐。')
+        controls.addWidget(self.phase_mode_combo)
+        self.phase_channel_label = QLabel('CH')
+        controls.addWidget(self.phase_channel_label)
+        self.phase_channel_spin = QSpinBox()
+        self.phase_channel_spin.setRange(0, 10000000)
+        self.phase_channel_spin.setMaximumWidth(100)
+        self.phase_channel_spin.setToolTip('SPACE 模式的通道号，以裁剪后第一个通道为 CH 0。')
+        controls.addWidget(self.phase_channel_spin)
         controls.addStretch()
         right_layout.addLayout(controls)
+        self.plot_source_notice = QLabel()
+        self.plot_source_notice.setWordWrap(True)
+        self.plot_source_notice.hide()
+        right_layout.addWidget(self.plot_source_notice)
         # A single grid column and fixed left-axis width keep waveform, PSD and
         # time-space data rectangles at exactly the same horizontal positions.
         grid = QGridLayout()
+        self.plot_grid = grid
         grid.addWidget(self.plot_widget_1, 0, 0)
         grid.addWidget(self.plot_widget_2, 1, 0)
         ts = self.time_space_widget
+        ts.histogram_widget.setMinimumHeight(160)
         grid.addWidget(ts.plot_widget, 2, 0)
         grid.addWidget(ts.histogram_widget, 2, 1)
         for plot in (self.plot_widget_1, self.plot_widget_2, ts.plot_widget):
@@ -171,6 +197,8 @@ class IntegratedEDASPanel(HardwareWindow):
         old_central.hide()
         self.wave_source_combo.currentIndexChanged.connect(self._on_source_changed)
         self.integrated_psd_check.toggled.connect(self._set_psd_visible)
+        self.phase_mode_combo.currentIndexChanged.connect(self._on_phase_mode_selected)
+        self.phase_channel_spin.valueChanged.connect(self._on_phase_channel_selected)
 
     def acquisition_running(self):
         return self.acq_thread is not None and self.acq_thread.isRunning()
@@ -196,7 +224,6 @@ class IntegratedEDASPanel(HardwareWindow):
         try:
             self.params = deepcopy(params)
             self._apply_params_to_ui(self.params)
-            self.mode_space_radio.setChecked(True)
             self._sync_shared_filter_settings(reset_tab1=True)
             self._sync_tcp_tab3_availability()
             self._configure_display_timer(self.params)
@@ -209,6 +236,93 @@ class IntegratedEDASPanel(HardwareWindow):
     def _save_local_params(self):
         if not self._applying_acquisition_settings:
             super()._save_local_params()
+
+    def _collect_params(self):
+        params = super()._collect_params()
+        params.display.tick_font_size = self._plot_font_size
+        params.display.wave_source = self.wave_source_combo.currentData()
+        params.time_space.axis_unit = self._timespace_unit
+        params.time_space.axis_origin = self._timespace_origin
+        return params
+
+    def _apply_params_to_ui(self, params):
+        self._plot_font_size = params.display.tick_font_size
+        self._timespace_unit = params.time_space.axis_unit
+        self._timespace_origin = params.time_space.axis_origin
+        super()._apply_params_to_ui(params)
+        self._sync_plot_controls(params)
+
+    def _sync_plot_controls(self, params):
+        source = ('monitor' if params.display.wave_source == 'monitor' else 'phase') if params.upload.data_source == DataSource.PHASE else 'raw'
+        for control, value in ((self.wave_source_combo, source), (self.phase_mode_combo, int(params.display.mode))):
+            control.blockSignals(True)
+            control.setCurrentIndex(max(0, control.findData(value)))
+            control.blockSignals(False)
+        self.mode_space_radio.setChecked(params.display.mode == DisplayMode.SPACE)
+        self.mode_time_radio.setChecked(params.display.mode != DisplayMode.SPACE)
+        self.integrated_psd_check.blockSignals(True)
+        self.integrated_psd_check.setChecked(params.display.spectrum_enable)
+        self.integrated_psd_check.blockSignals(False)
+        self._set_psd_visible(params.display.spectrum_enable, persist=False)
+        self.phase_channel_spin.blockSignals(True)
+        start, end = resolve_phase_crop_bounds(
+            calculate_phase_point_num(params.basic.point_num_per_scan, params.phase_demod.merge_point_num),
+            params.phase_demod.crop_distance_start, params.phase_demod.crop_distance_end)
+        self.phase_channel_spin.setMaximum(max(0, end - start - 1))
+        self.phase_channel_spin.setValue(params.display.region_index)
+        self.phase_channel_spin.blockSignals(False)
+        self.region_index_spin.setValue(self.phase_channel_spin.value())
+        self._apply_extra_plot_settings(params)
+        if self._plot_controls_ready:
+            self._on_source_changed(persist=False)
+
+    def _apply_extra_plot_settings(self, params=None):
+        params = params or self.params
+        self.time_space_widget.set_vertical_axis(self._timespace_unit,
+            .4 * params.phase_demod.merge_point_num, self._timespace_origin)
+        font = QFont('Times New Roman', self._plot_font_size)
+        for plot in (self.plot_widget_1, self.plot_widget_2, self.time_space_widget.plot_widget):
+            for name in ('bottom', 'left', 'top', 'right'):
+                axis = plot.getAxis(name)
+                axis.setTickFont(font)
+                axis.label.setFont(font)
+                axis.labelStyle.update({'font-family': 'Times New Roman', 'font-size': f'{self._plot_font_size}pt'})
+                axis.setLabel(axis.labelText, units=axis.labelUnits, **axis.labelStyle)
+            plot.getAxis('left').setWidth(max(90, self._plot_font_size * 7))
+        self.time_space_widget.histogram_widget.item.axis.setTickFont(font)
+
+    def _on_phase_mode_selected(self, *_args):
+        if not self._plot_controls_ready:
+            return
+        space = self.phase_mode_combo.currentData() == DisplayMode.SPACE
+        self.mode_space_radio.setChecked(space)
+        self.mode_time_radio.setChecked(not space)
+        self._full_rate_wave_blocks.clear()
+        self._update_wave_axes()
+        self._save_local_params()
+
+    def _on_phase_channel_selected(self, value):
+        if not self._plot_controls_ready:
+            return
+        self.region_index_spin.setValue(value)
+        self._full_rate_wave_blocks.clear()
+        self._monitor_history.clear()
+        self._save_local_params()
+
+    def _update_wave_axes(self):
+        source = self.wave_source_combo.currentData()
+        space = self.phase_mode_combo.currentData() == DisplayMode.SPACE
+        temporal = source == 'monitor' or (source == 'phase' and space)
+        self.phase_mode_combo.setEnabled(source == 'phase')
+        self.phase_channel_spin.setEnabled(source == 'monitor' or (source == 'phase' and space))
+        self.phase_channel_label.setEnabled(self.phase_channel_spin.isEnabled())
+        self.plot_widget_1.setXLink(self.time_space_widget.plot_widget if temporal else None)
+        if not self._plot_zoom_locked.get('plot1', False):
+            self.plot_widget_1.enableAutoRange(axis='x', enable=not temporal)
+        self.plot_widget_1.setLabel('bottom', 'Time (s)' if temporal else 'Distance (m)')
+        self.plot_widget_1.setLabel('top', 'Monitor' if source == 'monitor' else ('Phase · ' + self.phase_mode_combo.currentText() if source == 'phase' else 'RAW'))
+        self.plot_widget_1.setLabel('left', 'Phase (rad)' if source == 'phase' and self.rad_check.isChecked() else ('Phase (counts)' if source == 'phase' else 'Amplitude'))
+        self.plot_widget_2.setLabel('bottom', 'Frequency (Hz)' if temporal or source == 'raw' else 'Spatial frequency (1/m)')
 
     def _refresh_parameter_summary(self):
         if not hasattr(self, 'summary_labels') or not hasattr(self, '_point_num_label'):
@@ -279,9 +393,14 @@ class IntegratedEDASPanel(HardwareWindow):
         width = self.appearance_host._current_param_panel_width() if self.appearance_host is not None else self._parameter_width
         self.set_parameter_width(width)
 
-    def _set_psd_visible(self, visible):
+    def _set_psd_visible(self, visible, persist=True):
         self.plot_widget_2.setVisible(visible)
         self.spectrum_enable_check.setChecked(visible)
+        self.plot_grid.setRowStretch(1, 1 if visible else 0)
+        self.plot_grid.setRowStretch(2, (3 if visible else 4) if self.wave_source_combo.currentData() != 'raw' else 0)
+        self.plot_grid.invalidate()
+        if persist and self._plot_controls_ready and not self._applying_acquisition_settings:
+            self._save_local_params()
 
     def _time_space_full_window_required(self):
         return self.time_space_widget is not None and self.time_space_widget.is_plot_enabled()
@@ -317,29 +436,88 @@ class IntegratedEDASPanel(HardwareWindow):
         duration = ts._valid_block_count * ts._display_block_duration_s
         trace = (np.concatenate(list(self._full_rate_wave_blocks)) if self._full_rate_wave_blocks
                  else np.asarray(matrix[row], dtype=np.float32))
-        x = np.arange(trace.size, dtype=float) * duration / max(1, trace.size)
-        if self.wave_source_combo.currentIndex() == 0:
+        trace_rate = self.params.basic.scan_rate if self._full_rate_wave_blocks else trace.size / max(duration, 1e-9)
+        x = duration - trace.size / trace_rate + np.arange(trace.size, dtype=float) / trace_rate
+        phase = self.wave_source_combo.currentData() == 'phase'
+        space = self.phase_mode_combo.currentData() == DisplayMode.SPACE
+        if phase and not space:
+            if display_meta is not None and len(display_meta) >= 6 and not self._filter_enabled:
+                profile = np.asarray(display_meta[5], dtype=np.float32)
+                if phase_scale is not None:
+                    profile = profile * phase_scale
+                positions = np.arange(profile.size)
+                profile_step = 1
+            else:
+                profile = matrix[:, -1]
+                positions = start + np.arange(profile.size) * ts._space_downsample
+                profile_step = ts._space_downsample
+            dx = .4 * self.params.phase_demod.merge_point_num
+            origin_m = self._timespace_origin * (1000 if self._timespace_unit == 'km' else 1) if self._timespace_unit != 'points' else 0
+            step = max(1, profile.size // 5000)
+            self.plot_curve_1[0].setData(positions[::step] * dx + origin_m, profile[::step])
+            for curve in self.plot_curve_1[1:]: curve.setData([], [])
+        elif phase:
             step = max(1, trace.size // 5000)
             self.plot_curve_1[0].setData(x[::step], trace[::step])
             for curve in self.plot_curve_1[1:]: curve.setData([], [])
             if not self._plot_zoom_locked.get('plot1', False):
                 self.plot_widget_1.enableAutoRange(axis='y', enable=True)
-        if self.integrated_psd_check.isChecked() and self.wave_source_combo.currentIndex() == 0 and trace.size > 3:
-            f, p = signal.welch(trace, fs=trace.size / max(duration, 1e-9), nperseg=min(2048, trace.size))
+        if self.integrated_psd_check.isChecked() and phase and trace.size > 3:
+            spectrum_input = trace if space else profile
+            spectrum_rate = trace_rate if space else 1 / (dx * profile_step)
+            f, p = signal.welch(spectrum_input, fs=spectrum_rate, nperseg=min(2048, spectrum_input.size))
             self.spectrum_curve.setData(f, 10 * np.log10(p + np.finfo(float).tiny))
 
-    def _on_source_changed(self, *_args):
-        monitor = self.wave_source_combo.currentIndex() == 1
+    def _on_source_changed(self, *_args, persist=True):
+        if not self._plot_controls_ready:
+            return
+        source = self.wave_source_combo.currentData()
+        desired = DataSource.raw if source == 'raw' else DataSource.PHASE
+        current = self.data_source_combo.currentData()
+        if (desired == DataSource.PHASE) != (current == DataSource.PHASE):
+            if self.acquisition_running() or (source == 'raw' and self.channel_combo.currentData() == 4):
+                self.wave_source_combo.blockSignals(True)
+                previous = self.params.display.wave_source if current == DataSource.PHASE else 'raw'
+                self.wave_source_combo.setCurrentIndex(self.wave_source_combo.findData(previous))
+                self.wave_source_combo.blockSignals(False)
+                self.plot_source_notice.setText('请先停止采集，再切换 Phase/RAW。' if self.acquisition_running() else 'RAW 不支持 4 通道，请先在采集参数中改为 1 或 2 通道。')
+                self.plot_source_notice.show()
+                return
+            self._set_combo_to_data(self.data_source_combo, desired)
+            self.params.upload.data_source = desired
+        if source == 'phase':
+            space = self.phase_mode_combo.currentData() == DisplayMode.SPACE
+            self.mode_space_radio.setChecked(space)
+            self.mode_time_radio.setChecked(not space)
+        self.params.display.wave_source = source
+        monitor = source == 'monitor'
         self.monitor_enable_check.setChecked(monitor)
         self.waveform_enable_check.setChecked(not monitor)
         self._monitor_history.clear()
-        self.plot_widget_1.setLabel('top', 'Monitor temporal trend' if monitor else 'Time domain')
-        self.plot_widget_1.setLabel('bottom', 'Time', units='s')
-        self.plot_widget_1.setXLink(self.time_space_widget.plot_widget)
+        self._full_rate_wave_blocks.clear()
+        for curve in self.plot_curve_1: curve.setData([], [])
+        self.spectrum_curve.setData([], [])
+        self.plot_source_notice.setText('RAW 采集不产生 PHASE 时空图；切换回 Phase 或 Monitor 后恢复。' if source == 'raw' else '')
+        self.plot_source_notice.setVisible(source == 'raw')
+        self.time_space_widget.histogram_widget.setVisible(source != 'raw')
+        self.time_space_widget.plot_widget.setVisible(source != 'raw')
+        self._set_psd_visible(self.integrated_psd_check.isChecked(), persist=False)
+        self._update_wave_axes()
+        if persist:
+            self._save_local_params()
+
+    def _update_raw_display(self, data, channel_num):
+        if self.wave_source_combo.currentData() == 'raw':
+            super()._update_raw_display(data, channel_num)
+
+    def _on_mode_changed(self, checked):
+        super()._on_mode_changed(checked)
+        if checked and self._plot_controls_ready:
+            self._update_wave_axes()
 
     def _update_monitor_display(self, data, channel_num):
         super()._update_monitor_display(data, channel_num)
-        if self.wave_source_combo.currentIndex() != 1:
+        if self.wave_source_combo.currentData() != 'monitor':
             return
         index = min(max(0, int(self.params.display.region_index)), max(0, len(data) - 1)) if hasattr(self.params.display, 'region_index') else 0
         values = np.asarray(data[index]).reshape(-1)

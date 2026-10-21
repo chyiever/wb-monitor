@@ -196,6 +196,8 @@ class TimeSpaceParams:
     vmax: float = 0.02                      # Color range maximum (updated for phase data)
     filter_enabled: bool = False            # Display-only filter switch for Tab2
     filter_spec: str = "1-"                 # 1- high-pass, -10 low-pass, 2-10 band-pass
+    axis_unit: str = "points"               # points, m, km (display only)
+    axis_origin: float = 0.0                # x0 in the selected display unit
 
 
 @dataclass
@@ -224,7 +226,9 @@ class DisplayParams:
     are derived from those lengths and scan_rate before acquisition starts.
     Length/Plot also drives the GUI latest-snapshot refresh interval.
     """
-    mode: int = DisplayMode.TIME
+    mode: int = DisplayMode.SPACE
+    tick_font_size: int = 12
+    wave_source: str = "phase"              # phase, raw, monitor
     region_index: int = 0                    # Spatial position index for SPACE mode
     length_load_s: float = 0.2               # Seconds per DLL read block
     length_plot_s: float = 1.0               # Seconds per display window/refresh
