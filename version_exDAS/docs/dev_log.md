@@ -1073,3 +1073,7 @@ View 页 DAS Space-Time 图长期以深蓝或深红为主，手动 V 范围从 `
 - 分支安排：master1/dev1 同步最新版本；master2/dev2 保留本次上传前远程 master/dev 的版本。
 - 验证通过：Python 编译、离屏 GUI 构建、Tab3 切换及配置兼容、自动保存信号、全部坐标轴和色标字体、输入框宽度与页面渲染。未进行现场设备联调。
 - 详细记录见 docs/2026-9-17-GUI美化记录(不断更新).md。
+
+## 2026-10-21 双版本目录整理
+
+现有程序及 backup/config/docs/logs/resources/src 移至 version_exDAS，阶段版本 v_exDAS_261021；根目录 README 说明两版本入口。run.py 固定工作目录到所在版本，支持从仓库根目录启动。backup 与运行日志仅本地保留，已有跟踪的历史备份源码随目录移动。

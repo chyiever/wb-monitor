@@ -1,6 +1,9 @@
-config/gui_last_state.json
-config/gui_last_state.json.tmp
 __pycache__/
 *.pyc
-
 fipedasREAD/dist/
+.venv/
+work/
+version_*/config/gui_last_state.json*
+version_*/config/edas_last_params.json
+version_*/logs/
+version_*/backup/
