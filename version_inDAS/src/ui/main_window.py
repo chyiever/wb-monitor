@@ -71,7 +71,7 @@ class MainWindow(QMainWindow):
 
         # 设置全局字体大小（调大2号）
         font = QFont()
-        font.setPointSize(8)
+        font.setPointSize(10)
         self.setFont(font)
 
         # 去除控件获得焦点时显示的虚线矩形框（tab/下拉列表/输入框等）
@@ -474,7 +474,7 @@ class MainWindow(QMainWindow):
         group = QGroupBox("曲线选择")
         layout = QGridLayout(group)
         layout.setColumnStretch(1, 1)
-        layout.setColumnStretch(3, 1)
+        layout.setColumnStretch(3, 0)
 
         layout.addWidget(QLabel("Curve1"), 0, 0)
         self.tab3_curve1_combo = QComboBox()
@@ -482,22 +482,24 @@ class MainWindow(QMainWindow):
         self.tab3_curve1_combo.setCurrentText("FIP1")
         layout.addWidget(self.tab3_curve1_combo, 0, 1)
 
-        layout.addWidget(QLabel("Curve2"), 0, 2)
+        layout.addWidget(QLabel("Curve2"), 1, 0)
         self.tab3_curve2_combo = QComboBox()
         self.tab3_curve2_combo.addItems(["Off", "DAS Channel", "FIP1", "FIP2"])
         self.tab3_curve2_combo.setCurrentText("DAS Channel")
-        layout.addWidget(self.tab3_curve2_combo, 0, 3)
+        layout.addWidget(self.tab3_curve2_combo, 1, 1)
 
-        layout.addWidget(QLabel("C1 DAS通道"), 1, 0)
+        layout.addWidget(QLabel("DAS CH"), 0, 2)
         self.tab3_curve1_das_channel_spin = QSpinBox()
         self.tab3_curve1_das_channel_spin.setRange(0, 4000)
         self.tab3_curve1_das_channel_spin.setValue(10)
-        layout.addWidget(self.tab3_curve1_das_channel_spin, 1, 1)
+        self.tab3_curve1_das_channel_spin.setMaximumWidth(85)
+        layout.addWidget(self.tab3_curve1_das_channel_spin, 0, 3)
 
-        layout.addWidget(QLabel("C2 DAS通道"), 1, 2)
+        layout.addWidget(QLabel("DAS CH"), 1, 2)
         self.tab3_curve2_das_channel_spin = QSpinBox()
         self.tab3_curve2_das_channel_spin.setRange(0, 4000)
         self.tab3_curve2_das_channel_spin.setValue(10)
+        self.tab3_curve2_das_channel_spin.setMaximumWidth(85)
         layout.addWidget(self.tab3_curve2_das_channel_spin, 1, 3)
 
         # Backward-compatible aliases used by older manager code and saved snapshots.
@@ -1549,41 +1551,35 @@ class MainWindow(QMainWindow):
         grid.addWidget(QLabel("GUI字体(pt)"), 0, 0)
         self.setting_gui_font_spin = QSpinBox()
         self.setting_gui_font_spin.setRange(8, 28)
-        self.setting_gui_font_spin.setValue(8)
+        self.setting_gui_font_spin.setValue(10)
         grid.addWidget(self.setting_gui_font_spin, 0, 1)
-        grid.addWidget(QLabel("图标题字体(px)"), 1, 0)
-        self.setting_plot_title_font_spin = QSpinBox()
-        self.setting_plot_title_font_spin.setRange(10, 32)
-        self.setting_plot_title_font_spin.setValue(18)
-        grid.addWidget(self.setting_plot_title_font_spin, 1, 1)
-        grid.addWidget(QLabel("坐标标签字体(px)"), 2, 0)
-        self.setting_axis_label_font_spin = QSpinBox()
-        self.setting_axis_label_font_spin.setRange(8, 28)
-        self.setting_axis_label_font_spin.setValue(12)
-        grid.addWidget(self.setting_axis_label_font_spin, 2, 1)
-        grid.addWidget(QLabel("刻度字体(pt)"), 3, 0)
-        self.setting_tick_font_spin = QSpinBox()
-        self.setting_tick_font_spin.setRange(7, 24)
-        self.setting_tick_font_spin.setValue(11)
-        grid.addWidget(self.setting_tick_font_spin, 3, 1)
-        grid.addWidget(QLabel("PSD降采样"), 4, 0)
+        grid.addWidget(QLabel("所有图刻度与标签字号(pt)"), 1, 0)
+        self.setting_plot_font_spin = QSpinBox()
+        self.setting_plot_font_spin.setRange(8, 28)
+        self.setting_plot_font_spin.setValue(12)
+        grid.addWidget(self.setting_plot_font_spin, 1, 1)
+        # Compatibility names now refer to the same global point-size control.
+        self.setting_plot_title_font_spin = self.setting_plot_font_spin
+        self.setting_axis_label_font_spin = self.setting_plot_font_spin
+        self.setting_tick_font_spin = self.setting_plot_font_spin
+        grid.addWidget(QLabel("PSD降采样"), 2, 0)
         self.setting_psd_downsample_spin = QSpinBox()
         self.setting_psd_downsample_spin.setRange(1, 100)
         self.setting_psd_downsample_spin.setValue(1)
-        grid.addWidget(self.setting_psd_downsample_spin, 4, 1)
+        grid.addWidget(self.setting_psd_downsample_spin, 2, 1)
         self.setting_apply_btn = QPushButton("应用并保存全局设置")
         self.setting_apply_btn.setMinimumHeight(42)
         self._style_action_button(self.setting_apply_btn, False, min_height=42, min_width=190, font_size=15)
         self.setting_show_tab3_check = QCheckBox("显示 Tab3（信号检测）")
         self.setting_show_tab3_check.setChecked(False)
         self.setting_show_tab3_check.setToolTip("仅控制页面显示；不会启动或停止信号检测。")
-        grid.addWidget(self.setting_show_tab3_check, 5, 0, 1, 3)
+        grid.addWidget(self.setting_show_tab3_check, 3, 0, 1, 3)
         for spin in (self.setting_gui_font_spin, self.setting_plot_title_font_spin,
                      self.setting_axis_label_font_spin, self.setting_tick_font_spin,
                      self.setting_psd_downsample_spin):
             spin.setFixedWidth(120)
             spin.setAlignment(Qt.AlignRight)
-        grid.addWidget(self.setting_apply_btn, 6, 0, 1, 3, Qt.AlignLeft)
+        grid.addWidget(self.setting_apply_btn, 4, 0, 1, 3, Qt.AlignLeft)
         layout.addWidget(group, alignment=Qt.AlignLeft)
         layout.addStretch()
         self.setting_show_tab3_check.toggled.connect(self._apply_tab3_visibility)
@@ -2081,6 +2077,8 @@ class MainWindow(QMainWindow):
     def get_global_display_settings(self) -> Dict[str, Any]:
         """Return Setting-tab global font controls for persistence."""
         return {
+            "font_schema_version": 2,
+            "plot_font_pt": self.setting_plot_font_spin.value(),
             "gui_font_pt": self.setting_gui_font_spin.value(),
             "plot_title_px": self.setting_plot_title_font_spin.value(),
             "axis_label_px": self.setting_axis_label_font_spin.value(),
@@ -2400,10 +2398,9 @@ class MainWindow(QMainWindow):
 
     def _restore_global_display_settings(self, config: Dict[str, Any]) -> None:
         setting = config.get("setting", {})
-        self._set_spin_value(getattr(self, "setting_gui_font_spin", None), setting.get("gui_font_pt"))
-        self._set_spin_value(getattr(self, "setting_plot_title_font_spin", None), setting.get("plot_title_px"))
-        self._set_spin_value(getattr(self, "setting_axis_label_font_spin", None), setting.get("axis_label_px"))
-        self._set_spin_value(getattr(self, "setting_tick_font_spin", None), setting.get("tick_font_pt"))
+        migrated = setting.get('font_schema_version', 0) >= 2
+        self.setting_gui_font_spin.setValue(setting.get('gui_font_pt', 10) if migrated else 10)
+        self.setting_plot_font_spin.setValue(setting.get('plot_font_pt', 12) if migrated else 12)
         self._set_spin_value(getattr(self, "setting_psd_downsample_spin", None), setting.get("psd_downsample_factor"))
         self._set_checked(self.setting_show_tab3_check, setting.get("show_tab3", False))
         self._apply_tab3_visibility()
@@ -3464,7 +3461,7 @@ class MainWindow(QMainWindow):
         hover = active_color if checked else inactive_color
         return f"""
             QPushButton {{
-                font-size: {font_size}px;
+                font-size: 14pt;
                 font-weight: bold;
                 padding: {padding};
                 background-color: {background};
@@ -3917,7 +3914,7 @@ class MainWindow(QMainWindow):
         idle_color: str = "#2f6fed",
         min_height: int = 38,
         min_width: int = 104,
-        font_size: int = 15,
+        font_size: int = 14,
     ) -> None:
         # Primary action buttons share size, radius, and start/stop color semantics.
         if not button:
@@ -3927,7 +3924,7 @@ class MainWindow(QMainWindow):
         hover_color = self._button_hover_color(color)
         qss = "\n".join([
             "QPushButton {",
-            f"    font-size: {font_size}px;",
+            "    font-size: 14pt;",
             "    padding: 8px 10px;",
             "    font-weight: 600;",
             "    color: white;",
@@ -3960,7 +3957,7 @@ class MainWindow(QMainWindow):
         self._set_button_metrics(button, min_height=min_height, min_width=min_width)
         button.setStyleSheet("""
             QPushButton {
-                font-size: 13px;
+                font-size: 14pt;
                 font-weight: 600;
                 padding: 7px 10px;
                 color: #1f2a37;
@@ -4424,15 +4421,15 @@ class MainWindow(QMainWindow):
             item = plot.getPlotItem()
             try:
                 if item.titleLabel.text:
-                    item.titleLabel.item.setFont(QFont('', title_size))
+                    item.titleLabel.setText(item.titleLabel.text, family='Times New Roman', size=f'{title_size}pt')
             except Exception:
                 pass
             for axis_name in ('left', 'bottom', 'right', 'top'):
                 axis = item.getAxis(axis_name)
                 axis.setStyle(tickFont=tick_font)
                 try:
-                    axis.labelStyle.update({'font-family': 'Times New Roman', 'font-size': f'{axis_size}px'})
-                    axis.label.setFont(QFont('Times New Roman'))
+                    axis.labelStyle.update({'font-family': 'Times New Roman', 'font-size': f'{axis_size}pt'})
+                    axis.label.setFont(QFont('Times New Roman', axis_size))
                     axis._updateLabel()
                 except Exception:
                     pass
@@ -4442,8 +4439,8 @@ class MainWindow(QMainWindow):
         if histogram_axis is not None:
             try:
                 histogram_axis.setStyle(tickFont=tick_font)
-                histogram_axis.labelStyle.update({'font-family': 'Times New Roman', 'font-size': f'{axis_size}px'})
-                histogram_axis.label.setFont(QFont('Times New Roman'))
+                histogram_axis.labelStyle.update({'font-family': 'Times New Roman', 'font-size': f'{axis_size}pt'})
+                histogram_axis.label.setFont(QFont('Times New Roman', axis_size))
                 histogram_axis._updateLabel()
             except Exception:
                 pass
@@ -4478,6 +4475,10 @@ class MainWindow(QMainWindow):
         for checkbox in self.findChildren(QCheckBox):
             checkbox.setMinimumHeight(label_height)
         for button in self.findChildren(QPushButton):
+            button_font = QFont(self.font())
+            button_font.setPointSize(14)
+            button.setFont(button_font)
+            button.setStyleSheet(button.styleSheet() + '\nQPushButton { font-size: 14pt; }')
             if button.minimumHeight() < button_height:
                 button.setMinimumHeight(button_height)
         for label in self.findChildren(QLabel):
@@ -4612,12 +4613,12 @@ class MainWindow(QMainWindow):
                 self.view_auto_axis_btn.clicked.connect(self._reset_view_axes)
             if hasattr(self, 'setting_apply_btn'):
                 self.setting_apply_btn.clicked.connect(self._save_global_settings_for_restart)
-            for setting_spin in (
+            for setting_spin in dict.fromkeys((
                 getattr(self, 'setting_gui_font_spin', None),
                 getattr(self, 'setting_plot_title_font_spin', None),
                 getattr(self, 'setting_axis_label_font_spin', None),
                 getattr(self, 'setting_tick_font_spin', None),
-            ):
+            )):
                 if setting_spin is not None:
                     setting_spin.valueChanged.connect(lambda _value: self._apply_global_display_runtime_settings())
             if hasattr(self, 'setting_psd_downsample_spin'):

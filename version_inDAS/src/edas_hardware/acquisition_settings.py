@@ -57,7 +57,6 @@ SETTINGS_TABS = (
         ('BZ 压缩线程数', 'save.bz_compression_workers', 'bz_compression_workers_spin'),
     )),
     ('绘图显示', (
-        ('刻度与轴标签字号 (pt)', 'display.tick_font_size', None),
         ('时空图纵轴', 'time_space.axis_unit', None),
         ('纵轴起点偏移 x0', 'time_space.axis_origin', None),
         ('波形位置 Region', 'display.region_index', 'region_index_spin'),
@@ -144,6 +143,8 @@ class AcquisitionSettingsDialog(QDialog):
                     row.setContentsMargins(0, 0, 0, 0)
                     row.addWidget(editor, 1)
                     browse = QPushButton('浏览…')
+                    if panel.appearance_host is not None:
+                        panel.appearance_host._style_secondary_button(browse)
                     browse.clicked.connect(self._browse_path)
                     row.addWidget(browse)
                     form.addRow(label, holder)
@@ -174,6 +175,8 @@ class AcquisitionSettingsDialog(QDialog):
         self.buttons.button(QDialogButtonBox.Cancel).setText('取消')
         self.buttons.button(QDialogButtonBox.Save).setAutoDefault(False)
         self.buttons.button(QDialogButtonBox.Cancel).setAutoDefault(False)
+        if panel.appearance_host is not None:
+            for button in self.buttons.buttons(): panel.appearance_host._style_secondary_button(button)
         self.buttons.accepted.connect(self.apply_settings)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)

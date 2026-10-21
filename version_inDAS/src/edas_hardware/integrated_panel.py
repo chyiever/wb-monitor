@@ -3,6 +3,7 @@ from collections import deque
 from copy import deepcopy
 from pathlib import Path
 import time
+import re
 
 import numpy as np
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
@@ -280,6 +281,11 @@ class IntegratedEDASPanel(HardwareWindow):
         params = params or self.params
         self.time_space_widget.set_vertical_axis(self._timespace_unit,
             .4 * params.phase_demod.merge_point_num, self._timespace_origin)
+        self._apply_plot_fonts()
+
+    def _apply_plot_fonts(self):
+        if self.appearance_host is not None and hasattr(self.appearance_host, 'setting_plot_font_spin'):
+            self._plot_font_size = self.appearance_host.setting_plot_font_spin.value()
         font = QFont('Times New Roman', self._plot_font_size)
         for plot in (self.plot_widget_1, self.plot_widget_2, self.time_space_widget.plot_widget):
             for name in ('bottom', 'left', 'top', 'right'):
@@ -287,9 +293,18 @@ class IntegratedEDASPanel(HardwareWindow):
                 axis.setTickFont(font)
                 axis.label.setFont(font)
                 axis.labelStyle.update({'font-family': 'Times New Roman', 'font-size': f'{self._plot_font_size}pt'})
-                axis.setLabel(axis.labelText, units=axis.labelUnits, **axis.labelStyle)
+                axis.setLabel(re.sub(r'<[^>]+>', '', axis.labelText), units=axis.labelUnits, **axis.labelStyle)
             plot.getAxis('left').setWidth(max(90, self._plot_font_size * 7))
         self.time_space_widget.histogram_widget.item.axis.setTickFont(font)
+
+    def _set_time_plot_bottom_label(self, label):
+        size = self.appearance_host.setting_plot_font_spin.value() if self.appearance_host is not None and hasattr(self.appearance_host, 'setting_plot_font_spin') else self._plot_font_size
+        self.plot_widget_1.setLabel('bottom', label,
+            **{'font-family': 'Times New Roman', 'font-size': f'{size}pt'})
+
+    def _update_spectrum(self, *args, **kwargs):
+        super()._update_spectrum(*args, **kwargs)
+        self._apply_plot_fonts()
 
     def _on_phase_mode_selected(self, *_args):
         if not self._plot_controls_ready:

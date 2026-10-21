@@ -28,6 +28,8 @@ class EDASPlotControlTests(unittest.TestCase):
                   'time_space.distance_range_end': 12, 'time_space.space_downsample': 2,
                   'time_space.time_downsample': 2}
         values.update(extra)
+        if 'display.tick_font_size' in values:
+            w.setting_plot_font_spin.setValue(values.pop('display.tick_font_size'))
         for path, value in values.items(): self.helper.select(dialog, path, value)
         self.assertTrue(dialog.apply_settings(), dialog.error_label.text())
 
