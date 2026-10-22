@@ -9,6 +9,7 @@ from .main_window import MainWindow as BaseWindow
 from .view_settings import ViewSettingsDialog
 from .storage_settings import StorageSettingsDialog
 from .runtime_status import RuntimeStatus
+from .tab_icons import tab_icon
 from .parameter_package import read_parameters, write_parameters, validate_structure
 from edas_hardware.integrated_panel import IntegratedEDASPanel
 from edas_hardware.acquisition_settings import AcquisitionSettingsDialog, config_value, format_fiber_distance
@@ -66,6 +67,13 @@ class MainWindow(BaseWindow):
         self._view_width_changed()
         QTimer.singleShot(0, self._view_width_changed)
         self._refresh_dashboard()
+        self._set_tab_icons()
+
+    def _set_tab_icons(self):
+        if not hasattr(self, '_tab_icon_cache'):
+            self._tab_icon_cache = {name: tab_icon(name) for name in ('View', 'eDAS', 'FIP', 'Setting', 'Tab3')}
+        for index in range(self.tab_widget.count()):
+            self.tab_widget.setTabIcon(index, self._tab_icon_cache.get(self.tab_widget.tabText(index), self._tab_icon_cache['Tab3']))
 
     def _create_parameter_panel(self):
         panel = super()._create_parameter_panel()
@@ -560,6 +568,7 @@ class MainWindow(BaseWindow):
             index = self.tab_widget.indexOf(self.detection_tab)
             self.tab_widget.removeTab(index)
             self.tab_widget.insertTab(3, self.detection_tab, 'Tab3')
+        self._set_tab_icons()
 
     def get_tab3_settings(self):
         settings = super().get_tab3_settings()

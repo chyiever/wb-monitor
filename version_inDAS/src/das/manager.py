@@ -159,7 +159,8 @@ class EDASManager(QObject):
         if not settings['storage'].get('joint_enabled', False):
             return
         frames = self.coordinator.get_frames_since(self._last_snapshot_end_comm)
-        if frames:
+        while frames:
+            frames, _boundary = self._storage_prefix(frames)
             # Persist tail pairs and explicit missing-source flags on shutdown.
             request = DASStorageRequest(frames, settings['storage']['path'], frames[-1].comm_count,
                 wall_clock_start=self._pending_wall_start, fip_downsample=self._joint_fip_downsample)
@@ -171,7 +172,9 @@ class EDASManager(QObject):
             if self._joint_write_pending:
                 raise RuntimeError("联合尾部写入超时；缓存仍保留")
             if self._last_snapshot_end_comm < request.end_comm:
-                raise OSError('联合尾部写盘失败，游标未推进')
+                detail = self.storage_worker.last_error or '存储请求未返回成功，请检查日志'
+                raise OSError('联合尾部写盘失败，游标未推进；原因：' + detail)
+            frames = self.coordinator.get_frames_since(self._last_snapshot_end_comm)
 
     def reset(self) -> None:
         """Reset local state for a new monitoring session."""
@@ -599,7 +602,7 @@ class EDASManager(QObject):
                 first_incomplete.fip_missing,
                 first_incomplete.das_missing,
             )
-        frames = complete_frames
+        frames, shape_boundary = self._storage_prefix(complete_frames)
         end_comm = frames[-1].comm_count
 
         interval_seconds = max(1.0, float(storage_settings.get("interval_seconds", self._joint_interval_seconds)))
@@ -619,7 +622,7 @@ class EDASManager(QObject):
             and request.estimated_bytes >= int(cache_budget_bytes * 0.80)
             and chunk_seconds >= 1.0
         )
-        if chunk_seconds + 1e-9 < interval_seconds and not byte_limited_chunk:
+        if chunk_seconds + 1e-9 < interval_seconds and not byte_limited_chunk and not shape_boundary:
             self.logger.debug(
                 "TAB3_NODE manager.joint_storage collecting chunk_seconds=%.3f interval=%.3f frames=%d end_comm=%s",
                 chunk_seconds,
@@ -656,6 +659,18 @@ class EDASManager(QObject):
         self.main_window.update_tab3_storage_status(
             f"Queued {len(frames)} frames (end_comm={end_comm})"
         )
+
+    @staticmethod
+    def _storage_prefix(frames):
+        """Cut a file at a live shared channel/rate change, keeping its metadata uniform."""
+        signature = None
+        for index, frame in enumerate(frames):
+            packet = frame.das_packet
+            if packet is None: continue
+            current = (packet.channel_count, packet.sample_rate_hz, packet.channel_start, packet.channel_step)
+            if signature is None: signature = current
+            elif current != signature: return frames[:index], True
+        return frames, False
 
     def _on_joint_request_finished(self, end_comm: int, ok: bool) -> None:
         """Advance the joint snapshot cursor only after a successful write."""

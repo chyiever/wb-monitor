@@ -97,9 +97,11 @@ class ReplayWorker(QObject):
         # 缓存已计算好的绘图结果（仅保存降采样后的数组，体积小），重复请求可秒回
         self._result_cache: "OrderedDict[tuple, RedrawResult]" = OrderedDict()
         self._result_cache_size = 8
+        self._latest_seq = -1
 
     @pyqtSlot(object)
     def redraw(self, request: RedrawRequest) -> None:
+        if request.seq < self._latest_seq: return
         self.redrawStarted.emit()
         try:
             signature = _request_signature(request)
@@ -125,6 +127,7 @@ class ReplayWorker(QObject):
 
     def submit(self, request: RedrawRequest) -> None:
         """GUI 线程入口：借助跨线程信号把请求投递到 worker 线程。"""
+        self._latest_seq = request.seq
         self.requestReceived.emit(request)
 
     def clear_cache(self) -> None:
@@ -144,8 +147,9 @@ class ReplayWorker(QObject):
 
     def _load_cached(self, paths: tuple[str, ...]) -> JointReplayData:
         key = tuple(str(Path(path).resolve()) for path in paths)
+        versions = tuple((Path(path).stat().st_size, Path(path).stat().st_mtime_ns) for path in key)
         cached = self._data_cache.get(key)
-        if cached is not None:
+        if cached is not None and getattr(cached, '_file_versions', None) == versions:
             self._data_cache.move_to_end(key)
             return cached
         started = time.perf_counter()
@@ -154,6 +158,7 @@ class ReplayWorker(QObject):
         else:
             data = merge_joint_data([load_data_file(Path(path)) for path in key])
         logger.info("加载 %d 个文件用时 %.3fs", len(key), time.perf_counter() - started)
+        data._file_versions = versions
         self._data_cache[key] = data
         self._evict_cache()
         return data
@@ -183,7 +188,7 @@ class ReplayWorker(QObject):
 
 
 def _request_signature(request: RedrawRequest) -> tuple:
-    paths = tuple(str(Path(path).resolve()) for path in request.paths)
+    paths = tuple((str(Path(path).resolve()), Path(path).stat().st_size, Path(path).stat().st_mtime_ns) for path in request.paths)
     return (paths, request.curve1, request.curve2, request.space)
 
 
@@ -256,7 +261,9 @@ def _compute_space(request: SpaceRequest, data: JointReplayData) -> tuple[np.nda
     if request.apply_preprocess:
         rates = data.das_rates_hz[np.isfinite(data.das_rates_hz) & (data.das_rates_hz > 0)]
         rate = float(np.nanmedian(rates)) if rates.size else 0.0
-        eff_rate = rate / max(1, int(request.time_downsample))
+        # The preview may add adaptive sampling to stay within its pixel budget.
+        # Filters must use the displayed image's effective time sampling rate.
+        eff_rate = matrix.shape[1] / rect[2] if rect[2] > 0 else rate / max(1, int(request.time_downsample))
         matrix = preprocess_space_matrix(matrix, eff_rate, request.preprocess)
     if request.auto_levels:
         levels = robust_levels(matrix)

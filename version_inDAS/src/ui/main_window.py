@@ -9,6 +9,7 @@ Date: 2026-03-11
 """
 
 import sys
+from runtime_paths import application_root, bundle_root
 import os
 import json
 import logging
@@ -96,7 +97,7 @@ class MainWindow(QMainWindow):
         self._sync_delta_count = 0
         self._sync_matched_counts = set()
         self._persist_logger = logging.getLogger(f"{__name__}.GuiPersistence")
-        self._persist_config_path = Path(__file__).resolve().parents[2] / "config" / "gui_last_state.json"
+        self._persist_config_path = application_root() / "config" / "gui_last_state.json"
         self._persist_loading = False
         self._auto_save_timer = QTimer(self)
         self._auto_save_timer.setSingleShot(True)
@@ -366,7 +367,7 @@ class MainWindow(QMainWindow):
         # 左侧Logo
         logo_label = QLabel()
         # 尝试加载logo，如果文件不存在则显示默认文本
-        logo_path = str(Path(__file__).resolve().parents[2] / "resources" / "logo.png")
+        logo_path = str(bundle_root() / "resources" / "logo.png")
         if os.path.exists(logo_path):
             pixmap = QIcon(logo_path).pixmap(60, 60)
             logo_label.setPixmap(pixmap)
@@ -3464,7 +3465,7 @@ class MainWindow(QMainWindow):
         hover = active_color if checked else inactive_color
         return f"""
             QPushButton {{
-                font-size: 14pt;
+                font-size: 12pt;
                 font-weight: bold;
                 padding: {padding};
                 background-color: {background};
@@ -3917,7 +3918,7 @@ class MainWindow(QMainWindow):
         idle_color: str = "#2f6fed",
         min_height: int = 38,
         min_width: int = 104,
-        font_size: int = 14,
+        font_size: int = 12,
     ) -> None:
         # Primary action buttons share size, radius, and start/stop color semantics.
         if not button:
@@ -3927,7 +3928,7 @@ class MainWindow(QMainWindow):
         hover_color = self._button_hover_color(color)
         qss = "\n".join([
             "QPushButton {",
-            "    font-size: 14pt;",
+            "    font-size: 12pt;",
             "    padding: 8px 10px;",
             "    font-weight: 600;",
             "    color: white;",
@@ -3950,7 +3951,7 @@ class MainWindow(QMainWindow):
             idle_color="#6f7a86",
             min_height=34,
             min_width=min_width,
-            font_size=14,
+            font_size=12,
         )
 
     def _style_secondary_button(self, button: QPushButton, min_height: int = 34, min_width: int = 88) -> None:
@@ -3960,7 +3961,7 @@ class MainWindow(QMainWindow):
         self._set_button_metrics(button, min_height=min_height, min_width=min_width)
         button.setStyleSheet("""
             QPushButton {
-                font-size: 14pt;
+                font-size: 12pt;
                 font-weight: 600;
                 padding: 7px 10px;
                 color: #1f2a37;
@@ -4479,9 +4480,9 @@ class MainWindow(QMainWindow):
             checkbox.setMinimumHeight(label_height)
         for button in self.findChildren(QPushButton):
             button_font = QFont(self.font())
-            button_font.setPointSize(14)
+            button_font.setPointSize(12)
             button.setFont(button_font)
-            button.setStyleSheet(button.styleSheet() + '\nQPushButton { font-size: 14pt; }')
+            button.setStyleSheet(re.sub(r'\nQPushButton \{ font-size: \d+pt; \}', '', button.styleSheet()) + '\nQPushButton { font-size: 12pt; }')
             if button.minimumHeight() < button_height:
                 button.setMinimumHeight(button_height)
         for label in self.findChildren(QLabel):

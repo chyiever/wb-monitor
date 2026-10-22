@@ -119,6 +119,7 @@ class AcquisitionThread(QThread):
         self._display_history_chunks = []
         self._display_history_frames = 0
         self._display_history_signature = None
+        self._display_target_frames = None
         self._display_publish_interval_s = 1.0
         self._display_publish_tolerance_s = 0.0
         self._last_display_publish_at = 0.0
@@ -945,7 +946,7 @@ class AcquisitionThread(QThread):
         if points_per_frame <= 0:
             self._last_display_publish_ms = (time.perf_counter() - start) * 1000.0
             return
-        target_frames = max(1, int(self._params.display.frame_plot_num))
+        target_frames = max(1, int(self._display_target_frames or self._params.display.frame_plot_num))
         arr = np.asarray(data)
         snapshot_kind = 0
         if int(data_source) == int(DataSource.PHASE):

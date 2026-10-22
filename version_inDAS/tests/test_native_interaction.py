@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 def native_probe():
     from PyQt5.QtCore import Qt, QTimer, QPoint
     from PyQt5.QtTest import QTest, QSignalSpy
-    from PyQt5.QtWidgets import QApplication, QMessageBox
+    from PyQt5.QtWidgets import QApplication, QMessageBox, QPushButton
 
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root / 'src'))
@@ -19,6 +19,21 @@ def native_probe():
     from edas_hardware.integrated_panel import IntegratedEDASPanel
 
     app = QApplication([])
+    # A locked/disconnected Windows desktop cannot resolve native screen hits,
+    # even for an ordinary top-level Qt button. Distinguish that environment
+    # from a regression in the embedded acquisition panel.
+    baseline = QPushButton('Native desktop availability probe')
+    baseline.setWindowFlag(Qt.WindowStaysOnTopHint, True)
+    baseline.setGeometry(100, 100, 360, 100)
+    baseline.show()
+    baseline.raise_()
+    baseline.activateWindow()
+    QTest.qWait(300)
+    desktop_available = app.widgetAt(baseline.mapToGlobal(QPoint(20, 20))) is baseline
+    baseline.close()
+    if not desktop_available:
+        print('Native screen hit-test unavailable even for a standalone Qt button')
+        raise SystemExit(77)
     warnings = []
 
     def dismiss_warning():
@@ -108,6 +123,7 @@ class NativeInteractionTests(unittest.TestCase):
         result = subprocess.run([sys.executable, '-X', 'utf8', str(Path(__file__).resolve()), '--probe'],
                                 env=environment, capture_output=True, text=True,
                                 encoding='utf-8', timeout=30)
+        if result.returncode == 77: self.skipTest(result.stdout.strip())
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 

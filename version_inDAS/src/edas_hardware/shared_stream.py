@@ -27,7 +27,7 @@ class SharedStreamManager(QObject):
         self._condition = threading.Condition()
         self._queue = deque()
         self._bytes = 0
-        self._parts = []
+        self._parts = deque()
         self._frames = 0
         self._count = 0
         self._sent = 0
@@ -121,10 +121,13 @@ class SharedStreamManager(QObject):
         temporal_step = max(1, int(settings.get('time_downsample', 1)))
         period_frames = max(1, int(settings.get('comm_frames', params.basic.scan_rate)))
         # A single interval must fit within a bounded working set.
-        interval_bytes = period_frames * ((end - start) // spatial_step + 1) * 4
+        interval_bytes = period_frames * width * raw.dtype.itemsize
         if interval_bytes > self.MEMORY_BUDGET:
             raise ValueError('共享周期数据超过 1 GiB；请缩短周期或减少通道')
-        self._parts.append(raw[:, start:end + 1:spatial_step])
+        # Retain full spatial blocks until a complete period exists. Runtime
+        # channel/downsample changes then affect a whole packet, never a mixture
+        # of differently shaped fragments from before and after the edit.
+        self._parts.append(raw)
         self._frames += raw.shape[0]
         while self._frames >= period_frames:
             remaining, pieces = period_frames, []
@@ -132,7 +135,7 @@ class SharedStreamManager(QObject):
                 part = self._parts[0]
                 take = min(remaining, part.shape[0])
                 pieces.append(part[:take])
-                if take == part.shape[0]: self._parts.pop(0)
+                if take == part.shape[0]: self._parts.popleft()
                 else: self._parts[0] = part[take:]
                 remaining -= take
             self._frames -= period_frames
@@ -143,7 +146,7 @@ class SharedStreamManager(QObject):
             matrix = pieces[0] if len(pieces) == 1 else np.concatenate(pieces, axis=0)
             # Channel-first float32 radians match the old TCP semantics while
             # avoiding its bytes serialization and float64 expansion.
-            radians = np.ascontiguousarray(matrix[::temporal_step].T, dtype=np.float32)
+            radians = np.ascontiguousarray(matrix[::temporal_step, start:end + 1:spatial_step].T, dtype=np.float32)
             radians *= np.float32(np.pi / 32767.0)
             radians.setflags(write=False)
             duration = period_frames / float(params.basic.scan_rate)

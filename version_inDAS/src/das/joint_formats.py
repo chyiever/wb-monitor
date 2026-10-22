@@ -148,7 +148,13 @@ def _chunk_timestamp_path(output_dir: str, suffix: str) -> Path:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
-    return output_path / f"FIPeDAS-{now.strftime('%Y%m%d-%H%M%S.%f')[:-3]}{suffix}"
+    stem = f"FIPeDAS-{now.strftime('%Y%m%d-%H%M%S.%f')}"
+    candidate = output_path / (stem + suffix)
+    counter = 1
+    while candidate.exists() or candidate.with_suffix(suffix + '.part').exists():
+        candidate = output_path / f'{stem}-{counter}{suffix}'
+        counter += 1
+    return candidate
 
 
 def _as_float64_c(arr: np.ndarray) -> np.ndarray:

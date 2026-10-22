@@ -16,6 +16,7 @@ Date: 2026-03-11
 """
 
 import sys
+from runtime_paths import application_root
 import logging
 import json
 import time
@@ -25,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 from PyQt5.QtWidgets import QApplication, QMessageBox
-from PyQt5.QtCore import QTimer
+from PyQt5.QtCore import QTimer, Qt
 
 # Import application modules
 from ui.integrated_window import MainWindow
@@ -314,7 +315,7 @@ class PCCPMonitorApp:
 
     def _load_configuration(self) -> dict:
         """Load application configuration."""
-        config_path = Path(__file__).parent.parent / 'config' / 'app_config.json'
+        config_path = application_root() / 'config' / 'app_config.json'
 
         try:
             with open(config_path, 'r', encoding='utf-8') as f:
@@ -530,6 +531,7 @@ class PCCPMonitorApp:
             self._sync_tab2_settings()
 
             self.alignment_coordinator = AlignedSessionCoordinator(cache_seconds=10.0)
+            self.alignment_coordinator.cache_overflow.connect(self._handle_alignment_overflow, Qt.QueuedConnection)
             self.edas_manager = EDASManager(self.main_window, coordinator=self.alignment_coordinator)
             self.tab1_manager.data_processor.data_processed.connect(self.edas_manager.process_fip_processed_data)
             self._sync_tab3_settings()
@@ -879,7 +881,7 @@ class PCCPMonitorApp:
             self.config.update(new_config)
 
             # Save configuration to file
-            config_path = Path(__file__).parent.parent / 'config' / 'app_config.json'
+            config_path = application_root() / 'config' / 'app_config.json'
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump(self.config, f, indent=2, ensure_ascii=False)
 
@@ -1384,6 +1386,13 @@ class PCCPMonitorApp:
 
         except Exception as e:
             self.logger.error(f"Error updating downsample factor: {e}")
+
+    def _handle_alignment_overflow(self, message):
+        self.logger.error(message)
+        self.main_window._stop_joint_acquisition()
+        self.main_window._storage_error = message
+        self.main_window.status_bar.showMessage(message, 30000)
+        self.main_window._refresh_dashboard()
 
     def cleanup(self):
         """Cleanup resources before exit."""

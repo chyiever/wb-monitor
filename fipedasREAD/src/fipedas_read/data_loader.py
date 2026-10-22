@@ -118,7 +118,7 @@ def load_data_file(path: Path) -> JointReplayData:
         return load_joint_h5(path)
     if suffix == ".bin":
         if path.name.startswith("FIPeDAS-"):
-            return load_joint_bin(path)
+            return load_joint_bin(path, lazy=True)
         return load_edas_bin_json(path)
     raise ValueError(f"不支持的文件类型: {path.name}")
 
@@ -259,14 +259,39 @@ def load_edas_bin_json(bin_path: Path) -> JointReplayData:
     )
 
 
-def load_joint_bin(path: Path) -> JointReplayData:
+def load_joint_bin(path: Path, lazy: bool = False) -> JointReplayData:
     path = Path(path)
+    file_size = path.stat().st_size
+    if file_size < 12: raise ValueError('联合 BIN 文件头不完整')
+    # One read-only mapping per file. Frame arrays retain this mapping through
+    # their base reference, so loading a multi-GB file only indexes its records.
+    mapped = np.memmap(path, dtype=np.uint8, mode='r')
     with open(path, "rb") as f:
+        def exact(size):
+            if size < 0 or f.tell() + size > file_size:
+                raise ValueError(f'联合 BIN 文件截断或长度非法，offset={f.tell()}, bytes={size}')
+            value = f.read(size)
+            if len(value) != size: raise ValueError('联合 BIN 读取不完整')
+            return value
+
+        def array_view(shape, dtype):
+            dtype = np.dtype(dtype)
+            if any(value < 0 for value in shape): raise ValueError('联合 BIN 数组维度不能为负数')
+            count = 1
+            for value in shape: count *= value
+            size = count * dtype.itemsize
+            offset = f.tell()
+            if offset + size > file_size: raise ValueError(f'联合 BIN 数组数据截断，offset={offset}, bytes={size}')
+            arr = np.ndarray(shape, dtype=dtype, buffer=mapped, offset=offset)
+            arr.setflags(write=False)
+            f.seek(size, 1)
+            return arr if lazy else arr.copy()
         magic = f.read(8)
         if magic not in (b"FIPeDAS1", b"FIPeDAS2"):
             raise ValueError(f"不是 FIPeDAS joint bin 文件: {path.name}")
-        header_len = struct.unpack("<I", f.read(4))[0]
-        header = json.loads(f.read(header_len).decode("utf-8"))
+        header_len = struct.unpack("<I", exact(4))[0]
+        if header_len > 16 * 1024 * 1024: raise ValueError('联合 BIN 元数据头超过 16 MiB')
+        header = json.loads(exact(header_len).decode("utf-8"))
         format_version = str(header.get("format_version", "wb-monitor-joint-bin-v1"))
         created_at = str(header.get("created_at", "") or header.get("wall_clock_start", ""))
         das_dtype = np.dtype("<f4" if magic == b"FIPeDAS2" else "<f8")
@@ -286,29 +311,30 @@ def load_joint_bin(path: Path) -> JointReplayData:
         das_counts: list[int] = []
 
         while True:
-            rec = f.read(50)
-            if len(rec) < 50:
-                break
+            if f.tell() == file_size: break
+            rec = exact(50)
             (comm, start, dur, fip_p, das_p, fip_s, fip_r, das_c, das_r, n) = struct.unpack("<iddBBididi", rec)
+            if n not in (0, 1, 2): raise ValueError('联合 BIN FIP 数组数量非法')
             f1 = np.array([], dtype=np.float64)
             f2 = np.array([], dtype=np.float64)
             if n > 0:
                 sensors: list[np.ndarray] = []
                 for _ in range(n):
-                    pts = struct.unpack("<i", f.read(4))[0]
-                    sensors.append(np.frombuffer(f.read(pts * 8), dtype="<f8"))
+                    pts = struct.unpack("<i", exact(4))[0]
+                    sensors.append(array_view((pts,), '<f8'))
                 f1 = sensors[0]
                 if len(sensors) > 1:
                     f2 = sensors[1]
-            rows, cols = struct.unpack("<ii", f.read(8))
+            rows, cols = struct.unpack("<ii", exact(8))
+            if rows < 0 or cols < 0: raise ValueError('联合 BIN DAS 维度非法')
             if rows > 0 and cols > 0:
-                das = np.frombuffer(f.read(rows * cols * das_dtype.itemsize), dtype=das_dtype).reshape(rows, cols)
+                das = array_view((rows, cols), das_dtype)
             else:
                 das = np.empty((0, 0), dtype=np.float32)
 
             fip1_frames.append(f1)
             fip2_frames.append(f2)
-            das_frames.append(np.asarray(das, dtype=np.float32))
+            das_frames.append(das)
             comms.append(comm)
             starts.append(start)
             durations.append(dur)
@@ -570,6 +596,12 @@ def build_space_time_matrix(
     expected_rows: Optional[int] = None
     time_step = max(1, int(time_downsample))
     space_step = max(1, int(space_downsample))
+    # Budget before converting or concatenating, not after allocating the full
+    # multi-GB image. Distribute sampling across all frames for fast previews.
+    estimated = sum(max(0, min(max_channel, m.shape[0] - 1) - min_channel + space_step) // space_step *
+                    ((m.shape[1] + time_step - 1) // time_step)
+                    for m in frames if getattr(m, 'ndim', 0) == 2 and m.size)
+    time_step *= max(1, int(np.ceil(estimated / max(1, max_pixels))))
     for index, matrix in enumerate(frames):
         arr = np.asarray(matrix)
         if arr.ndim != 2 or arr.size == 0:

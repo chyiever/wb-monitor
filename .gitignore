@@ -1,6 +1,10 @@
 __pycache__/
 *.pyc
 fipedasREAD/dist/
+version_*/dist/
+version_*/build/
+version_*/*.spec
+version_*/smoke_test.json
 .venv/
 work/
 version_*/config/gui_last_state.json*

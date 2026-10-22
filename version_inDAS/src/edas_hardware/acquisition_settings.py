@@ -100,11 +100,12 @@ def format_fiber_distance(meters):
 
 
 class AcquisitionSettingsDialog(QDialog):
-    def __init__(self, panel, parent=None):
+    def __init__(self, panel, parent=None, section='all'):
         super().__init__(parent)
         self.panel = panel
+        self.section = section
         self.setObjectName('edasAcquisitionSettings')
-        self.setWindowTitle('eDAS 采集参数设置')
+        self.setWindowTitle({'storage': 'DAS 独立存储参数', 'display': '共享与显示参数'}.get(section, 'eDAS 采集参数设置'))
         self.setWindowModality(Qt.NonModal)
         self.setFont(panel.font())
         self.resize(840, 600)
@@ -119,6 +120,8 @@ class AcquisitionSettingsDialog(QDialog):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
         for title, fields in SETTINGS_TABS:
+            fields = tuple(field for field in fields if self._in_section(field[1]))
+            if not fields: continue
             page = QWidget()
             form = QFormLayout(page)
             form.setContentsMargins(18, 18, 18, 18)
@@ -148,7 +151,8 @@ class AcquisitionSettingsDialog(QDialog):
                     browse.clicked.connect(self._browse_path)
                     row.addWidget(browse)
                     form.addRow(label, holder)
-                elif path in ('basic.point_num_per_scan', 'phase_demod.merge_point_num', 'phase_demod.diff_order'):
+                elif path in ('basic.point_num_per_scan', 'phase_demod.merge_point_num', 'phase_demod.diff_order',
+                              'phase_demod.crop_distance_start', 'phase_demod.crop_distance_end'):
                     editor.setFixedWidth(220)
                     holder = QWidget()
                     row = QHBoxLayout(holder)
@@ -180,29 +184,48 @@ class AcquisitionSettingsDialog(QDialog):
         self.buttons.accepted.connect(self.apply_settings)
         self.buttons.rejected.connect(self.reject)
         layout.addWidget(self.buttons)
-        for path in ('basic.point_num_per_scan', 'phase_demod.merge_point_num', 'phase_demod.diff_order'):
-            self.editors[path].valueChanged.connect(self._refresh_derived_labels)
+        for path in ('basic.point_num_per_scan', 'phase_demod.merge_point_num', 'phase_demod.diff_order',
+                     'phase_demod.crop_distance_start', 'phase_demod.crop_distance_end'):
+            if path in self.editors: self.editors[path].valueChanged.connect(self._refresh_derived_labels)
         self._refresh_derived_labels()
-        self.editors['time_space.axis_unit'].currentIndexChanged.connect(self._update_origin_unit)
-        self._update_origin_unit()
+        if 'time_space.axis_unit' in self.editors:
+            self.editors['time_space.axis_unit'].currentIndexChanged.connect(self._update_origin_unit)
+            self._update_origin_unit()
         if panel.acquisition_running():
-            self.notice.setText('采集中：参数只读。请先关闭此窗口并停止采集，再修改参数，避免采集和文件格式在中途变化。')
-            for editor in self.editors.values(): editor.setEnabled(False)
-            self.buttons.button(QDialogButtonBox.Save).setEnabled(False)
+            self.notice.setText('采集中：硬件/裁剪/读取块/共享周期只读；显示和共享范围可在线修改。独立保存进行时，请先关闭 SAVE 再修改保存格式与路径。')
+            for path, editor in self.editors.items():
+                if self._hardware_field(path) or (path.startswith('save.') and panel.data_saver is not None): editor.setEnabled(False)
+
+    def _in_section(self, path):
+        if self.section == 'all': return True
+        if self.section == 'storage': return path.startswith('save.')
+        if self.section == 'display':
+            return path.startswith(('time_space.', 'comm.')) and path != 'comm.length_comm_s' or path.startswith('display.') and path != 'display.length_load_s'
+        return self._hardware_field(path)
+
+    @staticmethod
+    def _hardware_field(path):
+        return path.startswith(('basic.', 'upload.', 'phase_demod.')) or path in ('display.length_load_s', 'comm.length_comm_s')
 
     def _refresh_derived_labels(self):
+        if 'basic.point_num_per_scan' not in self.editors: return
         points = self.editors['basic.point_num_per_scan'].value()
         dx = .4 * self.editors['phase_demod.merge_point_num'].value()
         gl = dx * self.editors['phase_demod.diff_order'].value()
         self.derived_labels['basic.point_num_per_scan'].setText('Fiber Length=' + format_fiber_distance(points * .4))
         self.derived_labels['phase_demod.merge_point_num'].setText(f'dx={dx:.1f} m')
         self.derived_labels['phase_demod.diff_order'].setText(f'GL={gl:.1f} m')
+        total = calculate_phase_point_num(points, self.editors['phase_demod.merge_point_num'].value())
+        count = calculate_cropped_point_count(total, self.editors['phase_demod.crop_distance_start'].value(),
+                                             self.editors['phase_demod.crop_distance_end'].value())
+        for path in ('phase_demod.crop_distance_start', 'phase_demod.crop_distance_end'):
+            self.derived_labels[path].setText(f'原有 {total} CH → 裁剪后 {count} CH')
 
     def _update_origin_unit(self):
         unit = self.editors['time_space.axis_unit'].currentData()
         editor = self.editors['time_space.axis_origin']
         editor.setSuffix(' ' + unit if unit != 'points' else ' m / km')
-        editor.setEnabled(unit != 'points' and not self.panel.acquisition_running())
+        editor.setEnabled(unit != 'points')
         editor.setToolTip('x0 使用当前纵轴单位；Points 模式不应用偏移。距离=点号×dx+x0（km 模式中 dx 换算为 km）。')
 
     def showEvent(self, event):
@@ -284,13 +307,13 @@ class AcquisitionSettingsDialog(QDialog):
         return editor
 
     def draft_config(self):
-        config = deepcopy(self.original_config)
+        config = deepcopy(self.panel._collect_params())
         for path, editor in self.editors.items():
             if isinstance(editor, QComboBox): value = editor.currentData()
             elif isinstance(editor, (QSpinBox, QDoubleSpinBox)): value = editor.value()
             elif isinstance(editor, QCheckBox): value = editor.isChecked()
             else: value = editor.text().strip()
-            set_config_value(config, path, value)
+            if value != config_value(self.original_config, path): set_config_value(config, path, value)
         self.panel._sync_length_frame_fields(config)
         return config
 
@@ -320,11 +343,8 @@ class AcquisitionSettingsDialog(QDialog):
         return ''
 
     def apply_settings(self):
-        if self.panel.acquisition_running():
-            self.error_label.setText('采集仍在运行，请停止后再应用参数。')
-            return False
         config = self.draft_config()
-        error = self.validate_draft(config)
+        error = self.panel.runtime_settings_error(config) or self.validate_draft(config)
         if error:
             self.error_label.setText(error)
             return False

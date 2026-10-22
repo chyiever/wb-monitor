@@ -22,6 +22,7 @@ class AlignedSessionCoordinator(QObject):
     """Maintain a live comm_count keyed cache shared by Tab3 and Tab4."""
 
     alignment_status_changed = pyqtSignal(dict)
+    cache_overflow = pyqtSignal(str)
 
     # 两路 comm_count 差异超过此阈值时，对齐状态降级为 "lagging"（T3-03）
     # Keep a small packet-count drift tolerance; actual frame duration comes from packets.
@@ -39,12 +40,14 @@ class AlignedSessionCoordinator(QObject):
         self._das_packets: Dict[int, DASSessionPacket] = {}
         self._ordered_counts: Deque[int] = deque()
         self._missing_ranges: List[MissingRange] = []
+        self._missing_range_totals = {'fip': 0, 'das': 0}
         self._last_fip_comm_count: Optional[int] = None
         self._last_das_comm_count: Optional[int] = None
         self._fip_online = False
         self._das_online = False
         self._session_active = False
         self._retention_floor_comm_count: Optional[int] = None
+        self._overflow_message = ''
 
     def start_session(self) -> None:
         """Reset all state for a newly started monitoring session."""
@@ -53,12 +56,14 @@ class AlignedSessionCoordinator(QObject):
             self._das_packets.clear()
             self._ordered_counts.clear()
             self._missing_ranges.clear()
+            self._missing_range_totals = {'fip': 0, 'das': 0}
             self._last_fip_comm_count = None
             self._last_das_comm_count = None
             self._fip_online = False
             self._das_online = False
             self._session_active = True
             self._retention_floor_comm_count = None
+            self._overflow_message = ''
         self._emit_status("waiting")
 
     def stop_session(self) -> None:
@@ -81,23 +86,29 @@ class AlignedSessionCoordinator(QObject):
     def push_fip_packet(self, packet: FIPSessionPacket) -> None:
         """Insert one FIP packet into the live session cache."""
         with self._lock:
+            if self._overflow_message: return
             self._record_missing_ranges("fip", self._last_fip_comm_count, packet.comm_count)
             self._last_fip_comm_count = packet.comm_count
             self._fip_packets[packet.comm_count] = packet
             self._fip_online = True
             self._remember_count(packet.comm_count)
             self._trim_cache_locked()
+            overflow = self._check_protected_budget_locked()
+        if overflow: self.cache_overflow.emit(overflow)
         self._emit_status(self._derive_alignment_status())
 
     def push_das_packet(self, packet: DASSessionPacket) -> None:
         """Insert one DAS packet into the live session cache."""
         with self._lock:
+            if self._overflow_message: return
             self._record_missing_ranges("das", self._last_das_comm_count, packet.comm_count)
             self._last_das_comm_count = packet.comm_count
             self._das_packets[packet.comm_count] = packet
             self._das_online = True
             self._remember_count(packet.comm_count)
             self._trim_cache_locked()
+            overflow = self._check_protected_budget_locked()
+        if overflow: self.cache_overflow.emit(overflow)
         self._emit_status(self._derive_alignment_status())
 
     def get_recent_frames(self, window_seconds: float) -> List[AlignedPacketFrame]:
@@ -165,8 +176,8 @@ class AlignedSessionCoordinator(QObject):
             return AlignmentStatusSnapshot(
                 fip_last_comm_count=-1 if self._last_fip_comm_count is None else self._last_fip_comm_count,
                 das_last_comm_count=-1 if self._last_das_comm_count is None else self._last_das_comm_count,
-                fip_missing_count=sum(1 for item in self._missing_ranges if item.source == "fip"),
-                das_missing_count=sum(1 for item in self._missing_ranges if item.source == "das"),
+                fip_missing_count=self._missing_range_totals['fip'],
+                das_missing_count=self._missing_range_totals['das'],
                 missing_ranges=list(self._missing_ranges[-20:]),
                 alignment_status=self._derive_alignment_status(),
                 fip_online=self._fip_online,
@@ -177,6 +188,7 @@ class AlignedSessionCoordinator(QObject):
         """Clear recorded missing ranges for the Data tab without resetting comm tracking."""
         with self._lock:
             self._missing_ranges.clear()
+            self._missing_range_totals = {'fip': 0, 'das': 0}
         self._emit_status(self._derive_alignment_status())
 
     def _record_missing_ranges(self, source: str, last_comm_count: Optional[int], new_comm_count: int) -> None:
@@ -187,6 +199,7 @@ class AlignedSessionCoordinator(QObject):
             return
         if new_comm_count <= last_comm_count + 1:
             return
+        self._missing_range_totals[source] += 1
         self._missing_ranges.append(
             MissingRange(
                 source=source,
@@ -194,6 +207,9 @@ class AlignedSessionCoordinator(QObject):
                 end_comm_count=new_comm_count - 1,
             )
         )
+        # GUI shows the last 20 ranges. Keep a bounded diagnostic history while
+        # preserving lifetime counters independently during multi-day sessions.
+        del self._missing_ranges[:-256]
 
     def _remember_count(self, comm_count: int) -> None:
         if comm_count in self._ordered_counts:
@@ -237,6 +253,25 @@ class AlignedSessionCoordinator(QObject):
                 break
             self._fip_packets.pop(old_count, None)
             self._das_packets.pop(old_count, None)
+
+    def _check_protected_budget_locked(self):
+        if self._retention_floor_comm_count is None: return ''
+        seen, total = set(), 0
+        for packet in list(self._fip_packets.values()) + list(self._das_packets.values()):
+            arrays = [getattr(packet, name, None) for name in ('matrix', 'unwrapped_data', 'display_data')]
+            for name in ('unwrapped_by_sensor', 'display_by_sensor'):
+                arrays.extend(getattr(packet, name, {}).values())
+            for arr in arrays:
+                if arr is None: continue
+                root = arr
+                while getattr(root, 'base', None) is not None: root = root.base
+                key = id(root)
+                if key not in seen:
+                    seen.add(key)
+                    total += int(getattr(root, 'nbytes', getattr(arr, 'nbytes', 0)))
+        if total > self.max_cache_bytes:
+            self._overflow_message = f'联合存储保护缓存超过字节预算（{total / 1048576:.1f} MiB）；停止两路采集，检查磁盘和对齐'
+        return self._overflow_message
 
     def _latest_frame_bytes_locked(self) -> int:
         total = 0

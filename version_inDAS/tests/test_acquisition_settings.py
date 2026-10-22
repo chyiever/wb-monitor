@@ -176,15 +176,17 @@ class AcquisitionSettingsTests(unittest.TestCase):
             self.assertIs(p._settings_dialog.parentWidget(), w)
             p._settings_dialog.reject()
 
-    def test_running_dialog_is_explicitly_read_only_and_apply_is_guarded(self):
+    def test_running_dialog_locks_hardware_but_allows_display_and_guards_bypass(self):
         with self.window() as (w, folder):
             p = w.edas_panel
             before = asdict(p._collect_params())
             with patch.object(p, 'acquisition_running', return_value=True):
                 d = AcquisitionSettingsDialog(p, w)
-                self.assertTrue(all(not editor.isEnabled() for editor in d.editors.values()))
-                self.assertFalse(d.buttons.button(QDialogButtonBox.Save).isEnabled())
+                self.assertFalse(d.editors['basic.scan_rate'].isEnabled())
+                self.assertTrue(d.editors['time_space.vmax'].isEnabled())
+                self.assertTrue(d.buttons.button(QDialogButtonBox.Save).isEnabled())
                 self.assertIn('只读', d.notice.text())
+                d.editors['basic.scan_rate'].setValue(d.editors['basic.scan_rate'].value() + 1000)
                 self.assertFalse(d.apply_settings())
             self.assertEqual(asdict(p._collect_params()), before)
             d.reject()

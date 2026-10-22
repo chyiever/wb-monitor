@@ -1,6 +1,8 @@
 """PCIe control, acquisition and plots hosted inside the wb-monitor eDAS tab."""
+from runtime_paths import application_root
 from collections import deque
 from copy import deepcopy
+from dataclasses import asdict
 from pathlib import Path
 import time
 import re
@@ -61,7 +63,7 @@ class IntegratedEDASPanel(HardwareWindow):
         super()._init_device()
 
     def _get_settings_path(self):
-        return Path(__file__).resolve().parents[2] / 'config' / 'edas_last_params.json'
+        return application_root() / 'config' / 'edas_last_params.json'
 
     def _load_local_params(self):
         self._restored_local_params = self._settings_path.is_file()
@@ -93,7 +95,7 @@ class IntegratedEDASPanel(HardwareWindow):
         self.start_btn.show()
         self.stop_btn.show()
         control_layout.addLayout(buttons)
-        self.settings_state_label = QLabel('停止采集后可修改硬件和存储配置。')
+        self.settings_state_label = QLabel('硬件参数需停止采集；存储、共享与显示可单独设置。')
         control_layout.addWidget(self.settings_state_label)
         left_layout.addWidget(control_group)
         self.summary_labels = {}
@@ -120,9 +122,15 @@ class IntegratedEDASPanel(HardwareWindow):
                     label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
                 form.addRow(caption, label)
             if title == 'DAS 独立存储':
+                self.storage_settings_btn = QPushButton('独立存储参数…')
+                self.storage_settings_btn.clicked.connect(lambda: self.open_acquisition_settings(section='storage'))
+                form.addRow(self.storage_settings_btn)
                 form.addRow(self.save_enable_check)
                 self.save_enable_check.show()
             if title == '共享与显示':
+                self.display_settings_btn = QPushButton('共享与显示参数…')
+                self.display_settings_btn.clicked.connect(lambda: self.open_acquisition_settings(section='display'))
+                form.addRow(self.display_settings_btn)
                 self.shared_stream_check = QCheckBox('共享数据至 View / 联合存储')
                 self.shared_stream_check.toggled.connect(self.tab3_comm_enable_check.setChecked)
                 self.tab3_comm_enable_check.toggled.connect(self.shared_stream_check.setChecked)
@@ -206,12 +214,10 @@ class IntegratedEDASPanel(HardwareWindow):
     def acquisition_running(self):
         return self.acq_thread is not None and self.acq_thread.isRunning()
 
-    def open_acquisition_settings(self):
+    def open_acquisition_settings(self, _checked=False, section='acquisition'):
         if self._settings_dialog is not None:
-            self._settings_dialog.raise_()
-            self._settings_dialog.activateWindow()
-            return
-        dialog = AcquisitionSettingsDialog(self, self.window())
+            self._settings_dialog.reject()
+        dialog = AcquisitionSettingsDialog(self, self.window(), section=section)
         self._settings_dialog = dialog
         def finished(_result):
             self._settings_dialog = None
@@ -220,9 +226,22 @@ class IntegratedEDASPanel(HardwareWindow):
         dialog.finished.connect(finished)
         dialog.show()
 
+    def runtime_settings_error(self, params):
+        if not self.acquisition_running(): return ''
+        current = self._collect_params()
+        for key in ('basic', 'upload', 'phase_demod'):
+            if asdict(getattr(params, key)) != asdict(getattr(current, key)):
+                return '采集中不能修改硬件、相位处理或裁剪参数，请先停止采集。'
+        if params.display.length_load_s != current.display.length_load_s or params.comm.length_comm_s != current.comm.length_comm_s:
+            return '采集中不能修改读取块或共享周期，请先停止采集。'
+        if self.data_saver is not None and asdict(params.save) != asdict(current.save):
+            return '请先关闭独立 SAVE，再修改存储参数；无需停止 DAS 采集。'
+        return ''
+
     def apply_acquisition_settings(self, params):
-        if self.acquisition_running():
-            raise RuntimeError('请停止采集后再修改参数')
+        error = self.runtime_settings_error(params)
+        if error: raise ValueError(error)
+        running = self.acquisition_running()
         self._applying_acquisition_settings = True
         try:
             self.params = deepcopy(params)
@@ -230,11 +249,19 @@ class IntegratedEDASPanel(HardwareWindow):
             self._sync_shared_filter_settings(reset_tab1=True)
             self._sync_tcp_tab3_availability()
             self._configure_display_timer(self.params)
+            self._tcp_settings_snapshot = self.get_tab3_comm_settings()
+            if running:
+                # Display-only limits are independent of the immutable DLL read
+                # shape. Scalar assignments are consumed on the next snapshot.
+                self.acq_thread._display_target_frames = self.params.display.frame_plot_num
+                self.acq_thread._display_publish_interval_s = max(.05, self.params.display.length_plot_s)
+                self._sync_acquisition_display_request()
+                self._sync_acquisition_display_transform()
         finally:
             self._applying_acquisition_settings = False
         self._save_local_params()
         self._refresh_parameter_summary()
-        self.statusBar.showMessage('采集参数已保存，下次启动采集时生效', 5000)
+        self.statusBar.showMessage('运行参数已应用并保存' if running else '采集参数已保存，下次启动采集时生效', 5000)
 
     def _save_local_params(self):
         if not self._applying_acquisition_settings:
@@ -402,7 +429,7 @@ class IntegratedEDASPanel(HardwareWindow):
         polar.setStyleSheet('background-color: ' + ('#22c55e' if enabled else '#ef4444') + '; border-radius: 7px;')
         polar.setToolTip('Polardiv：' + ('开启' if enabled else '关闭'))
         self.shared_stream_check.setChecked(self.tab3_comm_enable_check.isChecked())
-        self.settings_state_label.setText('采集中：配置只读；停止后可编辑。' if self.acquisition_running() else '停止采集后可修改硬件和存储配置。')
+        self.settings_state_label.setText('采集中：硬件只读；显示/共享可在线修改，修改保存配置前关闭 SAVE。' if self.acquisition_running() else '硬件、独立存储、共享与显示分别设置。')
         self._apply_panel_appearance()
 
     def _apply_panel_appearance(self):
@@ -413,11 +440,11 @@ class IntegratedEDASPanel(HardwareWindow):
         self.start_btn.setText('采集中' if self.acquisition_running() else '启动采集')
         self.stop_btn.setText('停止采集')
         self.save_enable_check.setText('DAS 独立存储：' + ('ON' if self.save_enable_check.isChecked() else 'OFF'))
-        for button, active in ((self.acquisition_settings_btn, False), (self.start_btn, False),
+        for button, active in ((self.storage_settings_btn, False), (self.display_settings_btn, False), (self.acquisition_settings_btn, False), (self.start_btn, False),
                                (self.stop_btn, True), (self.save_enable_check, self.save_enable_check.isChecked())):
             button.setMinimumWidth(0)
             button.setMaximumWidth(16777215)
-            self.appearance_host._style_action_button(button, active, min_height=34, min_width=80, font_size=14)
+            self.appearance_host._style_action_button(button, active, min_height=34, min_width=80, font_size=12)
         for label in self.summary_labels.values(): label.setWordWrap(True)
 
     def _on_tcp_tab3_error(self, message):

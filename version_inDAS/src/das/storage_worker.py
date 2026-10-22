@@ -103,6 +103,7 @@ class DASStorageWorker(QThread):
 
     def __init__(self) -> None:
         super().__init__()
+        self.last_error = ''
         self.logger = logging.getLogger(f"{__name__}.DASStorageWorker")
         # 存储请求队列：入队端在必要时背压等待，本线程消费（T3-01）
         self._queue: Queue = Queue(maxsize=self.INPUT_QUEUE_MAXSIZE)
@@ -245,6 +246,7 @@ class DASStorageWorker(QThread):
                     "reduce joint interval, downsample eDAS before TCP, or use eDAS raw storage"
                 )
                 self.stats["save_failures"] += 1
+                self.last_error = message
                 self.storage_saved.emit(message)
                 self.request_finished.emit(request.end_comm, False)
                 self.logger.error("TAB3_NODE storage.joint_too_large end_comm=%s %s", request.end_comm, message)
@@ -270,6 +272,7 @@ class DASStorageWorker(QThread):
                 )
             elapsed_ms = (time.perf_counter() - started) * 1000.0
             self.stats["requests_saved"] += 1
+            self.last_error = ''
             self.storage_saved.emit(str(file_path))
             self.request_finished.emit(request.end_comm, True)
             self.logger.info(
@@ -299,8 +302,10 @@ class DASStorageWorker(QThread):
                 )
         except Exception as exc:
             self.stats["save_failures"] += 1
+            self.last_error = f'{type(exc).__name__}: {exc}'
+            self.storage_saved.emit('error: 联合写盘失败：' + self.last_error)
             self.request_finished.emit(request.end_comm, False)
-            self.logger.error("DAS storage _save failed: %s", exc)
+            self.logger.exception("DAS storage _save failed: %s", exc)
 
 
 class EDASRawStorageRequest:
