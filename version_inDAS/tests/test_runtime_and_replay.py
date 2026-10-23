@@ -194,6 +194,38 @@ class RuntimeAndReplayTests(unittest.TestCase):
             self.assertNotEqual(first,second)
             self.assertTrue(first.exists() and second.exists())
 
+    def test_backlog_chunking_preserves_all_frames_in_order(self):
+        from das.manager import EDASManager
+        frames = [AlignedPacketFrame(i,float(i),1.,das_packet=DASSessionPacket(i,1,4,2,np.zeros((2,4)))) for i in range(13)]
+        remaining, saved = frames, []
+        while remaining:
+            prefix, boundary = EDASManager._bounded_storage_prefix(remaining, 150)
+            self.assertLessEqual(DASStorageRequest(prefix,'unused',0).estimated_bytes,150)
+            saved.extend(f.comm_count for f in prefix)
+            remaining = remaining[len(prefix):]
+        self.assertEqual(saved,list(range(13)))
+
+    def test_npz_numeric_frames_roundtrip_without_per_sample_objects(self):
+        from das.joint_formats import save_npz
+        matrix = np.arange(80,dtype=np.float32).reshape(2,40)
+        arr = np.arange(40,dtype=np.float64)
+        frames = [AlignedPacketFrame(i,float(i),1.,
+            FIPSessionPacket(i,1,40,arr,arr,unwrapped_by_sensor={1:arr}),
+            DASSessionPacket(i,1,40,2,matrix)) for i in range(2)]
+        with tempfile.TemporaryDirectory() as folder:
+            path = save_npz(frames,folder,'test')
+            with np.load(path,allow_pickle=True) as archive:
+                self.assertEqual(archive['das_raw_matrix'].shape,(2,))
+                self.assertEqual(archive['das_raw_matrix'][0].dtype,np.float32)
+                np.testing.assert_array_equal(archive['fip1_raw_data'][1],arr)
+            data = load_data_file(Path(path))
+            np.testing.assert_array_equal(data.das_frames[1],matrix)
+            self.assertFalse(list(Path(folder).glob('*.part')))
+            with patch('das.joint_formats.np.savez_compressed',side_effect=OSError('disk full')):
+                with self.assertRaises(OSError): save_npz(frames,folder,'test')
+            self.assertEqual(len(list(Path(folder).glob('*.npz'))),1)
+            self.assertFalse(list(Path(folder).glob('*.part')))
+
     def test_lazy_bin_no_full_copy_truncation_rejected_and_preview_bounded(self):
         matrix = np.arange(20000,dtype=np.float32).reshape(20,1000)
         frame = AlignedPacketFrame(0,0,1,das_packet=DASSessionPacket(0,1,1000,20,matrix),fip_missing=True)

@@ -22,7 +22,7 @@ from fip.manager import (
 )
 
 from .plot_worker import DASPlotWorker
-from .storage_worker import DASStorageRequest, DASStorageWorker, EDASRawStorageWorker
+from .storage_worker import DASStorageRequest, DASStorageWorker, EDASRawStorageWorker, _estimate_frame_bytes
 from .tcp_server import DASTCPServer
 from .types import DASParsedPacket, DASRawPacket
 
@@ -161,6 +161,7 @@ class EDASManager(QObject):
         frames = self.coordinator.get_frames_since(self._last_snapshot_end_comm)
         while frames:
             frames, _boundary = self._storage_prefix(frames)
+            frames, _byte_boundary = self._bounded_storage_prefix(frames)
             # Persist tail pairs and explicit missing-source flags on shutdown.
             request = DASStorageRequest(frames, settings['storage']['path'], frames[-1].comm_count,
                 wall_clock_start=self._pending_wall_start, fip_downsample=self._joint_fip_downsample)
@@ -603,6 +604,7 @@ class EDASManager(QObject):
                 first_incomplete.das_missing,
             )
         frames, shape_boundary = self._storage_prefix(complete_frames)
+        frames, byte_boundary = self._bounded_storage_prefix(frames)
         end_comm = frames[-1].comm_count
 
         interval_seconds = max(1.0, float(storage_settings.get("interval_seconds", self._joint_interval_seconds)))
@@ -622,7 +624,7 @@ class EDASManager(QObject):
             and request.estimated_bytes >= int(cache_budget_bytes * 0.80)
             and chunk_seconds >= 1.0
         )
-        if chunk_seconds + 1e-9 < interval_seconds and not byte_limited_chunk and not shape_boundary:
+        if chunk_seconds + 1e-9 < interval_seconds and not byte_limited_chunk and not shape_boundary and not byte_boundary:
             self.logger.debug(
                 "TAB3_NODE manager.joint_storage collecting chunk_seconds=%.3f interval=%.3f frames=%d end_comm=%s",
                 chunk_seconds,
@@ -659,6 +661,21 @@ class EDASManager(QObject):
         self.main_window.update_tab3_storage_status(
             f"Queued {len(frames)} frames (end_comm={end_comm})"
         )
+
+    @staticmethod
+    def _bounded_storage_prefix(frames, max_bytes=256 * 1024 * 1024):
+        """Bound backlog writes, including retries and stop tails, in comm order.
+
+        One acquisition frame is indivisible. Oversized single frames retain the
+        worker's explicit failure path; no frame or cursor is silently skipped.
+        """
+        total = 0
+        for index, frame in enumerate(frames):
+            size = _estimate_frame_bytes(frame)
+            if index and total + size > max_bytes:
+                return frames[:index], True
+            total += size
+        return frames, False
 
     @staticmethod
     def _storage_prefix(frames):

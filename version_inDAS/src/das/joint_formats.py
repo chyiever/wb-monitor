@@ -245,6 +245,14 @@ def _write_bin_frame(handle: Any, frame: Any, fip_downsample: int = 1, das_dtype
         handle.write(struct.pack("<ii", 0, 0))
 
 
+def _frame_object_array(values):
+    """Keep one numeric ndarray per frame, without boxing every sample in Python."""
+    result = np.empty(len(values), dtype=object)
+    for index, value in enumerate(values):
+        result[index] = value
+    return result
+
+
 def save_npz(
     frames: List[Any],
     output_dir: str,
@@ -272,7 +280,7 @@ def save_npz(
             [f.fip_packet.selected_sensor if f.fip_packet is not None else 0 for f in frames],
             dtype=np.int32,
         ),
-        "fip1_raw_data": np.array(
+        "fip1_raw_data": _frame_object_array(
             [
                 _apply_fip_downsample(
                     f.fip_packet.unwrapped_by_sensor.get(1, _empty_fip_array()), fip_factor
@@ -281,9 +289,8 @@ def save_npz(
                 else _empty_fip_array()
                 for f in frames
             ],
-            dtype=object,
         ),
-        "fip2_raw_data": np.array(
+        "fip2_raw_data": _frame_object_array(
             [
                 _apply_fip_downsample(
                     f.fip_packet.unwrapped_by_sensor.get(2, _empty_fip_array()), fip_factor
@@ -292,11 +299,9 @@ def save_npz(
                 else _empty_fip_array()
                 for f in frames
             ],
-            dtype=object,
         ),
-        "das_raw_matrix": np.array(
+        "das_raw_matrix": _frame_object_array(
             [f.das_packet.matrix if f.das_packet is not None else _empty_fip_array() for f in frames],
-            dtype=object,
         ),
         "fip_sample_rate_hz": np.array(
             [
@@ -319,7 +324,15 @@ def save_npz(
         "wall_clock_start": np.array(meta["wall_clock_start"]),
         "metadata_json": np.array(json.dumps(meta, ensure_ascii=False)),
     }
-    np.savez_compressed(file_path, **payload)
+    # A failed archive must never appear as a completed capture to the reader.
+    partial = file_path.with_suffix(file_path.suffix + '.part')
+    try:
+        with partial.open('wb') as stream:
+            np.savez_compressed(stream, **payload)
+        os.replace(partial, file_path)
+    except Exception:
+        partial.unlink(missing_ok=True)
+        raise
     return str(file_path)
 
 
