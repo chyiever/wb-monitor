@@ -218,6 +218,10 @@ class PCCPMonitorApp:
         # Setup logging
         self._setup_logging(args)
         self.logger = logging.getLogger(__name__)
+        from crash_diagnostics import install
+        self._crash_diagnostics = install(application_root())
+        self._crash_diagnostics.attach_qt()
+        self.logger.info('Crash diagnostic file: %s', self._crash_diagnostics.path)
 
         # 记录系统配置信息
         self.logger.info("Starting PCCP Wire Break Monitoring Software")
@@ -268,6 +272,13 @@ class PCCPMonitorApp:
         self._initialize_processors()
         if hasattr(self.main_window, 'bind_runtime_sources'):
             self.main_window.bind_runtime_sources(self)
+        self.main_window.runtime_exception_reported.connect(self._handle_runtime_exception, Qt.QueuedConnection)
+        self._crash_diagnostics.exception_callback = self.main_window.runtime_exception_reported.emit
+        self._resource_timer = QTimer()
+        self._resource_timer.setInterval(10000)
+        self._resource_timer.timeout.connect(self._crash_diagnostics.resources)
+        self._resource_timer.start()
+        self._crash_diagnostics.resources()
 
     def _application_root(self) -> Path:
         """Return the local application directory used for runtime artifacts."""
@@ -1408,6 +1419,13 @@ class PCCPMonitorApp:
         except Exception as e:
             self.logger.error(f"Error updating downsample factor: {e}")
 
+    def _handle_runtime_exception(self, message):
+        self.logger.error('Unhandled runtime exception; requesting acquisition stop: %s', message)
+        self.main_window._stop_joint_acquisition()
+        self.main_window._storage_error = message
+        self.main_window.joint_state_label.setText('程序异常，已请求停止采集；请保留运行日志和崩溃诊断。')
+        self.main_window.status_bar.showMessage(f'异常：{message}；诊断：{self._crash_diagnostics.path}', 0)
+
     def _handle_alignment_overflow(self, message):
         self.logger.error(message)
         self.main_window._stop_joint_acquisition()
@@ -1432,6 +1450,9 @@ class PCCPMonitorApp:
                 self.edas_manager.stop()
 
             self.logger.info("Application cleanup completed")
+            if hasattr(self, '_resource_timer'):
+                self._resource_timer.stop()
+            self._crash_diagnostics.write('APPLICATION_CLEANUP_COMPLETED')
             self._write_test_report()
 
         except Exception as e:

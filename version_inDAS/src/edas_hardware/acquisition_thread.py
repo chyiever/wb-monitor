@@ -920,11 +920,15 @@ class AcquisitionThread(QThread):
         block = frame_matrix[:, start:end]
         if self._display_space_downsample > 1:
             block = block[:, :: self._display_space_downsample]
+        # Without filtering the slice commutes with rad scaling. Decimate before
+        # float conversion rather than allocating a full-rate display matrix.
+        if not self._display_filter_enabled and self._display_time_downsample > 1:
+            block = block[:: self._display_time_downsample, :]
         if self._display_rad_enabled:
             block = np.asarray(block).astype(np.float32, copy=True)
             block *= np.float32(np.pi / 32767.0)
         block = self._apply_time_space_display_filter(block)
-        if self._display_time_downsample > 1:
+        if self._display_filter_enabled and self._display_time_downsample > 1:
             block = block[:: self._display_time_downsample, :]
         if block.size == 0:
             return None

@@ -743,11 +743,13 @@ class TimeSpacePlotWidget(QWidget):
         display_block = data_block[:, start_idx:end_idx]
         if self._space_downsample > 1:
             display_block = display_block[:, :: self._space_downsample]
+        if not self._filter_enabled and self._time_downsample > 1:
+            display_block = display_block[:: self._time_downsample, :]
         if display_scale is not None:
             display_block = np.asarray(display_block).astype(np.float32, copy=True)
             display_block *= display_scale
         display_block = self._apply_realtime_filter(display_block)
-        if self._time_downsample > 1:
+        if self._filter_enabled and self._time_downsample > 1:
             display_block = display_block[:: self._time_downsample, :]
 
         if display_block.size == 0:

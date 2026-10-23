@@ -18,6 +18,7 @@ from edas_hardware.config import AllParams, DataSource
 
 class MainWindow(BaseWindow):
     joint_stop_preparing = pyqtSignal()
+    runtime_exception_reported = pyqtSignal(str)
 
     def __init__(self, simulation_mode=False):
         self.simulation_mode = simulation_mode

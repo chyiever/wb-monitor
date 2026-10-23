@@ -13,6 +13,16 @@ from edas_hardware.config import AllParams, DataSource
 
 
 class DisplaySnapshotCadenceTests(unittest.TestCase):
+    def test_decimate_before_rad_conversion_preserves_samples_and_duration(self):
+        params=AllParams();params.basic.scan_rate=1000
+        thread=SimulatedAcquisitionThread();thread.configure(params)
+        thread.set_display_transform(True,2,18,2,5,False,'')
+        source=np.arange(1000*20,dtype=np.int32).reshape(1000,20)
+        block,count,duration,start,end=thread._build_time_space_display_block(source)
+        expected=source[:,2:18:2].astype(np.float32)*np.float32(np.pi/32767.)
+        np.testing.assert_array_equal(block,expected[::5].T)
+        self.assertEqual((count,duration,start,end),(1000,1.,2,18))
+
     def test_publish_tolerance_accepts_slightly_early_load_block(self) -> None:
         thread = SimulatedAcquisitionThread()
         thread._display_publish_interval_s = 0.4

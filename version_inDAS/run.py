@@ -29,6 +29,12 @@ if getattr(sys, 'frozen', False):
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
+from crash_diagnostics import install as install_crash_diagnostics
+try:
+    install_crash_diagnostics(_root)
+except OSError as exc:
+    print(f'Crash diagnostics unavailable: {exc}', file=sys.stderr)
+
 from src.main import main
 
 
