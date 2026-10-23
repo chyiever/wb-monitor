@@ -4,6 +4,8 @@
 
 软件将 PCIe-7821 eDAS 上位机与 wb-monitor 合并在同一进程，提供 eDAS 独立采集、FIP 独立通信和两路联合运行。相邻 `version_exDAS` 为外置 eDAS TCP 版本，阶段版本 `v_exDAS_261021`，对应 `master1/dev1`。
 
+存储格式、BIN/BIN32 区别、DAS/FIP 是否滤波及“原始数据”的边界，详见 **[数据存储说明](docs/数据存储说明.md)**。联合 BIN 使用 DAS float64，BIN32 使用 DAS float32，FIP 均为 float64；两者都不经过 GUI 显示滤波。当前内置共享 DAS 本身已是 float32 弧度，使用 BIN 不会增加源数据精度。设备相位处理、Crop、共享与存储降采样仍会影响保存数据；Tab2 Save DS 是空间抽点，FIP 独立存储还可能修复异常极值。
+
 ## 1. 安装和启动
 
 在 `version_inDAS` 目录执行：
@@ -144,7 +146,7 @@ Tab1（View）与 Tab2（eDAS）的**时空图共用 Tab2「共享与显示参�
 | 采集窗口 / 硬件设置 | 设置内部/外部时钟、触发方向、Bypass 跳过点数、中心频率 MHz、DataRate、Rate2Phase 和 PolarDiv。按实际接线与采集卡配置设置，不能用显示参数替代硬件参数。 |
 | 采集窗口 / 相位处理 | SpaceAvg 为空间平均；Merge 为空间合并，旁边预览 dx；DiffOrder 决定空间差分间距，旁边预览 GL；Detrend 设置去趋势带宽；CropStart/CropEnd 控制处理后保留范围；两个输入框后实时显示“原有 n CH → 裁剪后 m CH”，原有通道数指空间合并后、裁剪前的通道数。 |
 | 时长设置（按用途分到三个窗口） | Length/Load 为每次 DLL 读取块时长；Length/Plot 为显示窗口时长；Length/Save 为保存包时长；Length/File 为单文件分段时长；Length/Comm 为共享周期。时长会换算为整数扫描帧，按界面提示满足块长和倍数约束。共享启用时 Comm 必须等于 FIP 包时长。 |
-| 独立存储窗口 | 设置路径、BIN/BZ、Save DS、满盘覆盖最旧文件、Zstd 级别、Bitshuffle 块长度和 BZ 压缩线程数。Save DS 越大保存的时间采样越稀疏；覆盖开关涉及旧数据删除，启用前确认目录。 |
+| 独立存储窗口 | 设置路径、BIN/BZ、Save DS、满盘覆盖最旧文件、Zstd 级别、Bitshuffle 块长度和 BZ 压缩线程数。Save DS 是每帧空间抽点，越大保存的空间点越稀疏，不改变 Scan 时间采样率；覆盖开关涉及旧数据删除，启用前确认目录。 |
 | 共享与显示窗口 / 绘图显示 | 设置波形 Region、相位 rad 显示、显示滤波/频段、时空图空间范围、窗口块数、时间/空间显示降采样、色标上下限、配色，以及纵轴单位和 x0。仅改坐标单位不会改变落盘数据。 |
 | 共享与显示窗口 / 数据共享 | 设置共享开关、CH 起止（终点包含）、时间和空间降采样。共享会影响 View 和联合保存的 DAS 范围/采样率，不改变独立 DAS 原始保存范围。 |
 

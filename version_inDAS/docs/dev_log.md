@@ -1,5 +1,12 @@
 # version_inDAS 开发日志
 
+## 2026-10-23：数据存储专门说明与原始性核对（仅 dev2）
+
+- 新增《数据存储说明.md》，README 增加入口。逐项核对联合 BIN/BIN32、NPZ/H5、独立 DAS BIN/BZ 与独立 FIP NPZ 的数据来源、格式、精度和降采样。
+- 明确当前共享 DAS 已为 float32 弧度，BIN 扩展成 float64 不恢复精度；BIN32 仅缩减 DAS 位宽，两者 FIP 均为 float64。联合数据不经过显示滤波，但 DAS 已受设备相位处理、软件裁剪及共享参数影响。
+- 明确 Save DS 为独立 DAS 空间抽点；FIP 两种存储抽点独立设置。联合 FIP 直接使用解码接收值，独立 FIP 会对非有限值或绝对值超过 1e6 的值插值修复；均不使用显示滤波/展开结果。文档不把设备相位或接收工程相位称为 ADC 原始数据。
+- 修正 README 旧表格将 Save DS 误写为时间采样的说明。本次为文档更新，未修改运行算法；共享流与 BIN/BIN32 回读等 5 项既有回归通过（0.032 s）。
+
 ## 2026-10-23：两页时空图共用 Tab2 显示滤波（仅 dev2）
 
 - View 时空图此前只有显示降采样及可选去基线，没有使用 eDAS 页的显示滤波。现从 Tab2 读取同一组 filter_enabled/filter_spec，复用 RealtimeTimeAxisFilter（二阶 Butterworth、时间轴 SOS 因果滤波）。连续共享包保留滤波状态；时间不连续或通道/采样率变化时重置状态。
