@@ -98,6 +98,9 @@ class IntegratedEDASPanel(HardwareWindow):
         self.stop_btn.show()
         control_layout.addLayout(buttons)
         self.settings_state_label = QLabel('硬件参数需停止采集；存储、共享与显示可单独设置。')
+        self.settings_state_label.setWordWrap(True)
+        self.settings_state_label.setMinimumWidth(0)
+        self.settings_state_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         control_layout.addWidget(self.settings_state_label)
         left_layout.addWidget(control_group)
         self.summary_labels = {}
@@ -109,6 +112,7 @@ class IntegratedEDASPanel(HardwareWindow):
         ):
             group = QGroupBox(title)
             form = QFormLayout(group)
+            form.setRowWrapPolicy(QFormLayout.WrapLongRows)
             form.setContentsMargins(10, 16, 10, 10)
             form.setSpacing(8)
             for caption, key in fields:
@@ -143,7 +147,7 @@ class IntegratedEDASPanel(HardwareWindow):
         self.parameter_scroll.setWidgetResizable(True)
         self.parameter_scroll.setFrameShape(QScrollArea.NoFrame)
         self.parameter_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.parameter_scroll.setMinimumWidth(360)
+        self.parameter_scroll.setMinimumWidth(280)
         self.parameter_scroll.setMaximumWidth(720)
         self.parameter_scroll.setWidget(left)
         right = QWidget()
@@ -203,7 +207,7 @@ class IntegratedEDASPanel(HardwareWindow):
         self.integrated_splitter.addWidget(right)
         self.integrated_splitter.setStretchFactor(0, 0)
         self.integrated_splitter.setStretchFactor(1, 1)
-        self._parameter_width = 448
+        self._parameter_width = 314
         self.integrated_splitter.setSizes([self._parameter_width, 1100])
         outer.addWidget(self.integrated_splitter)
         self.takeCentralWidget()
@@ -458,6 +462,7 @@ class IntegratedEDASPanel(HardwareWindow):
 
     def _apply_panel_appearance(self):
         self.summary_labels['polar'].setFixedSize(14, 14)
+        self.settings_state_label.setWordWrap(True)
         if self.appearance_host is None:
             return
         self.setFont(self.appearance_host.font())
@@ -478,7 +483,7 @@ class IntegratedEDASPanel(HardwareWindow):
         self.statusBar.showMessage('数据共享：' + message, 15000)
 
     def set_parameter_width(self, width):
-        self._parameter_width = max(360, min(int(width), 720))
+        self._parameter_width = max(280, min(int(width), 720))
         total = max(sum(self.integrated_splitter.sizes()), self._parameter_width + 400)
         self.integrated_splitter.setSizes([self._parameter_width, total - self._parameter_width])
 
@@ -510,8 +515,12 @@ class IntegratedEDASPanel(HardwareWindow):
             self._monitor_history.clear()
 
     def _sync_acquisition_display_request(self):
-        super()._sync_acquisition_display_request()
         if self.acq_thread is not None:
+            mode = DisplayMode.SPACE if self.wave_source_combo.currentData() == 'monitor' else self.params.display.mode
+            self.acq_thread.set_display_request(int(mode),
+                int(self.params.display.region_index), False, incremental_full_width=True,
+                image_enabled=self._time_space_full_window_required())
+            self._sync_acquisition_display_transform()
             self.acq_thread.set_display_active(self._display_visible)
 
     def _drain_latest_display_data(self):
@@ -538,6 +547,9 @@ class IntegratedEDASPanel(HardwareWindow):
         ts.histogram_widget.setVisible(enabled)
         if ts.is_plot_enabled() != enabled:
             ts.plot_btn.click()
+            ts.clear_data()
+            self._full_rate_wave_blocks.clear()
+        self._sync_acquisition_display_request()
         self.plot_grid.setRowStretch(2, (3 if self.integrated_psd_check.isChecked() else 4) if enabled else 0)
         self.plot_grid.invalidate()
         if persist and self._plot_controls_ready and not self._applying_acquisition_settings:
@@ -547,6 +559,26 @@ class IntegratedEDASPanel(HardwareWindow):
         return self.time_space_widget is not None and self.time_space_widget.is_plot_enabled()
 
     def _update_phase_display(self, data, channel_num, phase_scale=None, snapshot_kind=0, display_meta=None):
+        if snapshot_kind == 4 and display_meta is not None:
+            duration, profile = display_meta
+            temporal = self.phase_mode_combo.currentData() == DisplayMode.SPACE
+            values = np.asarray(data if temporal else profile)
+            if temporal:
+                rate = max(float(self.params.basic.scan_rate), 1.)
+                x = np.arange(values.size) / rate
+            else:
+                dx = .4 * self.params.phase_demod.merge_point_num
+                origin = self._timespace_origin * (1000 if self._timespace_unit == 'km' else 1) if self._timespace_unit != 'points' else 0
+                x = np.arange(values.size) * dx + origin
+                rate = 1. / dx
+            if self.wave_source_combo.currentData() == 'phase':
+                step = max(1, int(np.ceil(values.size / 5000)))
+                self.plot_curve_1[0].setData(x[::step], values[::step])
+                for curve in self.plot_curve_1[1:]: curve.setData([], [])
+                if self.integrated_psd_check.isChecked() and values.size > 3:
+                    f, power = signal.welch(values, fs=rate, nperseg=min(2048, values.size))
+                    self.spectrum_curve.setData(f, 10 * np.log10(np.maximum(power, np.finfo(power.dtype).tiny)))
+            return
         if snapshot_kind != 3:
             return super()._update_phase_display(data, channel_num, phase_scale, snapshot_kind, display_meta)
         # Let the original bounded rolling display consume the prepared block,

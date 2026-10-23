@@ -130,6 +130,7 @@ class AcquisitionThread(QThread):
         self._display_region_index = 0
         self._display_requires_full_window = False
         self._display_incremental_full_width = False
+        self._display_image_enabled = True
         self._display_rad_enabled = False
         self._display_distance_start = 0
         self._display_distance_end = 0
@@ -220,16 +221,18 @@ class AcquisitionThread(QThread):
         region_index: int,
         require_full_window: bool,
         incremental_full_width: bool = False,
+        image_enabled: bool = True,
     ) -> None:
         """Update the GUI snapshot shape without changing the full-data path."""
         request = (
-            int(mode), int(region_index), bool(require_full_window), bool(incremental_full_width)
+            int(mode), int(region_index), bool(require_full_window), bool(incremental_full_width), bool(image_enabled)
         )
         current = (
             self._display_mode,
             self._display_region_index,
             self._display_requires_full_window,
             self._display_incremental_full_width,
+            self._display_image_enabled,
         )
         if request == current:
             return
@@ -239,16 +242,19 @@ class AcquisitionThread(QThread):
             self._display_region_index,
             self._display_requires_full_window,
             self._display_incremental_full_width,
+            self._display_image_enabled,
         ) = request
+        self._display_visibility_generation += 1
         with self._latest_display_lock:
             self._latest_display_data = None
         self._last_display_publish_at = 0.0
         log.info(
-            "Display request changed: mode=%s, region=%d, full_window=%d, incremental_full_width=%d",
+            "Display request changed: mode=%s, region=%d, full_window=%d, incremental_full_width=%d, image_enabled=%d",
             self._display_mode,
             self._display_region_index,
             int(self._display_requires_full_window),
             int(self._display_incremental_full_width),
+            int(self._display_image_enabled),
         )
 
     def set_display_transform(
@@ -974,7 +980,7 @@ class AcquisitionThread(QThread):
         snapshot_kind = 0
         if int(data_source) == int(DataSource.PHASE):
             if self._display_incremental_full_width:
-                snapshot_kind = 3
+                snapshot_kind = 3 if self._display_image_enabled else 4
             elif not self._display_requires_full_window:
                 snapshot_kind = 1 if int(self._display_mode or 0) == 1 else 2
         history_target_frames = target_frames if snapshot_kind != 2 else 4
@@ -1037,7 +1043,7 @@ class AcquisitionThread(QThread):
             if self._latest_display_data is not None:
                 self._gui_skip_count += 1
                 self._last_display_publish_at = time.perf_counter()
-                if snapshot_kind == 3:
+                if snapshot_kind in (3, 4):
                     self._display_history_chunks = []
                     self._display_history_frames = 0
                 self._last_display_publish_ms = (self._last_display_publish_at - start) * 1000.0
@@ -1049,7 +1055,9 @@ class AcquisitionThread(QThread):
             return
 
         display_meta = None
-        if snapshot_kind == 3 and data_source == DataSource.PHASE and channel_num == 1:
+        if snapshot_kind == 4 and data_source == DataSource.PHASE and channel_num == 1:
+            display_data, display_meta = self._build_waveform_only_snapshot(history)
+        elif snapshot_kind == 3 and data_source == DataSource.PHASE and channel_num == 1:
             transform_start = time.perf_counter()
             transformed = self._build_time_space_display_block(history)
             self._last_display_transform_ms = (time.perf_counter() - transform_start) * 1000.0
@@ -1078,7 +1086,7 @@ class AcquisitionThread(QThread):
                 snapshot_kind,
                 display_meta,
             )
-        if snapshot_kind == 3:
+        if snapshot_kind in (3, 4):
             self._display_history_chunks = []
             self._display_history_frames = 0
 
@@ -1089,6 +1097,28 @@ class AcquisitionThread(QThread):
             self._raw_emit_count += 1
         self._last_display_publish_at = time.perf_counter()
         self._last_display_publish_ms = (self._last_display_publish_at - start) * 1000.0
+
+    def _build_waveform_only_snapshot(self, history):
+        """Prepare only a trace/profile off the GUI thread; no hidden image."""
+        frames, width = history.shape
+        region = min(max(0, self._display_region_index), width - 1)
+        temporal = int(self._display_mode or 0) == 1
+        source = history[:, region:region + 1] if temporal else history
+        trace = np.empty(frames, dtype=np.float32)
+        profile = np.array(history[-1], dtype=np.float32, copy=True)
+        scale = np.float32(np.pi / 32767.) if self._display_rad_enabled else np.float32(1.)
+        chunk_frames = max(1, min(8192, 1048576 // max(1, source.shape[1])))
+        for offset in range(0, frames, chunk_frames):
+            block = np.array(source[offset:offset + chunk_frames], dtype=np.float32, copy=True)
+            block *= scale
+            filtered = self._apply_time_space_display_filter(block)
+            trace[offset:offset + len(block)] = filtered[:, 0 if temporal else region]
+            if not temporal:
+                profile = np.asarray(filtered[-1], dtype=np.float32)
+        if temporal:
+            profile *= scale
+        duration = frames / max(float(self._params.basic.scan_rate), 1.)
+        return trace, (duration, profile)
 
     def take_latest_display_data(self):
         """Atomically take the newest display snapshot for GUI-timer consumption."""

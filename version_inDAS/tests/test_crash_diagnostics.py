@@ -19,6 +19,12 @@ class CrashDiagnosticsTests(unittest.TestCase):
             self.assertEqual(len(logs),1)
             return result,logs[0].read_text(encoding='utf-8',errors='replace')
 
+    def test_gui_watchdog_captures_threads_when_heartbeat_stops(self):
+        result, log = self.run_child('import time\nd.arm_gui_watchdog(.05)\ntime.sleep(.16)\nd.cancel_gui_watchdog()\n')
+        self.assertEqual(result.returncode, 0)
+        self.assertIn('Timeout', log)
+        self.assertIn('<module>', log)
+
     def test_unhandled_python_exception_is_durable(self):
         result,log=self.run_child("raise RuntimeError('test qt-slot-style exception')\n")
         self.assertNotEqual(result.returncode,0)

@@ -39,6 +39,13 @@ class CrashDiagnostics:
         except (OSError, ValueError):
             pass
 
+    def arm_gui_watchdog(self, timeout=8.):
+        """Qt heartbeat re-arms a native timer, which can dump even if Python stalls."""
+        faulthandler.dump_traceback_later(timeout, repeat=True, file=self.stream)
+
+    def cancel_gui_watchdog(self):
+        faulthandler.cancel_dump_traceback_later()
+
     def _record_exception(self, kind, exc_type, value, tb):
         self.write(kind)
         try:

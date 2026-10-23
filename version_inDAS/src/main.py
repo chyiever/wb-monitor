@@ -279,6 +279,11 @@ class PCCPMonitorApp:
         self._resource_timer.timeout.connect(self._crash_diagnostics.resources)
         self._resource_timer.start()
         self._crash_diagnostics.resources()
+        self._gui_watchdog_timer = QTimer()
+        self._gui_watchdog_timer.setInterval(2000)
+        self._gui_watchdog_timer.timeout.connect(self._crash_diagnostics.arm_gui_watchdog)
+        self._gui_watchdog_timer.start()
+        self._crash_diagnostics.arm_gui_watchdog()
 
     def _application_root(self) -> Path:
         """Return the local application directory used for runtime artifacts."""
@@ -1435,6 +1440,9 @@ class PCCPMonitorApp:
 
     def cleanup(self):
         """Cleanup resources before exit."""
+        if hasattr(self, '_gui_watchdog_timer'):
+            self._gui_watchdog_timer.stop()
+            self._crash_diagnostics.cancel_gui_watchdog()
         try:
             self._stop_fip_ingress()
             if self.fip_tab2_manager and self._is_tab2_running():

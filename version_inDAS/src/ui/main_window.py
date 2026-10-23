@@ -30,6 +30,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QFont, QIcon
 import pyqtgraph as pg
 from scipy import signal
+from .focus_tabs import PlainTabBar
 
 # 设置PyQtGraph的样式
 pg.setConfigOptions(antialias=False)
@@ -41,10 +42,10 @@ class MainWindow(QMainWindow):
     """主窗口类"""
 
     # View 页参数区宽度边界（用户可通过水平 QSplitter 手动调整）。
-    VIEW_PARAM_PANEL_MIN_WIDTH = 360
+    VIEW_PARAM_PANEL_MIN_WIDTH = 280
     VIEW_PARAM_PANEL_MAX_WIDTH = 720
-    # 默认宽度：较旧版 560px 缩小约 20%（560 * 0.8 = 448）。
-    VIEW_PARAM_PANEL_DEFAULT_WIDTH = 448
+    # 448 px * 70% ~= 314 px; custom saved widths remain adjustable.
+    VIEW_PARAM_PANEL_DEFAULT_WIDTH = 314
 
     # 信号定义
     start_monitoring = pyqtSignal()
@@ -318,6 +319,7 @@ class MainWindow(QMainWindow):
 
         # 创建标签页控件
         self.tab_widget = QTabWidget()
+        self.tab_widget.setTabBar(PlainTabBar(self.tab_widget))
         # 设置Tab字体大小
         self.tab_widget.setStyleSheet("""
             QTabWidget::pane {
@@ -461,7 +463,7 @@ class MainWindow(QMainWindow):
 
     def _create_parameter_panel(self) -> QWidget:
         widget = QWidget()
-        # 参数区宽度可通过 QSplitter 手动调整；默认宽度约 448px（较旧版 560px 缩小约 20%）。
+        # 参数区宽度可通过 QSplitter 手动调整；默认约 314 px。
         widget.setMinimumWidth(self.VIEW_PARAM_PANEL_MIN_WIDTH)
         widget.setMaximumWidth(self.VIEW_PARAM_PANEL_MAX_WIDTH)
         layout = QVBoxLayout(widget)
@@ -2068,6 +2070,7 @@ class MainWindow(QMainWindow):
         psd_y_min, psd_y_max = self.get_view_psd_y_range()
         return {
             "param_panel_width": self._current_param_panel_width(),
+            "param_panel_width_schema": 2,
             "time_plot_enabled": self.time_plot_btn.isChecked(),
             "psd_plot_enabled": self.psd_plot_btn.isChecked(),
             "space_time_plot_enabled": self.space_time_plot_btn.isChecked(),
@@ -2288,7 +2291,10 @@ class MainWindow(QMainWindow):
         view = config.get("view", {})
         tab3_plot = config.get("tab3", {}).get("plot", {})
         if view.get("param_panel_width"):
-            self._apply_param_panel_width(view.get("param_panel_width"))
+            width = view.get('param_panel_width')
+            if view.get('param_panel_width_schema', 1) < 2 and width == 448:
+                width = self.VIEW_PARAM_PANEL_DEFAULT_WIDTH
+            self._apply_param_panel_width(width)
         self._set_checked(getattr(self, "time_plot_btn", None), view.get("time_plot_enabled"))
         self._set_checked(getattr(self, "psd_plot_btn", None), view.get("psd_plot_enabled"))
         self._set_checked(getattr(self, "space_time_plot_btn", None), view.get("space_time_plot_enabled"))
@@ -3907,6 +3913,21 @@ class MainWindow(QMainWindow):
         self._style_toggle_button(self.time_plot_btn, enabled, min_width=96)
 
 
+    def _reflow_view_psd_layout(self):
+        if not hasattr(self, 'view_plot_grid') or not hasattr(self, 'view_psd2_plot'):
+            return
+        any_psd = False
+        for row, wave, plot, check in (
+                (0, self.tab3_curve1_plot, self.view_psd1_plot, self.view_psd1_check),
+                (1, self.tab3_curve2_plot, self.view_psd2_plot, self.view_psd2_check)):
+            enabled = self.psd_plot_btn.isChecked() and check.isChecked()
+            any_psd = any_psd or enabled
+            plot.setVisible(enabled)
+            self.view_plot_grid.addWidget(wave, row, 0, 1, 1 if enabled else 2)
+        self.view_plot_grid.setColumnStretch(0, 7 if any_psd else 1)
+        self.view_plot_grid.setColumnStretch(1, 3 if any_psd else 0)
+        self.view_plot_grid.invalidate()
+
     def _toggle_psd_plot(self, enabled: bool):
         # Toggle both PSD panes and recompute when they are re-enabled.
         if hasattr(self, 'psd_plot_toggled'):
@@ -3917,6 +3938,7 @@ class MainWindow(QMainWindow):
                 plot.setVisible(enabled)
         self.psd_plot_btn.setText("PSD ON" if enabled else "PSD OFF")
         self._style_toggle_button(self.psd_plot_btn, enabled, min_width=96)
+        self._reflow_view_psd_layout()
         self._update_view_psd_curves(force=True)
 
 
@@ -4438,6 +4460,7 @@ class MainWindow(QMainWindow):
     def _update_view_psd_curves(self, force: bool = False) -> None:
         if not hasattr(self, 'view_psd1_curve'):
             return
+        self._reflow_view_psd_layout()
         if hasattr(self, 'psd_plot_btn') and not self.psd_plot_btn.isChecked():
             self.view_psd1_curve.setData([], [])
             self.view_psd2_curve.setData([], [])

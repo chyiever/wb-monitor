@@ -4,6 +4,7 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 from PyQt5.QtCore import QPointF
+from PyQt5.QtTest import QTest
 
 import test_acquisition_settings as settings_tests
 from edas_hardware.acquisition_settings import AcquisitionSettingsDialog
@@ -123,6 +124,87 @@ class EDASPlotControlTests(unittest.TestCase):
             self.assertIn('Spatial', p.plot_widget_2.getAxis('bottom').labelText)
             p.phase_mode_combo.setCurrentIndex(p.phase_mode_combo.findData(int(DisplayMode.SPACE)))
             self.assertTrue(p.phase_channel_spin.isEnabled())
+
+    def test_image_off_prepares_filtered_waveform_without_gui_matrix_filter(self):
+        from edas_hardware.realtime_filter import RealtimeTimeAxisFilter, parse_filter_spec
+        with self.helper.window() as (w, folder):
+            p = w.edas_panel
+            self.configure(p, w, **{'time_space.filter_enabled': True, 'time_space.filter_spec': '2-10'})
+            thread = SimulatedAcquisitionThread()
+            thread.configure(p._collect_params())
+            p.acq_thread = thread
+            data = np.arange(100*512, dtype=np.int32).reshape(100, 512)
+            try:
+                p.integrated_timespace_check.setChecked(False)
+                for mode in (DisplayMode.TIME, DisplayMode.SPACE):
+                    p.phase_mode_combo.setCurrentIndex(p.phase_mode_combo.findData(int(mode)))
+                    p._sync_acquisition_display_request()
+                    thread._display_publish_interval_s = 0
+                    thread._publish_latest_display_data(data.reshape(-1), DataSource.PHASE, 1)
+                    values, source, channels, kind, meta = thread.take_latest_display_data()
+                    self.assertEqual(kind, 4)
+                    self.assertEqual(values.shape, (100,))
+                    self.assertEqual(meta[1].shape, (512,))
+                    rad = data.astype(np.float32) * np.float32(np.pi/32767.)
+                    reference = RealtimeTimeAxisFilter().process(rad, parse_filter_spec('2-10'), 1000)
+                    region = int(p.params.display.region_index)
+                    np.testing.assert_allclose(values, reference[:, region], rtol=1e-5, atol=1e-6)
+                    if mode == DisplayMode.TIME:
+                        np.testing.assert_allclose(meta[1], reference[-1], rtol=1e-5, atol=1e-6)
+                    with patch.object(p, '_apply_tab1_phase_waveform_filter', side_effect=AssertionError('GUI filtered a matrix')):
+                        p._on_phase_data(values, channels, kind, meta)
+                    self.assertGreater(len(p.plot_curve_1[0].getData()[0]), 0)
+                for _ in range(4):
+                    w.tab_widget.setCurrentIndex(0); QTest.qWait(5)
+                    self.assertFalse(thread._display_active)
+                    w.tab_widget.setCurrentWidget(p); QTest.qWait(5)
+                    self.assertTrue(thread._display_active)
+                    self.assertFalse(p.integrated_timespace_check.isChecked())
+            finally:
+                p.acq_thread = None
+
+    def test_running_simulation_switches_tabs_with_timespace_disabled(self):
+        with self.helper.window() as (w, folder):
+            p = w.edas_panel
+            self.configure(p, w, **{'time_space.filter_enabled': True, 'time_space.filter_spec': '2-10'})
+            p.integrated_timespace_check.setChecked(False)
+            p.integrated_psd_check.setChecked(False)
+            p._on_start()
+            try:
+                self.assertTrue(p.acquisition_running())
+                before = p._full_data_count
+                for _ in range(4):
+                    w.tab_widget.setCurrentIndex(0); QTest.qWait(100)
+                    w.tab_widget.setCurrentWidget(p); QTest.qWait(150)
+                    self.assertFalse(p.integrated_timespace_check.isChecked())
+                self.assertGreater(p._full_data_count, before)
+                self.assertTrue(p.acquisition_running())
+            finally:
+                p._on_stop()
+
+    def test_view_psd_widgets_reflow_and_default_width_migrates(self):
+        with self.helper.window() as (w, folder):
+            w.tab_widget.setCurrentIndex(0)
+            w.psd_plot_btn.setChecked(False)
+            self.app.processEvents()
+            self.assertTrue(w.view_psd1_plot.isHidden())
+            self.assertTrue(w.view_psd2_plot.isHidden())
+            for wave in (w.tab3_curve1_plot, w.tab3_curve2_plot):
+                index = w.view_plot_grid.indexOf(wave)
+                self.assertEqual(w.view_plot_grid.getItemPosition(index)[3], 2)
+            self.assertEqual(w.VIEW_PARAM_PANEL_DEFAULT_WIDTH, 314)
+            self.assertTrue(w.joint_state_label.wordWrap())
+            self.assertTrue(w.edas_panel.settings_state_label.wordWrap())
+            w._restore_view_settings({'view': {'param_panel_width': 448}})
+            self.app.processEvents()
+            self.assertLessEqual(abs(w._current_param_panel_width()-314), 2)
+            w.psd_plot_btn.setChecked(True)
+            w.view_psd1_check.setChecked(False)
+            w._update_view_psd_curves(force=True)
+            self.assertTrue(w.view_psd1_plot.isHidden())
+            self.assertFalse(w.view_psd2_plot.isHidden())
+            from ui.focus_tabs import PlainTabBar
+            self.assertIsInstance(w.tab_widget.tabBar(), PlainTabBar)
 
     def test_raw_hardware_source_and_monitor_live_switch_are_distinct(self):
         with self.helper.window() as (w, folder):

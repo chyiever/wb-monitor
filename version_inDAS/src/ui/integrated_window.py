@@ -132,6 +132,8 @@ class MainWindow(BaseWindow):
         controls.addLayout(self.joint_button_layout)
         self.joint_state_label = QLabel('先监听，等待 FIP 客户端连接成功，1 s 后启动 eDAS。')
         self.joint_state_label.setWordWrap(True)
+        self.joint_state_label.setMinimumWidth(0)
+        self.joint_state_label.setMinimumHeight(3 * self.joint_state_label.fontMetrics().lineSpacing())
         controls.addWidget(self.joint_state_label)
         layout.addWidget(bottom)
         return panel
@@ -330,6 +332,9 @@ class MainWindow(BaseWindow):
     def _apply_global_display_runtime_settings(self):
         super()._apply_global_display_runtime_settings()
         if hasattr(self, 'parameter_package_hint'): self.parameter_package_hint.setWordWrap(True)
+        if hasattr(self, 'joint_state_label'):
+            self.joint_state_label.setWordWrap(True)
+            self.joint_state_label.setMinimumHeight(3 * self.joint_state_label.fontMetrics().lineSpacing())
         if hasattr(self, 'edas_panel'):
             self.edas_panel._apply_extra_plot_settings()
             self.edas_panel._apply_panel_appearance()
