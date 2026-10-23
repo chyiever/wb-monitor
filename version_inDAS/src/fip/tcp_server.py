@@ -138,9 +138,10 @@ class OptimizedTCPServer(QObject):
             self.logger.info(f"TCP Server started on {self.ip}:{self.port}")
 
             self._server_thread = threading.Thread(target=self._server_loop, daemon=True)
+            # Listening is not a client connection. Emit before starting the
+            # accept loop so this state cannot overtake a real connection.
+            self.connection_status.emit(False, f"Listening on {self.ip}:{self.port}")
             self._server_thread.start()
-
-            self.connection_status.emit(True, f"Server started on {self.ip}:{self.port}")
             return True
 
         except Exception as e:

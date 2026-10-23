@@ -32,6 +32,8 @@ class MainWindow(BaseWindow):
         self._fip_packet_time = None
         self._fip_storage_session = 0
         self._fip_authoritative_active = False
+        self._fip_connected = False
+        self._fip_trigger_wait_at = None
         self._edas_frame_session = None
         self._edas_frame_count = 0
         self._edas_frame_time = None
@@ -124,7 +126,7 @@ class MainWindow(BaseWindow):
         self.joint_stop_btn.clicked.connect(self._stop_joint_acquisition)
         self.joint_button_layout.addWidget(self.joint_stop_btn)
         controls.addLayout(self.joint_button_layout)
-        self.joint_state_label = QLabel('先启动 FIP，1 s 后启动 eDAS。')
+        self.joint_state_label = QLabel('先监听，等待 FIP 客户端连接成功，1 s 后启动 eDAS。')
         self.joint_state_label.setWordWrap(True)
         controls.addWidget(self.joint_state_label)
         layout.addWidget(bottom)
@@ -359,31 +361,95 @@ class MainWindow(BaseWindow):
     def _start_joint_fip(self):
         self._both_comm_requested = True
         self._reset_sync_tracking()
+        self._joint_start_pending = True
+        self._joint_start_stage = 'wait_fip_connection'
+        self.joint_state_label.setText('监听中：等待 FIP（LabVIEW）客户端连接，尚未启动 eDAS。')
+        self._tab3_logger.info('JOINT_START listening; waiting for FIP client before eDAS start')
         self._start_monitoring()
         # The FIP controller reports startup failure synchronously via its state callback.
         if not self.monitoring_active:
             self.joint_state_label.setText('FIP 启动失败，未启动 eDAS。')
             self._both_comm_requested = False
+            self._joint_start_pending = False
+            self._joint_start_stage = None
             self._update_data_comm_buttons()
             return
-        self._joint_start_pending = True
-        self._joint_start_stage = 'start_edas'
-        self.joint_state_label.setText('FIP 已启动，等待 1 s 启动 eDAS…')
-        self._joint_start_timer.start()
+        if self._fip_connected:
+            self._arm_joint_edas_start()
         self._update_data_comm_buttons()
+
+    def _arm_joint_edas_start(self):
+        if not (self._joint_start_pending and self._both_comm_requested and self._fip_connected):
+            return
+        if self._joint_start_stage != 'wait_fip_connection':
+            return
+        self._joint_start_stage = 'start_edas'
+        self.joint_state_label.setText('已连接：FIP 客户端连接成功，等待 1 s 启动 eDAS。')
+        self._tab3_logger.info('JOINT_START FIP connected; arming 1 s eDAS delay')
+        self._joint_start_timer.start()
+
+    def update_connection_status(self, connected, message):
+        self._fip_connected = bool(connected)
+        if not connected:
+            self._fip_packet_time = None
+            self._fip_packets_last = 0
+            self._fip_trigger_wait_at = None
+        super().update_connection_status(connected, message)
+        if self._joint_start_pending and self._joint_start_stage in ('wait_fip_connection', 'start_edas'):
+            if connected:
+                self._arm_joint_edas_start()
+            else:
+                self._joint_start_timer.stop()
+                self._joint_start_stage = 'wait_fip_connection'
+                self.joint_state_label.setText('监听中：等待 FIP 连接；连接中断已取消 eDAS 启动倒计时。')
+                self._tab3_logger.info('JOINT_START connection unavailable; eDAS delay cancelled')
+        self._refresh_fip_phase_labels()
+        if self._parameters_ready: self._refresh_dashboard()
+
+    def _fip_phase(self):
+        if not self.monitoring_active: return '未运行'
+        if not self._fip_connected: return '监听中'
+        if self._fip_packet_time is not None: return '已收数据'
+        if self._joint_start_stage == 'start_edas': return '已连接'
+        return '等待触发'
+
+    def _refresh_fip_phase_labels(self):
+        phase = self._fip_phase()
+        for label in (self.conn_status_label, self.data_fip_status_label):
+            label.setText(phase)
+            label.setStyleSheet('color: ' + ('green' if phase == '已收数据' else '#b7791f' if self.monitoring_active else '#9aa0a6') + '; font-weight: bold;')
+
+    def record_fip_packet_receive(self, comm_count, receive_time):
+        first_packet = self._fip_packet_time is None
+        super().record_fip_packet_receive(comm_count, receive_time)
+        self._fip_packet_time = time.monotonic()
+        self._refresh_fip_phase_labels()
+        if first_packet:
+            self._tab3_logger.info('FIP_STATE first complete packet received comm=%s', comm_count)
+        if self._both_comm_requested and not self._joint_start_pending:
+            self.joint_state_label.setText('已收数据：FIP 数据已到达；eDAS ' + ('已启动。' if self._edas_monitoring_active else '未启动。'))
 
     def _finish_joint_start(self):
         pending = self._joint_start_pending
         stage = self._joint_start_stage
+        if not pending or stage not in ('restart_fip', 'start_edas'):
+            return
+        if stage == 'start_edas' and not self._fip_connected:
+            self._joint_start_timer.stop()
+            self._joint_start_stage = 'wait_fip_connection'
+            self.joint_state_label.setText('监听中：等待 FIP 重新连接，尚未启动 eDAS。')
+            return
         self._joint_start_pending = False
         self._joint_start_stage = None
         if pending and self._both_comm_requested and stage == 'restart_fip':
             self._start_joint_fip()
             return
-        if pending and self.monitoring_active and self._both_comm_requested:
+        if pending and stage == 'start_edas' and self.monitoring_active and self._both_comm_requested:
+            self._tab3_logger.info('JOINT_START connected delay complete; requesting eDAS acquisition')
             if not self._edas_monitoring_active:
                 self.tab3_start_requested.emit()
-            self.joint_state_label.setText('FIP 与 eDAS 已启动。' if self._edas_monitoring_active else 'eDAS 未启动，请检查采集卡和参数；FIP 保持运行。')
+            self.joint_state_label.setText(('已收数据：' if self._fip_packet_time is not None else '等待触发：') + 'eDAS 已启动，等待或接收 FIP 数据。' if self._edas_monitoring_active else 'eDAS 未启动，请检查采集卡和参数；FIP 保持监听。')
+            self._refresh_fip_phase_labels()
         self._update_data_comm_buttons()
 
     def _stop_joint_acquisition(self):
@@ -396,6 +462,10 @@ class MainWindow(BaseWindow):
         self.stop_monitoring.emit()
         self._edas_monitoring_active = False
         self.monitoring_active = False
+        self._fip_connected = False
+        self._fip_packet_time = None
+        self._fip_trigger_wait_at = None
+        self._refresh_fip_phase_labels()
         self.joint_state_label.setText('eDAS 采集与 FIP 通信已停止。')
         self._update_data_comm_buttons()
 
@@ -410,6 +480,9 @@ class MainWindow(BaseWindow):
         self._fip_authoritative_active = bool(active)
         super().set_fip_monitoring_active(active)
         if not active:
+            self._fip_connected = False
+            self._fip_packet_time = None
+            self._fip_trigger_wait_at = None
             self._joint_start_pending = False
             self._joint_start_stage = None
             self._both_comm_requested = False
@@ -417,11 +490,14 @@ class MainWindow(BaseWindow):
             if hasattr(self, 'joint_state_label'):
                 self.joint_state_label.setText('FIP 已停止。')
             self._update_data_comm_buttons()
+        self._refresh_fip_phase_labels()
 
     def set_tab3_monitoring_active(self, active):
         if active:
             self._edas_fault = ''
             if not self._edas_monitoring_active: self._edas_requested_at = time.monotonic()
+            if self._fip_connected and self._fip_packet_time is None:
+                self._fip_trigger_wait_at = time.monotonic()
         super().set_tab3_monitoring_active(active)
         self._refresh_dashboard()
 
@@ -524,11 +600,14 @@ class MainWindow(BaseWindow):
         if not self.monitoring_active: self._dashboard_light('fip', 'gray', '未运行')
         elif self._fip_health_error or self._fip_receive_error_count:
             self._dashboard_light('fip', 'red', self._fip_health_error or f'通信缺包：{self._fip_receive_error_count}')
-        elif fip_good: self._dashboard_light('fip', 'green', '接收正常')
+        elif not self._fip_connected: self._dashboard_light('fip', 'yellow', '监听中：等待 FIP 连接')
+        elif fip_good: self._dashboard_light('fip', 'green', '已收数据：接收正常')
+        elif self._fip_packet_time is None and self._fip_trigger_wait_at is None:
+            self._dashboard_light('fip', 'yellow', '已连接' if self._joint_start_stage == 'start_edas' else '等待触发')
         else:
-            origin = self._fip_packet_time if self._fip_packet_time is not None else self._fip_requested_at
+            origin = self._fip_packet_time if self._fip_packet_time is not None else self._fip_trigger_wait_at
             failed = origin is not None and now - origin > fip_timeout
-            self._dashboard_light('fip', 'red' if failed else 'yellow', '接收数据超时' if failed else '等待 FIP 数据')
+            self._dashboard_light('fip', 'red' if failed else 'yellow', '接收数据超时' if failed else ('等待触发：等待 FIP 首包' if self._fip_packet_time is None else '等待 FIP 数据'))
         self.record_das_storage(panel.storage_snapshot())
         app = self._runtime_app
         if app is not None and getattr(app, 'tab1_manager', None) is not None:

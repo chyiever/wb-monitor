@@ -145,6 +145,7 @@ class ParametersDashboardTests(unittest.TestCase):
                 self.assertEqual(w.runtime_lights['edas'].property('state'), 'gray')
                 w.set_fip_monitoring_active(True)
                 self.assertEqual(w.runtime_lights['fip'].property('state'), 'yellow')
+                w.update_connection_status(True, 'Connected')
                 w.update_statistics({'packets_received': 1})
                 p.acq_thread = SimpleNamespace(isRunning=lambda: True, frames_acquired=100)
                 w._edas_monitoring_active = True

@@ -35,11 +35,17 @@ class ViewWorkflowTests(unittest.TestCase):
             w.data_comm_both_btn.click()
             w.data_comm_both_btn.click()
             self.assertEqual([name for name, _ in events], ['fip'])
+            QTest.qWait(1100)
+            self.assertEqual([name for name, _ in events], ['fip'])
+            self.assertEqual(w._joint_start_stage, 'wait_fip_connection')
+            self.assertIn('监听中', w.conn_status_label.text())
+            connected_at = time.monotonic()
+            w.update_connection_status(True, 'Connected')
             QTest.qWait(400)
             self.assertEqual([name for name, _ in events], ['fip'])
             QTest.qWait(750)
             self.assertEqual([name for name, _ in events], ['fip', 'das'])
-            self.assertGreaterEqual(events[1][1] - events[0][1], 1.0)
+            self.assertGreaterEqual(events[1][1] - connected_at, 1.0)
             self.assertFalse(w.data_comm_both_btn.isEnabled())
             w.joint_stop_btn.click()
             self.assertEqual([name for name, _ in events], ['fip', 'das', 'das_stop', 'fip_stop'])
@@ -51,7 +57,8 @@ class ViewWorkflowTests(unittest.TestCase):
         with self.helper.window() as (w, folder):
             das = QSignalSpy(w.tab3_start_requested)
             w.data_comm_both_btn.click()
-            self.assertTrue(w._joint_start_timer.isActive())
+            self.assertEqual(w._joint_start_stage, 'wait_fip_connection')
+            self.assertFalse(w._joint_start_timer.isActive())
             w.joint_stop_btn.click()
             QTest.qWait(1100)
             self.assertEqual(len(das), 0)
@@ -92,6 +99,7 @@ class ViewWorkflowTests(unittest.TestCase):
                 self.assertEqual(len(events), 2)
                 QTest.qWait(650)
                 self.assertEqual([e[0] for e in events], ['das_stop', 'fip_stop', 'fip'])
+                w.update_connection_status(True, 'Connected')
                 QTest.qWait(1050)
                 self.assertEqual([e[0] for e in events], ['das_stop', 'fip_stop', 'fip', 'das'])
                 self.assertGreaterEqual(events[2][1] - events[1][1], 1.0)
@@ -185,6 +193,7 @@ class ViewWorkflowTests(unittest.TestCase):
             try:
                 w.data_comm_both_btn.click()
                 self.assertIsNone(p.acq_thread)
+                w.update_connection_status(True, 'Connected')
                 QTest.qWait(1900)
                 self.assertTrue(p.acq_thread.isRunning())
                 self.assertTrue(w._edas_monitoring_active)
@@ -252,6 +261,68 @@ class ViewWorkflowTests(unittest.TestCase):
             self.assertGreater(len(filtering), 0)
             persisted = json.loads((folder / 'gui.json').read_text(encoding='utf-8'))['config']
             self.assertEqual(persisted, json.loads(json.dumps(w.get_current_config())))
+
+    def test_disconnect_during_countdown_requires_new_full_delay(self):
+        with self.helper.window() as (w, folder):
+            das = QSignalSpy(w.tab3_start_requested)
+            w.data_comm_both_btn.click()
+            w.update_connection_status(True,'Connected')
+            QTest.qWait(600)
+            w.update_connection_status(False,'Disconnected')
+            QTest.qWait(600)
+            self.assertEqual(len(das),0)
+            self.assertEqual(w._joint_start_stage,'wait_fip_connection')
+            w.update_connection_status(True,'Connected again')
+            QTest.qWait(600)
+            # Duplicate connection notification must not restart the timer.
+            w.update_connection_status(True,'Connected again')
+            self.assertEqual(len(das),0)
+            QTest.qWait(450)
+            self.assertEqual(len(das),1)
+            w.joint_stop_btn.click()
+            w.update_connection_status(True,'Late connection')
+            QTest.qWait(1050)
+            self.assertEqual(len(das),1)
+
+    def test_real_client_connection_without_data_starts_edas_then_first_packet_updates_state(self):
+        import socket,struct
+        from fip.tcp_server import OptimizedTCPServer
+        with self.helper.window() as (w,folder):
+            server=OptimizedTCPServer('127.0.0.1',0)
+            self.addCleanup(server.stop_server)
+            server.connection_status.connect(w.update_connection_status)
+            server.data_received.connect(lambda packet:w.record_fip_packet_receive(packet.comm_count,time.time()))
+            w.start_monitoring.connect(lambda:(server.start_server(),w.set_fip_monitoring_active(True)))
+            w.stop_monitoring.connect(lambda:(server.stop_server(),w.set_fip_monitoring_active(False)))
+            starts=[]
+            w.tab3_start_requested.connect(lambda:(starts.append(time.monotonic()),w.set_tab3_monitoring_active(True)))
+            w.data_comm_both_btn.click()
+            # Waiting for the operator is normal, including beyond data-health grace.
+            w._fip_requested_at=time.monotonic()-60
+            w._refresh_dashboard()
+            self.assertEqual(w.runtime_lights['fip'].property('state'),'yellow')
+            self.assertIn('监听中',w.runtime_labels['fip'].text())
+            QTest.qWait(1100)
+            self.assertEqual(starts,[])
+            client=socket.create_connection(server.server_socket.getsockname(),timeout=2)
+            connected_at=time.monotonic()
+            try:
+                QTest.qWait(300)
+                self.assertTrue(w._fip_connected)
+                self.assertEqual(w.conn_status_label.text(),'已连接')
+                self.assertEqual(starts,[])
+                QTest.qWait(850)
+                self.assertEqual(len(starts),1)
+                self.assertGreaterEqual(starts[0]-connected_at,1.)
+                self.assertEqual(w.conn_status_label.text(),'等待触发')
+                body=np.array([1,2,3,4],dtype='>i8').tobytes()
+                client.sendall(struct.pack('>II',0,len(body))+body)
+                QTest.qWait(200)
+                self.assertEqual(w.conn_status_label.text(),'已收数据')
+                w._refresh_dashboard()
+                self.assertEqual(w.runtime_lights['fip'].property('state'),'green')
+            finally:
+                w.joint_stop_btn.click();client.close()
 
     def test_asynchronous_packets_never_push_other_trace_outside_window(self):
         for leading in ('fip','das'):
