@@ -2,6 +2,7 @@
 import json
 import time
 import unittest
+import numpy as np
 from unittest.mock import patch
 from PyQt5.QtCore import Qt, QPoint
 from PyQt5.QtTest import QTest, QSignalSpy
@@ -251,6 +252,60 @@ class ViewWorkflowTests(unittest.TestCase):
             self.assertGreater(len(filtering), 0)
             persisted = json.loads((folder / 'gui.json').read_text(encoding='utf-8'))['config']
             self.assertEqual(persisted, json.loads(json.dumps(w.get_current_config())))
+
+    def test_asynchronous_packets_never_push_other_trace_outside_window(self):
+        for leading in ('fip','das'):
+            with self.subTest(leading=leading), self.helper.window() as (w, folder):
+                w.tab_widget.setCurrentIndex(0)
+                w.tab3_curve1_combo.setCurrentText('FIP1')
+                w.tab3_curve2_combo.setCurrentText('DAS Channel')
+                w.time_display_duration_spin.setValue(1)
+                w._tab3_fip_plot_min_interval_seconds = 0
+                w._tab3_das_plot_min_interval_seconds = 0
+                def feed(source, seq):
+                    values = np.sin(np.arange(100)*.1)
+                    if source == 'fip':
+                        w.update_tab3_fip_curve(seq,values,100,values_by_sensor={1:values})
+                    else:
+                        w.update_tab3_plot_payload({'header':{'comm_count':seq,'packet_duration_seconds':1},
+                            'curve2_das_time':seq+np.arange(100)/100.,'curve2_das_values':values})
+                feed('fip',0); feed('das',0); w._render_view_plots()
+                previous = w.tab3_curve1_plot.viewRange()[0]
+                feed(leading,1); w._render_view_plots()
+                np.testing.assert_allclose(w.tab3_curve1_plot.viewRange()[0],previous)
+                self.assertFalse(w.view_alignment_notice.isHidden())
+                feed('das' if leading=='fip' else 'fip',1); w._render_view_plots()
+                self.assertTrue(w.view_alignment_notice.isHidden())
+                lo,hi=w.tab3_curve1_plot.viewRange()[0]
+                for item in (w.tab3_curve1_fip_curve,w.tab3_curve2_das_curve):
+                    x,y=item.getData()
+                    self.assertTrue(np.count_nonzero((x>=lo)&(x<=hi))>1)
+                # Re-rendering an unchanged pair must not accumulate duplicates.
+                key=(1,1); count=sum(len(a) for a in w._fip_curve_rolling[key]['times'])
+                w._render_view_plots()
+                self.assertEqual(sum(len(a) for a in w._fip_curve_rolling[key]['times']),count)
+
+    def test_tcp_stop_delivers_received_qt_tail_before_storage_drain(self):
+        import socket,struct,threading
+        from types import SimpleNamespace
+        from fip.tcp_server import OptimizedTCPServer
+        from main import PCCPMonitorApp
+        server=OptimizedTCPServer('127.0.0.1',0)
+        received=[]; arrived=threading.Event()
+        server.data_received.connect(lambda packet: received.append(packet.comm_count))
+        server.data_received.connect(lambda packet: arrived.set(),Qt.DirectConnection)
+        self.assertTrue(server.start_server())
+        client=socket.create_connection(server.server_socket.getsockname(),timeout=2)
+        try:
+            body=np.array([1,2,3,4],dtype='>i8').tobytes()
+            client.sendall(struct.pack('>II',0,len(body))+body)
+            self.assertTrue(arrived.wait(2))
+            self.assertEqual(received,[])
+            PCCPMonitorApp._stop_fip_ingress(SimpleNamespace(tcp_server=server))
+            self.assertEqual(received,[0])
+            self.assertFalse(server._server_thread.is_alive())
+        finally:
+            client.close();server.stop_server()
 
     def test_global_font_default_migration_and_both_tabs_follow_setting(self):
         with self.helper.window() as (w, folder):

@@ -26,7 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any
 from PyQt5.QtWidgets import QApplication, QMessageBox
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QTimer, Qt, QCoreApplication, QEvent
 
 # Import application modules
 from ui.integrated_window import MainWindow
@@ -845,6 +845,7 @@ class PCCPMonitorApp:
         """Stop the monitoring system."""
         try:
             self.logger.info("Stopping monitoring system...")
+            self._stop_fip_ingress()
 
             # Stop optimized Tab1 thread system
             if self.fip_tab2_manager and self._is_tab2_running():
@@ -852,10 +853,6 @@ class PCCPMonitorApp:
             if self.tab1_manager:
                 self.tab1_manager.stop()
                 self.main_window.update_thread_stats(self.tab1_manager.get_thread_stats())
-
-            # Stop TCP server
-            if self.tcp_server:
-                self.tcp_server.stop_server()
 
             # View plots remain owned by MainWindow; clear only when eDAS is not using them.
             if hasattr(self.main_window, 'reset_tab3_views') and not self.das_monitoring_active:
@@ -871,6 +868,14 @@ class PCCPMonitorApp:
 
         except Exception as e:
             self.logger.error(f"Error stopping monitoring: {e}")
+
+    def _stop_fip_ingress(self):
+        """Join the producer and deliver received Qt packets before storage drains."""
+        if self.tcp_server:
+            self.tcp_server.stop_server()
+        # Do not process arbitrary GUI/timer events during stop. Only queued
+        # signal deliveries, including complete TCP packets already received.
+        QCoreApplication.sendPostedEvents(None, QEvent.MetaCall)
 
     def _update_configuration(self, new_config: dict):
         """Update system configuration."""
@@ -1397,6 +1402,7 @@ class PCCPMonitorApp:
     def cleanup(self):
         """Cleanup resources before exit."""
         try:
+            self._stop_fip_ingress()
             if self.fip_tab2_manager and self._is_tab2_running():
                 self.fip_tab2_manager.stop()
 
@@ -1408,9 +1414,6 @@ class PCCPMonitorApp:
 
             if self.edas_manager:
                 self.edas_manager.stop()
-
-            if self.tcp_server:
-                self.tcp_server.stop_server()
 
             self.logger.info("Application cleanup completed")
             self._write_test_report()

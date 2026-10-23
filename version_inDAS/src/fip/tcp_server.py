@@ -154,6 +154,10 @@ class OptimizedTCPServer(QObject):
 
         if self.client_socket:
             try:
+                self.client_socket.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
                 self.client_socket.close()
             except:
                 pass
@@ -167,6 +171,11 @@ class OptimizedTCPServer(QObject):
             self.server_socket = None
 
         self._connected = False
+        thread = self._server_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=3.0)
+            if thread.is_alive():
+                raise RuntimeError('FIP receive thread did not stop; storage drain deferred')
         self.connection_status.emit(False, "Server stopped")
 
     def _server_loop(self):

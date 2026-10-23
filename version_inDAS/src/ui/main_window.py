@@ -444,8 +444,8 @@ class MainWindow(QMainWindow):
         self._view_fip_online = False
         self._view_das_online = False
         self._view_payload_ttl_seconds = 3.0
-        # 两路最新 comm_count 超过此阈值时视为未对齐，暂缓联合刷新。
-        self._view_alignment_drift_tolerance = 5
+        # A shared one-second viewport requires the same packet interval.
+        self._view_last_alignment_warning = 0.0
         self._view_psd_update_interval_seconds = 1.0
         self._view_last_psd_update_monotonic = 0.0
         self._view_psd_update_pending = False
@@ -765,6 +765,10 @@ class MainWindow(QMainWindow):
         self.view_timespace_check.setChecked(self.space_time_plot_btn.isChecked())
         self.view_timespace_check.toggled.connect(self.space_time_plot_btn.setChecked)
         layout.addWidget(self.view_timespace_check)
+        self.view_alignment_notice = QLabel()
+        self.view_alignment_notice.setWordWrap(True)
+        self.view_alignment_notice.hide()
+        layout.addWidget(self.view_alignment_notice)
 
         # 单一 QGridLayout 承载 Curve1/PSD1、Curve2/PSD2 与 Space-Time/颜色条：
         # 第 0 列放 Curve1/Curve2/Space-Time，三个时域图同列、天然等宽（时间轴上下对齐）；
@@ -2993,12 +2997,25 @@ class MainWindow(QMainWindow):
                 drift = abs(int(fip_payload["comm_count"]) - int(das_payload["comm_count"]))
             except (TypeError, ValueError):
                 drift = 0
-            if drift > self._view_alignment_drift_tolerance:
+            fip_end = self._view_source_latest_time(fip_payload, "packet_duration_seconds")
+            das_end = self._view_source_latest_time(das_payload, "packet_duration_seconds")
+            same_period = np.isclose(fip_payload['packet_duration_seconds'], das_payload['packet_duration_seconds'], rtol=0, atol=1e-6)
+            # A one-period skew already pushes a full 1 s trace out of a 1 s
+            # viewport. Keep the previous matched display until both arrive.
+            if drift != 0 or not same_period or not np.isclose(fip_end, das_end, rtol=0, atol=1e-6):
+                message = f"等待同段波形：FIP #{fip_payload['comm_count']} / eDAS #{das_payload['comm_count']}；保留上次匹配画面"
+                self.view_alignment_notice.setText(message)
+                self.view_alignment_notice.show()
+                if now - self._view_last_alignment_warning >= 5.0:
+                    self._view_last_alignment_warning = now
+                    self._tab3_logger.warning("VIEW_WAIT_PAIR fip_comm=%s das_comm=%s fip_end=%.6f das_end=%.6f; retaining previous display", fip_payload['comm_count'], das_payload['comm_count'], fip_end, das_end)
                 self._tab3_logger.debug(
                     "TAB3_NODE ui.render wait_alignment drift=%d", drift
                 )
                 self._schedule_view_render_retry()
                 return
+
+        self.view_alignment_notice.hide()
 
         if fip_fresh and das_fresh:
             min_interval = max(
@@ -3315,6 +3332,7 @@ class MainWindow(QMainWindow):
             2: {'source': None, 'times': np.asarray([]), 'values': np.asarray([])},
         }
         self._fip_curve_rolling.clear()
+        self.view_alignment_notice.hide()
         self._reset_tab3_space_time_image()
         self._view_fip_payload = None
         self._view_das_payload = None
@@ -3707,6 +3725,17 @@ class MainWindow(QMainWindow):
             values_arr = values_arr[:count]
         if times_arr.size == 0:
             return np.array([], dtype=np.float64), np.array([], dtype=np.float32)
+        if state['times']:
+            last_time = float(state['times'][-1][-1])
+            if times_arr[-1] < last_time:
+                state['times'].clear()
+                state['values'].clear()
+            else:
+                first_new = int(np.searchsorted(times_arr, last_time, side='right'))
+                times_arr = times_arr[first_new:]
+                values_arr = values_arr[first_new:]
+        if times_arr.size == 0:
+            return np.concatenate(state['times']), np.concatenate(state['values'])
         state["times"].append(times_arr)
         state["values"].append(values_arr)
         window = self._time_window_seconds()
