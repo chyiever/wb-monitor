@@ -438,6 +438,9 @@ class MainWindow(QMainWindow):
         # FIP/eDAS 联合刷新状态：两路 payload 分别缓存，由统一渲染器对齐后一起更新。
         self._view_fip_payload: Optional[Dict[str, Any]] = None
         self._view_das_payload: Optional[Dict[str, Any]] = None
+        self._view_payload_cache = {'fip': {}, 'das': {}}
+        self._view_displayed_comm = -1
+        self._view_space_payload = None
         self._view_plot_render_pending = False
         self._view_last_plot_render_monotonic = 0.0
         self._view_x_link_enabled = True
@@ -2942,11 +2945,31 @@ class MainWindow(QMainWindow):
             "_t": time.monotonic(),
         }
         self._view_fip_online = True
+        self._cache_view_payload('fip', self._view_fip_payload)
         self._request_view_plot_render()
+
+    def _cache_view_payload(self, source, payload):
+        cache = self._view_payload_cache[source]
+        cache[int(payload['comm_count'])] = payload
+        now = time.monotonic()
+        for seq in list(cache):
+            if now - cache[seq]['_t'] >= self._view_payload_ttl_seconds:
+                del cache[seq]
+        while len(cache) > 4:
+            del cache[min(cache)]
 
     def update_tab3_plot_payload(self, payload: Dict[str, Any]):
         """Cache the latest eDAS plot payload and schedule a unified View refresh."""
         header = payload.get("header", {})
+        if payload.get('payload_kind') == 'space_time':
+            self._view_space_payload = dict(payload,
+                comm_count=int(header.get('comm_count', -1)),
+                packet_duration_seconds=float(header.get('packet_duration_seconds', 1.)),
+                _t=time.monotonic())
+            if (self._view_space_payload['comm_count'] <= self._view_displayed_comm
+                    and self.is_tab3_plot_enabled() and self.tab_widget.currentIndex() == 0):
+                self._render_view_space_time(self._view_space_payload)
+            return
         self.update_tab3_header_status(header)
         self._view_das_payload = {
             "comm_count": header.get("comm_count", -1),
@@ -2961,6 +2984,7 @@ class MainWindow(QMainWindow):
             "_t": time.monotonic(),
         }
         self._view_das_online = True
+        self._cache_view_payload('das', self._view_das_payload)
         self._request_view_plot_render()
 
     def _request_view_plot_render(self) -> None:
@@ -3008,17 +3032,18 @@ class MainWindow(QMainWindow):
             # A one-period skew already pushes a full 1 s trace out of a 1 s
             # viewport. Keep the previous matched display until both arrive.
             if drift != 0 or not same_period or not np.isclose(fip_end, das_end, rtol=0, atol=1e-6):
-                message = f"等待同段波形：FIP #{fip_payload['comm_count']} / eDAS #{das_payload['comm_count']}；保留上次匹配画面"
-                self.view_alignment_notice.setText(message)
-                self.view_alignment_notice.show()
-                if now - self._view_last_alignment_warning >= 5.0:
-                    self._view_last_alignment_warning = now
-                    self._tab3_logger.warning("VIEW_WAIT_PAIR fip_comm=%s das_comm=%s fip_end=%.6f das_end=%.6f; retaining previous display", fip_payload['comm_count'], das_payload['comm_count'], fip_end, das_end)
-                self._tab3_logger.debug(
-                    "TAB3_NODE ui.render wait_alignment drift=%d", drift
-                )
-                self._schedule_view_render_retry()
-                return
+                common = set(self._view_payload_cache['fip']) & set(self._view_payload_cache['das'])
+                matched = [seq for seq in common if seq > self._view_displayed_comm
+                    and all(now - self._view_payload_cache[source][seq]['_t'] < self._view_payload_ttl_seconds for source in ('fip', 'das'))
+                    and np.isclose(self._view_payload_cache['fip'][seq]['packet_duration_seconds'],
+                                   self._view_payload_cache['das'][seq]['packet_duration_seconds'], rtol=0, atol=1e-6)]
+                if matched:
+                    seq = max(matched)
+                    fip_payload = self._view_payload_cache['fip'][seq]
+                    das_payload = self._view_payload_cache['das'][seq]
+                else:
+                    self._show_view_pair_wait(fip_payload, das_payload, fip_end, das_end, now, drift)
+                    return
 
         self.view_alignment_notice.hide()
 
@@ -3043,6 +3068,8 @@ class MainWindow(QMainWindow):
         self._view_last_plot_render_monotonic = now
 
         started = time.perf_counter()
+        if das_fresh:
+            self._view_displayed_comm = max(self._view_displayed_comm, int(das_payload['comm_count']))
         self._render_fip_view(fip_payload if fip_fresh else None)
         self._render_das_view(das_payload if das_fresh else None)
 
@@ -3069,6 +3096,14 @@ class MainWindow(QMainWindow):
                 bool(fip_fresh),
                 bool(das_fresh),
             )
+
+    def _show_view_pair_wait(self, fip_payload, das_payload, fip_end, das_end, now, drift):
+        self.view_alignment_notice.setText(f"等待同段波形：FIP #{fip_payload['comm_count']} / eDAS #{das_payload['comm_count']}；保留上次匹配画面")
+        self.view_alignment_notice.show()
+        if now - self._view_last_alignment_warning >= 5.0:
+            self._view_last_alignment_warning = now
+            self._tab3_logger.warning("VIEW_WAIT_PAIR fip_comm=%s das_comm=%s fip_end=%.6f das_end=%.6f; retaining previous display", fip_payload['comm_count'], das_payload['comm_count'], fip_end, das_end)
+        self._schedule_view_render_retry()
 
     def _render_fip_view(self, fip_payload: Optional[Dict[str, Any]]) -> None:
         """Render the FIP time-domain curves from the cached payload."""
@@ -3190,7 +3225,9 @@ class MainWindow(QMainWindow):
             "DAS Channel",
         )
         if das_payload is not None:
-            self._render_view_space_time(das_payload)
+            image_payload = self._view_space_payload if self._view_space_payload is not None else das_payload
+            if int(image_payload.get('comm_count', -1)) <= int(das_payload['comm_count']):
+                self._render_view_space_time(image_payload)
 
     def _render_view_space_time(self, das_payload: Dict[str, Any]) -> None:
         """Update the space-time image, positioned on the shared absolute time axis."""
@@ -3341,6 +3378,9 @@ class MainWindow(QMainWindow):
         self._reset_tab3_space_time_image()
         self._view_fip_payload = None
         self._view_das_payload = None
+        self._view_payload_cache = {'fip': {}, 'das': {}}
+        self._view_displayed_comm = -1
+        self._view_space_payload = None
         self._view_plot_render_pending = False
         self._view_fip_online = False
         self._view_das_online = False

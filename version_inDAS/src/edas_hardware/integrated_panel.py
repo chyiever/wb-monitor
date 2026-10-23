@@ -25,6 +25,7 @@ class IntegratedEDASPanel(HardwareWindow):
 
     def __init__(self, simulation_mode=False, appearance_host=None):
         self.appearance_host = appearance_host
+        self._display_visible = False
         self._settings_dialog = None
         self._applying_acquisition_settings = False
         self._monitor_history = deque(maxlen=10000)
@@ -483,8 +484,43 @@ class IntegratedEDASPanel(HardwareWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
+        self._set_display_visible(True)
         width = self.appearance_host._current_param_panel_width() if self.appearance_host is not None else self._parameter_width
         self.set_parameter_width(width)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        self._set_display_visible(False)
+
+    def _set_display_visible(self, visible):
+        self._display_visible = bool(visible)
+        thread = getattr(self, 'acq_thread', None)
+        if thread is not None:
+            thread.set_display_active(visible)
+        if not visible:
+            if hasattr(self, '_display_timer'):
+                self._display_timer.stop()
+            if self.time_space_widget is not None:
+                self.time_space_widget._display_update_timer.stop()
+        else:
+            self._configure_display_timer(self.params)
+            if self.time_space_widget is not None:
+                self.time_space_widget.clear_data()
+            self._full_rate_wave_blocks.clear()
+            self._monitor_history.clear()
+
+    def _sync_acquisition_display_request(self):
+        super()._sync_acquisition_display_request()
+        if self.acq_thread is not None:
+            self.acq_thread.set_display_active(self._display_visible)
+
+    def _drain_latest_display_data(self):
+        if self._display_visible:
+            super()._drain_latest_display_data()
+
+    def _on_monitor_data(self, data, channel_num):
+        if self._display_visible:
+            super()._on_monitor_data(data, channel_num)
 
     def _set_psd_visible(self, visible, persist=True):
         self.plot_widget_2.setVisible(visible)

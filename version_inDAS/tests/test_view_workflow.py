@@ -362,6 +362,34 @@ class ViewWorkflowTests(unittest.TestCase):
                 w._render_view_plots()
                 self.assertEqual(sum(len(a) for a in w._fip_curve_rolling[key]['times']),count)
 
+    def test_delayed_packet_matches_cached_peer_after_next_peer_arrival(self):
+        for leading in ('fip', 'das'):
+            with self.subTest(leading=leading), self.helper.window() as (w, folder):
+                w.tab_widget.setCurrentIndex(0)
+                w._tab3_fip_plot_min_interval_seconds = 0
+                w._tab3_das_plot_min_interval_seconds = 0
+                def feed(source, seq):
+                    values = np.arange(100, dtype=np.float32)
+                    if source == 'fip':
+                        w.update_tab3_fip_curve(seq, values, 100, values_by_sensor={1: values})
+                    else:
+                        w.update_tab3_plot_payload({'header': {'comm_count': seq, 'packet_duration_seconds': 1},
+                            'curve2_das_time': seq + np.arange(100)/100., 'curve2_das_values': values})
+                feed('fip', 0); feed('das', 0); w._render_view_plots()
+                feed(leading, 1); feed(leading, 2)
+                feed('das' if leading == 'fip' else 'fip', 1)
+                w._render_view_plots()
+                self.assertEqual(w._view_displayed_comm, 1)
+                self.assertTrue(w.view_alignment_notice.isHidden())
+                previous = w._view_das_payload
+                w.update_tab3_plot_payload({'payload_kind': 'space_time',
+                    'header': {'comm_count': 0, 'packet_duration_seconds': 1},
+                    'space_time_matrix': np.zeros((2, 10), np.float32)})
+                self.assertIs(w._view_das_payload, previous)
+                self.assertEqual(w._view_displayed_comm, 1)
+                for seq in range(3, 20): feed(leading, seq)
+                self.assertLessEqual(len(w._view_payload_cache[leading]), 4)
+
     def test_tcp_stop_delivers_received_qt_tail_before_storage_drain(self):
         import socket,struct,threading
         from types import SimpleNamespace

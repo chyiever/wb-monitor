@@ -116,6 +116,9 @@ class AcquisitionThread(QThread):
         self._pending_monitor_data = None
         self._latest_display_data = None
         self._latest_display_lock = threading.Lock()
+        self._display_active = True
+        self._display_visibility_generation = 0
+        self._applied_display_visibility_generation = 0
         self._display_history_chunks = []
         self._display_history_frames = 0
         self._display_history_signature = None
@@ -810,7 +813,7 @@ class AcquisitionThread(QThread):
     def _read_monitor_data_if_enabled(self):
         """Read monitor data only when the user has enabled the monitor plot."""
         self._last_monitor_read_ms = 0.0
-        if not self._monitor_read_enabled:
+        if not self._monitor_read_enabled or not self._display_active:
             self._pending_monitor_data = None
             return
 
@@ -942,8 +945,24 @@ class AcquisitionThread(QThread):
         block_duration_s = frame_count / scan_rate
         return block, frame_count, block_duration_s, start, end
 
+    def set_display_active(self, active):
+        """Visibility gate only; full-data dispatch/storage remain independent."""
+        active = bool(active)
+        if active != self._display_active:
+            self._display_active = active
+            self._display_visibility_generation += 1
+            with self._latest_display_lock:
+                self._latest_display_data = None
+
     def _publish_latest_display_data(self, data: np.ndarray, data_source: int, channel_num: int):
         """Refresh the overwriteable GUI snapshot at the GUI display cadence."""
+        if self._applied_display_visibility_generation != self._display_visibility_generation:
+            # Reset streaming display state in its owning acquisition thread.
+            self.clear_latest_display_data()
+            self._time_space_filter.reset_state()
+            self._applied_display_visibility_generation = self._display_visibility_generation
+        if not self._display_active:
+            return
         start = time.perf_counter()
         channel_num = max(1, int(channel_num or 1))
         points_per_frame = self._get_display_points_per_frame(data_source, channel_num)
@@ -1089,6 +1108,9 @@ class AcquisitionThread(QThread):
 
     def _emit_if_ready(self):
         """Emit pending data signals if enough time has passed since last update"""
+        if not self._display_active:
+            self._pending_phase_data = self._pending_raw_data = self._pending_monitor_data = None
+            return
         current_time = time.perf_counter() * 1000  # ms
         elapsed = current_time - self._last_gui_update_time
 
@@ -1324,7 +1346,7 @@ class SimulatedAcquisitionThread(AcquisitionThread):
                     self._bytes_acquired += len(phase_data.flatten()) * 4
 
                     # Simulated monitor data
-                    if self._monitor_read_enabled:
+                    if self._monitor_read_enabled and self._display_active:
                         monitor_data = np.random.randint(0, 65535, self._point_num_after_merge * self._channel_num, dtype=np.uint32)
                         monitor_data = self._apply_monitor_spatial_crop(monitor_data)
                         self._pending_monitor_data = (monitor_data, self._channel_num)

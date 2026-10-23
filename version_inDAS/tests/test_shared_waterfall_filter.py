@@ -1,8 +1,10 @@
 """Both waterfalls use the same streaming temporal filter, before decimation."""
 import unittest
+import threading
 from unittest.mock import patch
 
 import numpy as np
+from PyQt5.QtCore import Qt
 import test_acquisition_settings as settings_tests
 from das.plot_worker import DASPlotWorker
 from das.types import DASPacketHeader, DASParsedPacket
@@ -11,6 +13,103 @@ from edas_hardware.realtime_filter import RealtimeTimeAxisFilter, parse_filter_s
 
 
 class SharedWaterfallFilterTests(unittest.TestCase):
+    def test_tab1_visibility_gates_image_work_without_changing_tab2(self):
+        from alignment import AlignedSessionCoordinator
+        from das.manager import EDASManager
+        from das.types import DASRawPacket
+        helper = settings_tests.AcquisitionSettingsTests()
+        helper.setUpClass()
+        with helper.window() as (window, folder):
+            coordinator = AlignedSessionCoordinator()
+            coordinator.start_session()
+            manager = EDASManager(window, coordinator)
+            window.tab_widget.setCurrentIndex(0)
+            parsed = self.packet(np.ones((2, 100), dtype=np.float32))
+            packet = DASRawPacket(parsed.header, parsed.matrix.reshape(-1))
+            tab2_visible = window.edas_panel.integrated_timespace_check.isChecked()
+            with patch.object(manager.space_time_worker, 'enqueue_packet') as image_queue:
+                window.space_time_plot_btn.setChecked(False)
+                manager._handle_raw_packet(packet)
+                image_queue.assert_not_called()
+                self.assertEqual(window.edas_panel.integrated_timespace_check.isChecked(), tab2_visible)
+                window.space_time_plot_btn.setChecked(True)
+                manager._handle_raw_packet(packet)
+                image_queue.assert_called_once()
+                window.edas_panel.integrated_timespace_check.setChecked(False)
+                self.assertTrue(window.space_time_plot_btn.isChecked())
+                window.tab_widget.setCurrentWidget(window.edas_panel)
+                image_queue.reset_mock()
+                manager._handle_raw_packet(packet)
+                image_queue.assert_not_called()
+
+    def test_hidden_tab2_skips_display_processing_but_dispatches_full_data(self):
+        from edas_hardware.acquisition_thread import SimulatedAcquisitionThread
+        from edas_hardware.config import AllParams, DataSource
+        thread = SimulatedAcquisitionThread()
+        params = AllParams()
+        thread.configure(params)
+        received = []
+        thread.set_full_data_handler(lambda *args: received.append(args))
+        data = np.arange(16, dtype=np.int32)
+        thread.set_display_active(False)
+        with patch.object(thread, '_get_display_points_per_frame', side_effect=AssertionError('hidden page computed a display')):
+            thread._dispatch_full_data(data, DataSource.PHASE, 1)
+            thread._publish_latest_display_data(data, DataSource.PHASE, 1)
+        self.assertEqual(len(received), 1)
+        self.assertIsNone(thread.take_latest_display_data())
+        self.assertEqual(thread._display_history_frames, 0)
+        thread.set_display_active(True)
+        self.assertTrue(thread._display_active)
+
+    def test_switching_tabs_updates_acquisition_visibility_without_changing_controls(self):
+        from edas_hardware.acquisition_thread import SimulatedAcquisitionThread
+        helper = settings_tests.AcquisitionSettingsTests()
+        helper.setUpClass()
+        with helper.window() as (window, folder):
+            panel = window.edas_panel
+            thread = SimulatedAcquisitionThread()
+            thread.configure(panel._collect_params())
+            panel.acq_thread = thread
+            try:
+                panel._sync_acquisition_display_request()
+                self.assertTrue(thread._display_active)
+                selected = panel.integrated_timespace_check.isChecked()
+                window.tab_widget.setCurrentIndex(0)
+                helper.app.processEvents()
+                self.assertFalse(thread._display_active)
+                self.assertFalse(panel._display_timer.isActive())
+                window.tab_widget.setCurrentWidget(panel)
+                helper.app.processEvents()
+                self.assertTrue(thread._display_active)
+                self.assertEqual(panel.integrated_timespace_check.isChecked(), selected)
+            finally:
+                panel.acq_thread = None
+
+    def test_blocked_waterfall_does_not_block_waveform_worker(self):
+        curves = DASPlotWorker(workload='curves')
+        space = DASPlotWorker(workload='space_time')
+        entered, release, received = threading.Event(), threading.Event(), threading.Event()
+        def slow_image(**kwargs):
+            entered.set()
+            release.wait(3)
+            return np.zeros((2, 10), np.float32), np.arange(10), np.arange(2)
+        space._build_space_time_payload = slow_image
+        curves.plot_payload_ready.connect(lambda payload: received.set(), Qt.DirectConnection)
+        packet = self.packet(np.ones((2, 1000), dtype=np.float32))
+        try:
+            space.start()
+            space.enqueue_packet(packet)
+            self.assertTrue(entered.wait(2))
+            with patch.object(curves, '_build_space_time_payload', side_effect=AssertionError('waveform must not filter image')):
+                curves.start()
+                curves.enqueue_packet(packet)
+                self.assertTrue(received.wait(1), 'waveform waited for the blocked waterfall')
+        finally:
+            release.set()
+            curves.stop(); space.stop()
+            self.assertTrue(curves.wait(3000))
+            self.assertTrue(space.wait(3000))
+
     def packet(self, data, start=0., rate=10000):
         duration = data.shape[1] / rate
         return DASParsedPacket(DASPacketHeader(1, rate, len(data), data.nbytes, duration),

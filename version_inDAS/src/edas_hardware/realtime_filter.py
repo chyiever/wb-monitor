@@ -161,6 +161,25 @@ class RealtimeTimeAxisFilter:
         self._zi = zi_base[:, :, None] * first_sample[None, None, :]
         self._column_count = int(first_sample.size)
 
+    def process_channels_by_time(self, data_block: np.ndarray, spec: FilterSpec, sample_rate_hz: float) -> np.ndarray:
+        """Same filter/state for channel-first blocks; keep time contiguous.
+
+        Avoid transposing large shared matrices into a strided time-major
+        working layout. The state remains compatible with process().
+        """
+        if data_block.ndim != 2:
+            raise FilterSpecError('Realtime filter input must be a 2D array.')
+        if data_block.size == 0:
+            return np.asarray(data_block, dtype=np.float64)
+        self.configure(spec, sample_rate_hz)
+        data_float = np.ascontiguousarray(data_block, dtype=np.float64)
+        if self._zi is None or self._column_count != data_float.shape[0]:
+            self._initialize_state(data_float[:, 0])
+        filtered, zi = signal.sosfilt(self._sos, data_float, axis=1,
+                                    zi=self._zi.transpose(0, 2, 1))
+        self._zi = zi.transpose(0, 2, 1)
+        return filtered
+
     def process(self, data_block: np.ndarray, spec: FilterSpec, sample_rate_hz: float) -> np.ndarray:
         """
         Filter a ``frames x positions`` block along the time axis.

@@ -22,9 +22,10 @@ class DASPlotWorker(QThread):
     plot_payload_ready = pyqtSignal(dict)
     filter_warning = pyqtSignal(str)
 
-    def __init__(self) -> None:
+    def __init__(self, workload='combined') -> None:
         super().__init__()
-        self.logger = logging.getLogger(f"{__name__}.DASPlotWorker")
+        self.workload = workload
+        self.logger = logging.getLogger(f"{__name__}.DASPlotWorker.{workload}")
         self.input_queue: "Queue[DASParsedPacket]" = Queue(maxsize=4)
         self._queue_lock = threading.Lock()
         self._queued_bytes = 0
@@ -71,6 +72,7 @@ class DASPlotWorker(QThread):
         self._filter_warning_text = ''
         self._settings_lock = threading.Lock()
         self._pending_settings = None
+        self._reset_on_next_packet = False
         self._process_times_ms: list[float] = []
         self._last_stats_time = time.monotonic()
         self._stats_packets_at_last_log = 0
@@ -140,6 +142,18 @@ class DASPlotWorker(QThread):
             self._pending_settings = None
         self._apply_settings(settings)
 
+    def discard_pending_display(self):
+        """Drop stale display tasks; reset stream state in the worker next time."""
+        with self._queue_lock:
+            while True:
+                try:
+                    packet = self.input_queue.get_nowait()
+                    self._queued_bytes = max(0, self._queued_bytes - self._packet_bytes(packet))
+                except Empty:
+                    break
+        with self._settings_lock:
+            self._reset_on_next_packet = True
+
     def _apply_settings(self, settings):
         old_signature = self._settings_signature(self.settings)
         self.settings.update(settings)
@@ -197,10 +211,18 @@ class DASPlotWorker(QThread):
         with self._settings_lock:
             pending = self._pending_settings
             self._pending_settings = None
+            reset_display = self._reset_on_next_packet
+            self._reset_on_next_packet = False
+        if reset_display:
+            self._history.clear()
+            self._reset_space_time_buffer()
         if pending is not None:
             self._apply_settings(pending)
         started = time.perf_counter()
-        self._history.append(packet)
+        if self._history and abs(packet.packet_start_time - self._history[-1].packet_end_time) > 1e-6:
+            self._history.clear()
+        if self.workload != 'space_time':
+            self._history.append(packet)
         duration = max(0.2, float(self.settings.get("display_seconds", 1.0)))
         cutoff_time = packet.packet_end_time - duration
         self._history = [item for item in self._history if item.packet_end_time > cutoff_time]
@@ -230,15 +252,16 @@ class DASPlotWorker(QThread):
                 time_downsample,
                 curve2_filter,
             )
-        space_time_matrix, x_axis, y_axis = self._build_space_time_payload(
+        space_time_matrix, x_axis, y_axis = (self._build_space_time_payload(
             packet=packet,
             channel_start=channel_start,
             channel_end=channel_end,
             time_downsample=time_downsample,
             space_downsample=space_downsample,
-        )
+        ) if self.workload != 'curves' else (np.empty((0, 0), dtype=np.float32), np.array([]), np.array([])))
 
         payload = {
+            'payload_kind': self.workload,
             "curve1_das_time": das_times1,
             "curve1_das_values": das_curve1,
             "curve2_das_time": das_times2,
@@ -374,7 +397,7 @@ class DASPlotWorker(QThread):
             if stream != self._space_time_filter_stream or (
                 self._space_time_filter_end is not None and
                 abs(packet.packet_start_time - self._space_time_filter_end) > 1e-6):
-                self._space_time_filter.reset_state()
+                self._reset_space_time_buffer()
             try:
                 spec = parse_filter_spec(str(self.settings.get('space_time_filter_spec', '1-')))
                 block = self._filter_space_time_block(
@@ -474,12 +497,12 @@ class DASPlotWorker(QThread):
         chunk_frames = max(1, min(8192, 1048576 // max(1, channels)))
         output_col = 0
         for offset in range(0, count, chunk_frames):
-            filtered = self._space_time_filter.process(
-                channels_by_time[:, offset:offset + chunk_frames].T, spec, sample_rate)
+            filtered = self._space_time_filter.process_channels_by_time(
+                channels_by_time[:, offset:offset + chunk_frames], spec, sample_rate)
             # Preserve the same packet-relative decimation grid across chunks.
-            selected = filtered[(-offset) % step::step]
-            width = len(selected)
-            result[:, output_col:output_col + width] = selected.T
+            selected = filtered[:, (-offset) % step::step]
+            width = selected.shape[1]
+            result[:, output_col:output_col + width] = selected
             output_col += width
         return result
 

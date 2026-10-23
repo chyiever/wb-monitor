@@ -38,7 +38,8 @@ class EDASManager(QObject):
         settings = self.main_window.get_tab3_settings()
         from .local_source import LocalDASSource
         self.server = LocalDASSource(main_window.edas_panel)
-        self.plot_worker = DASPlotWorker()
+        self.plot_worker = DASPlotWorker(workload='curves')
+        self.space_time_worker = DASPlotWorker(workload='space_time')
         # Separate writers: joint storage and eDAS-only bin/json use independent queues.
         self.storage_worker = DASStorageWorker()
         self.edas_storage_worker = EDASRawStorageWorker()
@@ -63,6 +64,8 @@ class EDASManager(QObject):
         self._pending_wall_start: Optional[str] = None
         self._disconnect_alert_active = False
         self._setup_connections()
+        self.main_window.tab_widget.currentChanged.connect(self._on_visible_tab_changed)
+        self.main_window.space_time_plot_btn.toggled.connect(self._on_space_time_visibility_changed)
         self.logger.debug("TAB3_NODE manager.init settings=%s", settings)
 
     def _setup_connections(self) -> None:
@@ -75,6 +78,8 @@ class EDASManager(QObject):
         self.server.statistics_updated.connect(self.main_window.update_tab3_packet_statistics)
         self.plot_worker.plot_payload_ready.connect(self.main_window.update_tab3_plot_payload)
         self.plot_worker.filter_warning.connect(self._report_plot_warning)
+        self.space_time_worker.plot_payload_ready.connect(self.main_window.update_tab3_plot_payload)
+        self.space_time_worker.filter_warning.connect(self._report_plot_warning)
         self.storage_worker.storage_saved.connect(self.main_window.update_tab3_storage_status)
         # 游标在写盘成功后才推进（cursor-bug fix）：失败不丢帧，下一轮重新收集
         self.storage_worker.request_finished.connect(self._on_joint_request_finished)
@@ -84,6 +89,15 @@ class EDASManager(QObject):
         )
         self.logger.debug("TAB3_NODE manager.connections_ready")
 
+    def _on_visible_tab_changed(self, index):
+        if index != 0:
+            self.plot_worker.discard_pending_display()
+            self.space_time_worker.discard_pending_display()
+
+    def _on_space_time_visibility_changed(self, enabled):
+        if not enabled:
+            self.space_time_worker.discard_pending_display()
+
     def _report_plot_warning(self, message):
         self.main_window.status_bar.showMessage(message, 15000)
 
@@ -91,6 +105,7 @@ class EDASManager(QObject):
         """Start Tab3 pipeline: DAS TCP server, plot worker, and storage workers."""
         self.sync_from_ui()
         self.plot_worker.reset_state()
+        self.space_time_worker.reset_state()
         self.logger.debug(
             "TAB3_NODE manager.start ip=%s port=%s joint_enabled=%s edas_enabled=%s",
             self.server.ip,
@@ -100,6 +115,8 @@ class EDASManager(QObject):
         )
         if not self.plot_worker.isRunning():
             self.plot_worker.start()
+        if not self.space_time_worker.isRunning():
+            self.space_time_worker.start()
         # Start background storage workers.
         if not self.storage_worker.isRunning():
             self.storage_worker.start()
@@ -116,6 +133,9 @@ class EDASManager(QObject):
         self._storage_timer.stop()
         self._watchdog_timer.stop()
         self.plot_worker.stop()
+        self.space_time_worker.stop()
+        if self.space_time_worker.isRunning():
+            self.space_time_worker.wait(3000)
         if self.plot_worker.isRunning():
             self.plot_worker.wait(3000)
         self.storage_worker.stop()
@@ -138,7 +158,7 @@ class EDASManager(QObject):
 
     def _stop_pipeline(self) -> None:
         """Stop the Tab3 pipeline."""
-        if not self.storage_worker.isRunning() and not self.plot_worker.isRunning():
+        if not self.storage_worker.isRunning() and not self.plot_worker.isRunning() and not self.space_time_worker.isRunning():
             return
         self.logger.debug("TAB3_NODE manager.stop")
         self._storage_timer.stop()
@@ -151,6 +171,9 @@ class EDASManager(QObject):
             self.logger.exception('Joint storage tail was NOT fully persisted')
             self.main_window.show_tab3_error(f'联合尾部保存失败：{exc}；请保留日志并检查磁盘')
         self.plot_worker.stop()
+        self.space_time_worker.stop()
+        if self.space_time_worker.isRunning():
+            self.space_time_worker.wait(3000)
         if self.plot_worker.isRunning():
             self.plot_worker.wait(3000)
         # Stop background storage workers.
@@ -207,6 +230,7 @@ class EDASManager(QObject):
         self._disconnect_alert_active = False
         self.coordinator.protect_unflushed_frames_after(None)
         self.plot_worker.reset_state()
+        self.space_time_worker.reset_state()
         self.edas_storage_worker.reset_session()
         self.main_window.reset_tab3_views()
         self.logger.debug("TAB3_NODE manager.reset")
@@ -225,6 +249,7 @@ class EDASManager(QObject):
         plot_settings.setdefault("curve_max_points", 5000)
         plot_settings.setdefault("space_time_max_pixels", 120000)
         self.plot_worker.update_settings(plot_settings)
+        self.space_time_worker.update_settings(plot_settings)
         self._joint_storage_enabled = bool(
             storage_settings.get("joint_enabled", storage_settings.get("enabled", False))
         )
@@ -464,7 +489,11 @@ class EDASManager(QObject):
                 self.main_window.update_tab3_edas_storage_status(
                     f"eDAS storage did not accept packet comm={parsed.header.comm_count}"
                 )
-        plot_queued = self.plot_worker.enqueue_packet(parsed)
+        plot_queued = True
+        if self.main_window.tab_widget.currentIndex() == 0 and self.main_window.is_tab3_plot_enabled():
+            plot_queued = self.plot_worker.enqueue_packet(parsed)
+            if self.main_window.space_time_plot_btn.isChecked():
+                self.space_time_worker.enqueue_packet(parsed)
         if not plot_queued:
             self.logger.warning("DAS plot queue rejected packet comm_count=%d", parsed.header.comm_count)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
