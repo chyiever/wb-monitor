@@ -316,6 +316,8 @@ python build_exe.py --smoke-test
 
 默认生成 `dist/wb-monitor-inDAS-日期-时间.exe`，为单文件程序；`--onedir` 可生成目录版，需分发整个目录。`--smoke-test` 会启动产物，检查四个主页面和核心管理器初始化，并写出 `smoke_test.json`；它不验证真实采集卡收数。打包包含资源、DLL 和默认 app_config，不包含用户的传感数据、运行日志或上次参数快照。
 
+打包成功后自动删除本版本的 `build/` 文件夹（包含临时文件和生成的 spec），保留 `dist/` 中的 EXE。使用 `--smoke-test` 时，自检通过后才清理；打包或自检失败时保留 `build/` 便于排查。清理前校验目录路径，拒绝删除指向其他位置的链接目录。
+
 EXE 的 `config/` 和 `logs/` 保存在 EXE 同目录，不放在单文件解压临时目录；请将 EXE 放在可写目录。程序需要匹配驱动及可用的采集卡，双击默认是硬件模式；无硬件时通过 `程序.exe --simulate` 启动。`dist/`、`build/`、EXE 均不上传 GitHub。
 
 ### 9.3 联合文件快速查看

@@ -2,9 +2,23 @@
 import argparse
 import importlib.util
 import subprocess
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
+
+
+def cleanup_build(root):
+    """Remove only this version's verified build directory after a successful build."""
+    root = Path(root).resolve()
+    target = root / 'build'
+    if not target.exists():
+        return
+    resolved = target.resolve()
+    if target.is_symlink() or resolved != target or resolved.parent != root:
+        raise RuntimeError(f'拒绝清理非本版本 build 目录：{target}')
+    shutil.rmtree(resolved)
+    print('CLEANED:', resolved, flush=True)
 
 
 def build(argv=None):
@@ -42,6 +56,7 @@ def build(argv=None):
         subprocess.run([str(executable), '--smoke-test'], cwd=executable.parent, timeout=120, check=True)
         if not report.exists(): raise RuntimeError('EXE 启动自检没有产生报告')
         print('SMOKE:', report.read_text(encoding='utf-8'), flush=True)
+    cleanup_build(root)
     return 0
 
 
