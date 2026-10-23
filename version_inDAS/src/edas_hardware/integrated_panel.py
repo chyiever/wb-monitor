@@ -36,6 +36,9 @@ class IntegratedEDASPanel(HardwareWindow):
         self._storage_session_serial = 0
         self._last_storage_snapshot = {'session': 0, 'files': 0, 'failures': 0, 'error': ''}
         super().__init__(simulation_mode=simulation_mode)
+        # The host status bar already displays the institute name.
+        self.statusBar.removeWidget(self._institute_label)
+        self._institute_label.hide()
         self.setMinimumSize(0, 0)
         self.pipeline_fault.connect(self._stop_on_pipeline_fault)
         self.tcp_tab3_manager.error_occurred.connect(self._shared_fault)
