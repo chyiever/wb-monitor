@@ -761,11 +761,17 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(6)
 
+        self.view_timespace_check = QCheckBox("显示时空图")
+        self.view_timespace_check.setChecked(self.space_time_plot_btn.isChecked())
+        self.view_timespace_check.toggled.connect(self.space_time_plot_btn.setChecked)
+        layout.addWidget(self.view_timespace_check)
+
         # 单一 QGridLayout 承载 Curve1/PSD1、Curve2/PSD2 与 Space-Time/颜色条：
         # 第 0 列放 Curve1/Curve2/Space-Time，三个时域图同列、天然等宽（时间轴上下对齐）；
         # 第 1 列放 PSD1/PSD2/颜色条，不参与宽度对齐。
         view_grid_widget = QWidget()
         view_layout = QGridLayout(view_grid_widget)
+        self.view_plot_grid = view_layout
         view_layout.setContentsMargins(0, 0, 0, 0)
         view_layout.setSpacing(6)
         view_layout.setColumnStretch(0, 7)
@@ -3842,6 +3848,13 @@ class MainWindow(QMainWindow):
 
     def _toggle_space_time_plot(self, enabled: bool):
         # Toggle visibility of the View Space-Time pane and skip image updates when hidden.
+        if hasattr(self, 'view_timespace_check'):
+            self.view_timespace_check.blockSignals(True)
+            self.view_timespace_check.setChecked(enabled)
+            self.view_timespace_check.blockSignals(False)
+        if hasattr(self, 'view_plot_grid'):
+            self.view_plot_grid.setRowStretch(2, 2 if enabled else 0)
+            self.view_plot_grid.invalidate()
         if hasattr(self, 'tab3_space_time_panel'):
             self.tab3_space_time_panel.setVisible(enabled)
         if hasattr(self, 'tab3_space_time_histogram'):
