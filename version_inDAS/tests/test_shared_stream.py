@@ -132,10 +132,11 @@ class SharedStreamTests(unittest.TestCase):
                 from fipedas_read.worker import _compute_curve, _compute_space, _file_info_text, CurveRequest, SpaceRequest
                 from fipedas_read.preprocess import PreprocessSpec
                 curve = _compute_curve(1, CurveRequest('eDAS', 0, PreprocessSpec(remove_mean=False), 1000), replay)
-                np.testing.assert_array_equal(curve.values, raw[0])
-                self.assertIn('phase integer', curve.title)
+                np.testing.assert_allclose(curve.values, raw[0].astype(np.float64) * (np.pi / 32767.))
+                self.assertIn('[rad]', curve.title)
                 image, _, _ = _compute_space(SpaceRequest(0, 0, 1, 1, False, True, -1, 1), replay)
-                np.testing.assert_array_equal(image, raw.astype(np.float32))
+                np.testing.assert_allclose(image, raw.astype(np.float32) * np.float32(np.pi / 32767.))
+                np.testing.assert_array_equal(replay.das_frames[0], raw)
                 self.assertIn('int32', _file_info_text(replay))
             old = load_joint_bin(Path(save_bin([frame], folder, '2026-10-23')))
             np.testing.assert_array_equal(old.das_frames[0], radians)

@@ -124,6 +124,7 @@ def preprocess_waveform(
     sample_rate_hz: float,
     spec: PreprocessSpec,
     max_samples: Optional[int] = None,
+    sample_times: Optional[np.ndarray] = None,
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Return time, processed values, and effective sample rate.
 
@@ -131,8 +132,15 @@ def preprocess_waveform(
     zero-phase filter. When the raw series is longer the signal is decimated
     first and the effective sample rate is reduced accordingly, which keeps the
     displayed frequency band unchanged while greatly speeding up long files.
+    When sample_times is supplied, return those absolute timestamps selected
+    with the exact same strides, preserving source gaps and time coverage.
     """
     arr = finite_1d(values)
+    selected_times = None
+    if sample_times is not None:
+        selected_times = np.asarray(sample_times, dtype=np.float64).reshape(-1)
+        if selected_times.size != arr.size:
+            raise ValueError('Sample timestamps must match waveform values')
     rate = float(sample_rate_hz) if np.isfinite(sample_rate_hz) and sample_rate_hz > 0 else 1.0
     if arr.size == 0:
         return np.array([], dtype=np.float64), arr, rate
@@ -140,6 +148,8 @@ def preprocess_waveform(
         pre_step = int(np.ceil(arr.size / float(max_samples)))
         if pre_step > 1:
             arr = np.ascontiguousarray(arr[::pre_step])
+            if selected_times is not None:
+                selected_times = selected_times[::pre_step]
             rate = rate / pre_step
     if spec.remove_mean:
         arr = arr - float(np.mean(arr))
@@ -147,12 +157,14 @@ def preprocess_waveform(
     step = max(1, int(spec.downsample))
     if step > 1:
         arr = arr[::step]
+        if selected_times is not None:
+            selected_times = selected_times[::step]
         rate = rate / step
     if spec.normalize and arr.size:
         peak = float(np.nanmax(np.abs(arr)))
         if peak > 0:
             arr = arr / peak
-    times = np.arange(arr.size, dtype=np.float64) / rate
+    times = selected_times if selected_times is not None else np.arange(arr.size, dtype=np.float64) / rate
     return times, np.asarray(arr, dtype=np.float64), rate
 
 

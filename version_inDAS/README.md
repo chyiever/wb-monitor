@@ -335,7 +335,7 @@ EXE 的 `config/` 和 `logs/` 保存在 EXE 同目录，不放在单文件解压
 
 ### 9.3 联合文件快速查看
 
-根目录 `fipedasREAD` 的当前源码支持联合 BIN v1、bin32 v2、新 BIN6432 v3、NPZ、H5。v3 按 int32 原样加载，信息栏显示整数单位，不自动换算弧度；整数与弧度文件应分别打开。运行：
+根目录 `fipedasREAD` v1.2.1 当前源码支持联合 BIN v1、bin32 v2、新 BIN6432 v3、NPZ、H5。v3 按 int32 原样加载，在绘制 DAS 波形/时空图前按文件头系数换算为 rad，随后进行显示预处理；存储整数不修改，历史弧度文件不重复换算。自动抽点后的波形时间戳同步抽取，避免一秒波形被压短。整数与历史弧度文件仍应分别打开。运行：
 
 ```powershell
 python ../fipedasREAD/run.py D:/PCCP/FIPeDASDATA

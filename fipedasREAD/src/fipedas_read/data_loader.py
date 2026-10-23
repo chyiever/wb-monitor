@@ -50,6 +50,7 @@ class JointReplayData:
     das_present: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))
     source_paths: list[Path] = field(default_factory=list)
     das_units: str = 'rad'
+    das_scale_to_rad: float = 1.0
 
     def __post_init__(self) -> None:
         if not self.source_paths:
@@ -368,6 +369,10 @@ def load_joint_bin(path: Path, lazy: bool = False) -> JointReplayData:
         das_present=das_present,
     )
     result.das_units = str(header.get('das_units', 'rad'))
+    if result.das_units == 'phase_integer':
+        result.das_scale_to_rad = float(header.get('das_scale_to_rad', np.pi / 32767.0))
+        if not np.isfinite(result.das_scale_to_rad) or result.das_scale_to_rad <= 0:
+            raise ValueError('Invalid DAS integer-to-radian scale')
     return result
 
 
@@ -455,6 +460,9 @@ def merge_joint_data(datasets: list[JointReplayData]) -> JointReplayData:
     units = {data.das_units for data in datasets if data.has_das}
     if len(units) > 1:
         raise ValueError('不能混合拼接 DAS 相位整数与弧度文件，请分别打开')
+    scales = {data.das_scale_to_rad for data in datasets if data.has_das}
+    if len(scales) > 1:
+        raise ValueError('不能拼接 DAS 弧度换算系数不同的文件')
 
     ordered = sorted(datasets, key=lambda d: (d.start_time, d.created_at or "", str(d.path)))
 
@@ -523,6 +531,7 @@ def merge_joint_data(datasets: list[JointReplayData]) -> JointReplayData:
         das_present=np.asarray(das_present, dtype=bool),
         source_paths=[data.path for data in ordered],
         das_units=next(iter(units), 'rad'),
+        das_scale_to_rad=next(iter(scales), 1.0),
     )
 
 
@@ -600,6 +609,7 @@ def build_space_time_matrix(
     space_downsample: int,
     remove_baseline: bool,
     max_pixels: int = 300_000,
+    amplitude_scale: float = 1.0,
 ) -> tuple[np.ndarray, tuple[float, float, float, float]]:
     rows: list[np.ndarray] = []
     min_channel = max(0, int(channel_start))
@@ -622,6 +632,8 @@ def build_space_time_matrix(
         start_ch = min(max(min_channel, 0), arr.shape[0] - 1)
         end_ch = min(max(max_channel, start_ch), arr.shape[0] - 1)
         block = np.asarray(arr[start_ch:end_ch + 1:space_step, ::time_step], dtype=np.float32)
+        if amplitude_scale != 1.0:
+            block = block * np.float32(amplitude_scale)
         if block.size == 0:
             continue
         if expected_rows is None:

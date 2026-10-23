@@ -83,8 +83,8 @@ class ReplayWindow(QMainWindow):
     """Simple joint NPZ replay window."""
 
     APP_NAME = "FIP/eDAS 联合数据回放"
-    APP_VERSION = "v1.2.0"
-    APP_BUILD_DATE = "2026-09-17"
+    APP_VERSION = "v1.2.1"
+    APP_BUILD_DATE = "2026-10-23"
     COLOR_MAPS = ("Seismic", "RdBu", "CoolWarm", "Viridis", "Plasma", "Inferno", "Magma", "Gray", "Jet")
     COLOR_BAR_WIDTH = 100
     REDRAW_DEBOUNCE_MS = 120
@@ -868,9 +868,12 @@ class ReplayWindow(QMainWindow):
         title2 = result.curve2.title if result.has_fip or result.curve2.values.size else "无 FIP 数据"
         self.curve1_plot.setTitle(title1)
         self.curve2_plot.setTitle(title2)
+        self.curve1_plot.setLabel('left', 'Phase' if result.curve1.units else 'Amplitude', units=result.curve1.units)
+        self.curve2_plot.setLabel('left', 'Phase' if result.curve2.units else 'Amplitude', units=result.curve2.units)
         self.space_image.setImage(result.space_matrix, autoLevels=False, levels=result.space_levels)
         self.space_image.setRect(*result.space_rect)
         self.histogram.setLevels(*result.space_levels)
+        self.histogram.axis.setLabel('Phase' if result.space_units else 'Amplitude', units=result.space_units)
         self.space_plot.setTitle("DAS Timespace" if result.has_das else "无 eDAS 数据")
         if self.auto_levels_check.isChecked():
             self.space_vmin_spin.blockSignals(True)

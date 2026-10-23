@@ -63,6 +63,7 @@ class CurveResult:
     times: np.ndarray
     values: np.ndarray
     title: str
+    units: str = ''
 
 
 @dataclass
@@ -77,6 +78,7 @@ class RedrawResult:
     space_matrix: np.ndarray
     space_rect: tuple[float, float, float, float]
     space_levels: tuple[float, float]
+    space_units: str = 'rad'
 
 
 class ReplayWorker(QObject):
@@ -207,6 +209,7 @@ def _compute_redraw(request: RedrawRequest, data: JointReplayData) -> RedrawResu
         space_matrix=matrix,
         space_rect=rect,
         space_levels=levels,
+        space_units='' if request.space.apply_preprocess and request.space.preprocess.normalize else 'rad',
     )
 
 
@@ -227,21 +230,19 @@ def _compute_curve(curve_index: int, request: CurveRequest, data: JointReplayDat
             data.das_rates_hz,
             request.das_channel,
         )
+        if data.das_units == 'phase_integer':
+            raw_y = raw_y * data.das_scale_to_rad
     max_filter_samples = max(4 * int(request.max_points), 200_000)
     rel_t, y, effective_rate = preprocess_waveform(
-        raw_y, rate, request.preprocess, max_samples=max_filter_samples
+        raw_y, rate, request.preprocess, max_samples=max_filter_samples, sample_times=raw_t
     )
-    if raw_t.size == raw_y.size and y.size:
-        step = max(1, int(request.preprocess.downsample))
-        times = raw_t[::step][: y.size]
-    elif raw_t.size and rel_t.size:
-        t0 = float(raw_t[0])
-        times = t0 + np.arange(y.size, dtype=np.float64) / effective_rate
-    else:
-        times = rel_t
+    # Preprocessing selects timestamps with BOTH automatic and user strides;
+    # reconstructing them from the user stride alone shortened long waveforms.
+    times = rel_t
     plot_times, plot_values = decimate_for_plot(times, y, request.max_points)
-    unit = ' [phase integer]' if request.source not in ('FIP1', 'FIP2') and data.das_units == 'phase_integer' else ''
-    return CurveResult(plot_times, plot_values, f"Waveform {curve_index}: {request.source}{unit}")
+    units = 'rad' if request.source not in ('FIP1', 'FIP2') and not request.preprocess.normalize else ''
+    suffix = ' [rad]' if units else ''
+    return CurveResult(plot_times, plot_values, f"Waveform {curve_index}: {request.source}{suffix}", units)
 
 
 def _compute_space(request: SpaceRequest, data: JointReplayData) -> tuple[np.ndarray, tuple[float, float, float, float], tuple[float, float]]:
@@ -255,6 +256,7 @@ def _compute_space(request: SpaceRequest, data: JointReplayData) -> tuple[np.nda
         time_downsample=request.time_downsample,
         space_downsample=request.space_downsample,
         remove_baseline=request.remove_baseline,
+        amplitude_scale=data.das_scale_to_rad if data.das_units == 'phase_integer' else 1.0,
     )
     if matrix.size == 0:
         matrix = np.zeros((1, 1), dtype=np.float32)
@@ -308,7 +310,7 @@ def _file_info_text(data: JointReplayData) -> str:
         f"时长: {duration:.3f} s（{data.frame_count} 帧）",
         f"采样率: FIP {fip_rate}  |  DAS {das_rate}",
         f"DAS通道数: {das_channels}",
-        f"DAS单位: {'相位整数 (int32，未换算弧度)' if data.das_units == 'phase_integer' else data.das_units}",
+        f"DAS单位: {'存储 int32 相位整数；绘图换算 rad' if data.das_units == 'phase_integer' else data.das_units}",
         f"数据量: FIP {_human_samples(fip_samples)}  |  DAS {_human_samples(das_samples)}  |  文件 {_human_bytes(file_size)}",
     ]
     return "\n".join(lines)
