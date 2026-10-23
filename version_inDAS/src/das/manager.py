@@ -74,6 +74,7 @@ class EDASManager(QObject):
         self.server.header_updated.connect(self.main_window.update_tab3_header_status)
         self.server.statistics_updated.connect(self.main_window.update_tab3_packet_statistics)
         self.plot_worker.plot_payload_ready.connect(self.main_window.update_tab3_plot_payload)
+        self.plot_worker.filter_warning.connect(self._report_plot_warning)
         self.storage_worker.storage_saved.connect(self.main_window.update_tab3_storage_status)
         # 游标在写盘成功后才推进（cursor-bug fix）：失败不丢帧，下一轮重新收集
         self.storage_worker.request_finished.connect(self._on_joint_request_finished)
@@ -82,6 +83,9 @@ class EDASManager(QObject):
             self.main_window.update_tab3_alignment_status
         )
         self.logger.debug("TAB3_NODE manager.connections_ready")
+
+    def _report_plot_warning(self, message):
+        self.main_window.status_bar.showMessage(message, 15000)
 
     def start(self) -> bool:
         """Start Tab3 pipeline: DAS TCP server, plot worker, and storage workers."""

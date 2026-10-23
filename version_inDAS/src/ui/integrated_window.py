@@ -670,6 +670,10 @@ class MainWindow(BaseWindow):
     def get_tab3_settings(self):
         settings = super().get_tab3_settings()
         settings['storage']['edas_enabled'] = False
+        if hasattr(self, 'edas_panel'):
+            enabled, spec = self.edas_panel._get_shared_filter_settings()
+            settings['plot']['space_time_filter_enabled'] = enabled
+            settings['plot']['space_time_filter_spec'] = spec
         return settings
 
     def _restore_tab3_settings(self, config):

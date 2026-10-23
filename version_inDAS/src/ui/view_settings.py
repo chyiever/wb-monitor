@@ -52,6 +52,11 @@ class ViewSettingsDialog(QDialog):
         notice = QLabel('仅“应用并保存”生效；点击窗口外或取消将放弃修改。全局字体在 Setting 调整。')
         notice.setWordWrap(True)
         layout.addWidget(notice)
+        if hasattr(window, 'edas_panel'):
+            enabled, spec = window.edas_panel._get_shared_filter_settings()
+            shared_filter_notice = QLabel('时空图滤波与 eDAS 页共用：' + (spec + ' Hz' if enabled else '关闭') + '；在 Tab2“共享与显示参数”修改后，两页同时生效。')
+            shared_filter_notice.setWordWrap(True)
+            layout.addWidget(shared_filter_notice)
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs, 1)
         for title, fields in self.fields:

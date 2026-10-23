@@ -13,12 +13,14 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from scipy.signal import butter, sosfiltfilt
 
 from .types import DASParsedPacket
+from edas_hardware.realtime_filter import RealtimeTimeAxisFilter, parse_filter_spec, FilterSpecError
 
 
 class DASPlotWorker(QThread):
     """Transform parsed DAS packets into bounded, plot-ready payloads."""
 
     plot_payload_ready = pyqtSignal(dict)
+    filter_warning = pyqtSignal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -63,6 +65,12 @@ class DASPlotWorker(QThread):
         self._space_time_valid_cols = 0
         self._space_time_signature: Optional[Tuple[int, ...]] = None
         self._sos_cache: Dict[tuple, object] = {}
+        self._space_time_filter = RealtimeTimeAxisFilter()
+        self._space_time_filter_end = None
+        self._space_time_filter_stream = None
+        self._filter_warning_text = ''
+        self._settings_lock = threading.Lock()
+        self._pending_settings = None
         self._process_times_ms: list[float] = []
         self._last_stats_time = time.monotonic()
         self._stats_packets_at_last_log = 0
@@ -122,6 +130,17 @@ class DASPlotWorker(QThread):
             return False
 
     def update_settings(self, settings: Dict[str, object]) -> None:
+        if self.isRunning():
+            # Filter/rolling state belongs to the processing thread. Apply one
+            # immutable settings snapshot at its next packet boundary.
+            with self._settings_lock:
+                self._pending_settings = dict(self._pending_settings or self.settings, **settings)
+            return
+        with self._settings_lock:
+            self._pending_settings = None
+        self._apply_settings(settings)
+
+    def _apply_settings(self, settings):
         old_signature = self._settings_signature(self.settings)
         self.settings.update(settings)
         if self._settings_signature(self.settings) != old_signature:
@@ -129,6 +148,8 @@ class DASPlotWorker(QThread):
         self.logger.debug("TAB3_NODE plot_worker.settings %s", self._settings_for_log())
 
     def reset_state(self) -> None:
+        with self._settings_lock:
+            self._pending_settings = None
         self._history.clear()
         self._reset_space_time_buffer()
         while not self.input_queue.empty():
@@ -173,6 +194,11 @@ class DASPlotWorker(QThread):
             return int(getattr(packet.matrix, "nbytes", 0) or 0)
 
     def _process_packet(self, packet: DASParsedPacket) -> None:
+        with self._settings_lock:
+            pending = self._pending_settings
+            self._pending_settings = None
+        if pending is not None:
+            self._apply_settings(pending)
         started = time.perf_counter()
         self._history.append(packet)
         duration = max(0.2, float(self.settings.get("display_seconds", 1.0)))
@@ -341,7 +367,31 @@ class DASPlotWorker(QThread):
             effective_time_downsample *= max(1, extra_step)
             estimated_cols = max(1, int(np.ceil(display_seconds * sample_rate / effective_time_downsample)))
 
-        block = latest_matrix[start:end + 1:space_downsample, ::effective_time_downsample]
+        if bool(self.settings.get('space_time_filter_enabled', False)):
+            # Same causal order-2 filter as Tab2, on full-rate time samples.
+            # The shared matrix is already in radians; never filter it in place.
+            stream = (packet.header.channel_start, packet.header.channel_step, start, end, space_downsample, sample_rate)
+            if stream != self._space_time_filter_stream or (
+                self._space_time_filter_end is not None and
+                abs(packet.packet_start_time - self._space_time_filter_end) > 1e-6):
+                self._space_time_filter.reset_state()
+            try:
+                spec = parse_filter_spec(str(self.settings.get('space_time_filter_spec', '1-')))
+                block = self._filter_space_time_block(
+                    latest_matrix[start:end + 1:space_downsample, :], spec, sample_rate,
+                    effective_time_downsample)
+                self._space_time_filter_end = packet.packet_end_time
+                self._space_time_filter_stream = stream
+                self._filter_warning_text = ''
+            except FilterSpecError as exc:
+                message = f'View 时空图滤波失败：{exc}；请检查滤波参数及共享后的采样率'
+                if message != self._filter_warning_text:
+                    self._filter_warning_text = message
+                    self.logger.warning(message)
+                    self.filter_warning.emit(message)
+                return np.empty((0, 0), dtype=np.float32), np.array([]), np.array([])
+        else:
+            block = latest_matrix[start:end + 1:space_downsample, ::effective_time_downsample]
         if block.size == 0:
             return np.empty((0, 0), dtype=np.float32), np.array([], dtype=np.float64), np.array([], dtype=np.int32)
         block = np.ascontiguousarray(block, dtype=np.float32)
@@ -417,10 +467,29 @@ class DASPlotWorker(QThread):
         y_axis = np.arange(start, end + 1, space_downsample, dtype=np.int32)[:row_count]
         return matrix, x_axis, y_axis
 
+    def _filter_space_time_block(self, channels_by_time, spec, sample_rate, step):
+        """Filter at acquisition rate with bounded float64 working blocks."""
+        channels, count = channels_by_time.shape
+        result = np.empty((channels, (count + step - 1) // step), dtype=np.float32)
+        chunk_frames = max(1, min(8192, 1048576 // max(1, channels)))
+        output_col = 0
+        for offset in range(0, count, chunk_frames):
+            filtered = self._space_time_filter.process(
+                channels_by_time[:, offset:offset + chunk_frames].T, spec, sample_rate)
+            # Preserve the same packet-relative decimation grid across chunks.
+            selected = filtered[(-offset) % step::step]
+            width = len(selected)
+            result[:, output_col:output_col + width] = selected.T
+            output_col += width
+        return result
+
     def _reset_space_time_buffer(self) -> None:
         self._space_time_buffer = None
         self._space_time_valid_cols = 0
         self._space_time_signature = None
+        self._space_time_filter.reset_state()
+        self._space_time_filter_end = None
+        self._space_time_filter_stream = None
 
     def _settings_signature(self, settings: Dict[str, object]) -> tuple:
         return (
@@ -433,6 +502,8 @@ class DASPlotWorker(QThread):
             float(settings.get("space_time_shift_seconds", 1.0)),
             bool(settings.get("space_time_remove_baseline", True)),
             int(settings.get("space_time_max_pixels", 120000)),
+            bool(settings.get('space_time_filter_enabled', False)),
+            str(settings.get('space_time_filter_spec', '1-')),
         )
 
     def _settings_for_log(self) -> Dict[str, object]:
@@ -463,6 +534,8 @@ class DASPlotWorker(QThread):
             "curve2_high_hz",
             "curve_max_points",
             "space_time_max_pixels",
+            "space_time_filter_enabled",
+            "space_time_filter_spec",
         ]
         return {key: self.settings.get(key) for key in keys}
 

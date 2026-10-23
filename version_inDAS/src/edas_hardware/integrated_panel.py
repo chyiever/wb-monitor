@@ -274,6 +274,20 @@ class IntegratedEDASPanel(HardwareWindow):
             host = self.appearance_host
             if host is not None and getattr(host, '_parameters_ready', False) and not getattr(host, '_parameter_transaction', False):
                 host._write_persisted_configuration(host.get_current_config())
+                self._notify_view_filter_settings()
+
+    def _sync_shared_filter_settings(self, reset_tab1=True):
+        super()._sync_shared_filter_settings(reset_tab1=reset_tab1)
+        self._notify_view_filter_settings()
+
+    def _notify_view_filter_settings(self):
+        host = self.appearance_host
+        signature = self._get_shared_filter_settings()
+        if (host is not None and getattr(host, '_parameters_ready', False)
+                and not self._applying_acquisition_settings
+                and signature != getattr(self, '_last_view_filter_signature', None)):
+            self._last_view_filter_signature = signature
+            host.tab3_settings_changed.emit()
 
     def storage_snapshot(self):
         saver = self.data_saver
