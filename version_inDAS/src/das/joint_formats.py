@@ -148,7 +148,7 @@ def _chunk_timestamp_path(output_dir: str, suffix: str) -> Path:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     now = datetime.now()
-    stem = f"FIPeDAS-{now.strftime('%Y%m%d-%H%M%S.%f')}"
+    stem = f"FIPeDAS-{now.strftime('%Y%m%d-%H%M%S.%f')[:-3]}"
     candidate = output_path / (stem + suffix)
     counter = 1
     while candidate.exists() or candidate.with_suffix(suffix + '.part').exists():
