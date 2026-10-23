@@ -48,8 +48,6 @@ class IntegratedEDASPanel(HardwareWindow):
         self.mode_space_radio.hide()
         self.tab3_comm_enable_check.setText('共享数据至 View / 联合存储')
         self.tab3_comm_enable_check.setChecked(self.params.comm.enabled if getattr(self, '_restored_local_params', False) else True)
-        if not self.time_space_widget.is_plot_enabled():
-            self.time_space_widget.plot_btn.click()
         self._on_source_changed(persist=False)
         self.waveform_enable_check.hide()
         self.monitor_enable_check.hide()
@@ -171,6 +169,9 @@ class IntegratedEDASPanel(HardwareWindow):
         self.phase_channel_spin.setMaximumWidth(100)
         self.phase_channel_spin.setToolTip('SPACE 模式的通道号，以裁剪后第一个通道为 CH 0。')
         controls.addWidget(self.phase_channel_spin)
+        self.integrated_timespace_check = QCheckBox('显示时空图')
+        self.integrated_timespace_check.setChecked(True)
+        controls.addWidget(self.integrated_timespace_check)
         controls.addStretch()
         right_layout.addLayout(controls)
         self.plot_source_notice = QLabel()
@@ -211,6 +212,7 @@ class IntegratedEDASPanel(HardwareWindow):
         old_central.hide()
         self.wave_source_combo.currentIndexChanged.connect(self._on_source_changed)
         self.integrated_psd_check.toggled.connect(self._set_psd_visible)
+        self.integrated_timespace_check.toggled.connect(self._set_timespace_visible)
         self.phase_mode_combo.currentIndexChanged.connect(self._on_phase_mode_selected)
         self.phase_channel_spin.valueChanged.connect(self._on_phase_channel_selected)
 
@@ -302,6 +304,7 @@ class IntegratedEDASPanel(HardwareWindow):
         params.display.wave_source = self.wave_source_combo.currentData()
         params.time_space.axis_unit = self._timespace_unit
         params.time_space.axis_origin = self._timespace_origin
+        params.time_space.display_enabled = self.integrated_timespace_check.isChecked()
         return params
 
     def _apply_params_to_ui(self, params):
@@ -322,6 +325,9 @@ class IntegratedEDASPanel(HardwareWindow):
         self.integrated_psd_check.blockSignals(True)
         self.integrated_psd_check.setChecked(params.display.spectrum_enable)
         self.integrated_psd_check.blockSignals(False)
+        self.integrated_timespace_check.blockSignals(True)
+        self.integrated_timespace_check.setChecked(params.time_space.display_enabled)
+        self.integrated_timespace_check.blockSignals(False)
         self._set_psd_visible(params.display.spectrum_enable, persist=False)
         self.phase_channel_spin.blockSignals(True)
         start, end = resolve_phase_crop_bounds(
@@ -470,7 +476,19 @@ class IntegratedEDASPanel(HardwareWindow):
         self.plot_widget_2.setVisible(visible)
         self.spectrum_enable_check.setChecked(visible)
         self.plot_grid.setRowStretch(1, 1 if visible else 0)
-        self.plot_grid.setRowStretch(2, (3 if visible else 4) if self.wave_source_combo.currentData() != 'raw' else 0)
+        self._set_timespace_visible(self.integrated_timespace_check.isChecked(), persist=False)
+        self.plot_grid.invalidate()
+        if persist and self._plot_controls_ready and not self._applying_acquisition_settings:
+            self._save_local_params()
+
+    def _set_timespace_visible(self, visible, persist=True):
+        enabled = bool(visible) and self.wave_source_combo.currentData() != 'raw'
+        ts = self.time_space_widget
+        ts.plot_widget.setVisible(enabled)
+        ts.histogram_widget.setVisible(enabled)
+        if ts.is_plot_enabled() != enabled:
+            ts.plot_btn.click()
+        self.plot_grid.setRowStretch(2, (3 if self.integrated_psd_check.isChecked() else 4) if enabled else 0)
         self.plot_grid.invalidate()
         if persist and self._plot_controls_ready and not self._applying_acquisition_settings:
             self._save_local_params()
@@ -572,8 +590,6 @@ class IntegratedEDASPanel(HardwareWindow):
         self.spectrum_curve.setData([], [])
         self.plot_source_notice.setText('RAW 采集不产生 PHASE 时空图；切换回 Phase 或 Monitor 后恢复。' if source == 'raw' else '')
         self.plot_source_notice.setVisible(source == 'raw')
-        self.time_space_widget.histogram_widget.setVisible(source != 'raw')
-        self.time_space_widget.plot_widget.setVisible(source != 'raw')
         self._set_psd_visible(self.integrated_psd_check.isChecked(), persist=False)
         self._update_wave_axes()
         if persist:

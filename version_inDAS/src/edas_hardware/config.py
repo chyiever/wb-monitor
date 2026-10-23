@@ -198,6 +198,7 @@ class TimeSpaceParams:
     filter_spec: str = "1-"                 # 1- high-pass, -10 low-pass, 2-10 band-pass
     axis_unit: str = "points"               # points, m, km (display only)
     axis_origin: float = 0.0                # x0 in the selected display unit
+    display_enabled: bool = True           # Integrated Tab2 time-space visibility
 
 
 @dataclass
