@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (QDialog, QDialogButtonBox, QVBoxLayout, QFormLayout
 
 from .config import ClockSource, TriggerDirection, DataSource, calculate_phase_point_num, calculate_cropped_point_count
 from .realtime_filter import parse_filter_spec
+from .dialog_combo import DialogComboBox, contains_owned_combo_popup
 
 
 # label, configuration path, original editor (only its range/options are used)
@@ -239,6 +240,8 @@ class AcquisitionSettingsDialog(QDialog):
     def eventFilter(self, watched, event):
         if self.isVisible():
             if event.type() == QEvent.MouseButtonPress and isinstance(watched, QWidget):
+                if contains_owned_combo_popup(self, event.globalPos()):
+                    return super().eventFilter(watched, event)
                 # Combo popups and owned file dialogs are part of this editor.
                 if watched is not self and not self.isAncestorOf(watched):
                     if not self.frameGeometry().contains(event.globalPos()):
@@ -255,7 +258,7 @@ class AcquisitionSettingsDialog(QDialog):
             editor.setValue(value)
             return editor
         if path == 'time_space.axis_unit':
-            editor = QComboBox()
+            editor = DialogComboBox()
             editor.setView(QListView(editor))
             editor.setStyleSheet('QComboBox { combobox-popup: 0; }')
             for label, unit in [('Points', 'points'), ('Distance (m)', 'm'), ('Distance (km)', 'km')]:
@@ -269,7 +272,7 @@ class AcquisitionSettingsDialog(QDialog):
             editor.setValue(value)
             return editor
         if isinstance(original, QComboBox) or path in ('basic.clk_src', 'basic.trig_dir'):
-            editor = QComboBox()
+            editor = DialogComboBox()
             editor.setView(QListView(editor))
             editor.setMaxVisibleItems(12)
             editor.setStyleSheet('QComboBox { combobox-popup: 0; }')

@@ -92,6 +92,36 @@ class AcquisitionSettingsTests(unittest.TestCase):
             self.assertEqual(d.font().pointSize(), w.font().pointSize())
             d.reject()
 
+    def test_colormap_popup_is_bounded_and_owned_click_does_not_cancel_draft(self):
+        from edas_hardware.dialog_combo import contains_owned_combo_popup
+        with self.window() as (w,folder):
+            p=w.edas_panel
+            d=AcquisitionSettingsDialog(p,w,section='display')
+            d.show(); self.app.processEvents()
+            combo=d.editors['time_space.colormap_type']
+            for index in range(d.tabs.count()):
+                d.tabs.setCurrentIndex(index);self.app.processEvents()
+                if combo.isVisible(): break
+            before=p._collect_params().time_space.colormap_type
+            combo.showPopup();self.app.processEvents()
+            popup=combo.view().window()
+            self.assertTrue(d.frameGeometry().contains(popup.frameGeometry()))
+            target=(combo.currentIndex()+1)%combo.count()
+            model_index=combo.model().index(target,0)
+            combo.view().scrollTo(model_index);self.app.processEvents()
+            # Exercise ownership even when a native popup is positioned outside
+            # the dialog's rectangle, as on the reported Windows desktop.
+            popup.move(d.frameGeometry().right()+10,d.frameGeometry().top())
+            pos=combo.view().visualRect(model_index).center()
+            self.assertTrue(contains_owned_combo_popup(d,combo.view().viewport().mapToGlobal(pos)))
+            QTest.mouseClick(combo.view().viewport(),Qt.LeftButton,pos=pos)
+            self.assertTrue(d.isVisible())
+            self.assertEqual(combo.currentIndex(),target)
+            self.assertEqual(p._collect_params().time_space.colormap_type,before)
+            selected=combo.currentData()
+            self.assertTrue(d.apply_settings(),d.error_label.text())
+            self.assertEqual(p._collect_params().time_space.colormap_type,selected)
+
     def test_cancel_and_invalid_draft_do_not_mutate_configuration(self):
         with self.window() as (w, folder):
             p = w.edas_panel

@@ -5,6 +5,7 @@ from PyQt5.QtWidgets import (QApplication, QDialog, QVBoxLayout, QFormLayout,
     QTabWidget, QScrollArea, QWidget, QLabel, QDialogButtonBox, QComboBox,
     QSpinBox, QDoubleSpinBox, QLineEdit, QCheckBox, QListView)
 from edas_hardware.realtime_filter import parse_filter_spec
+from edas_hardware.dialog_combo import DialogComboBox, contains_owned_combo_popup
 
 
 VIEW_FIELDS = (
@@ -92,7 +93,7 @@ class ViewSettingsDialog(QDialog):
     @staticmethod
     def clone_editor(source):
         if isinstance(source, QComboBox):
-            editor = QComboBox()
+            editor = DialogComboBox()
             editor.setView(QListView(editor))
             editor.setStyleSheet('QComboBox { combobox-popup: 0; }')
             for i in range(source.count()): editor.addItem(source.itemText(i), source.itemData(i))
@@ -195,6 +196,8 @@ class ViewSettingsDialog(QDialog):
     def eventFilter(self, watched, event):
         if self.isVisible():
             if event.type() == QEvent.MouseButtonPress and isinstance(watched, QWidget):
+                if contains_owned_combo_popup(self, event.globalPos()):
+                    return super().eventFilter(watched, event)
                 if watched is not self and not self.isAncestorOf(watched) and not self.frameGeometry().contains(event.globalPos()):
                     self.reject()
                     return True

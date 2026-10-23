@@ -764,11 +764,16 @@ class MainWindow(QMainWindow):
         self.view_timespace_check = QCheckBox("显示时空图")
         self.view_timespace_check.setChecked(self.space_time_plot_btn.isChecked())
         self.view_timespace_check.toggled.connect(self.space_time_plot_btn.setChecked)
-        layout.addWidget(self.view_timespace_check)
+        view_header = QHBoxLayout()
+        view_header.addWidget(self.view_timespace_check)
+        layout.addLayout(view_header)
         self.view_alignment_notice = QLabel()
-        self.view_alignment_notice.setWordWrap(True)
+        self.view_alignment_notice.setWordWrap(False)
+        notice_policy = QSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        notice_policy.setRetainSizeWhenHidden(True)
+        self.view_alignment_notice.setSizePolicy(notice_policy)
         self.view_alignment_notice.hide()
-        layout.addWidget(self.view_alignment_notice)
+        view_header.addWidget(self.view_alignment_notice, 1)
 
         # 单一 QGridLayout 承载 Curve1/PSD1、Curve2/PSD2 与 Space-Time/颜色条：
         # 第 0 列放 Curve1/Curve2/Space-Time，三个时域图同列、天然等宽（时间轴上下对齐）；

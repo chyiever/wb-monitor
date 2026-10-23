@@ -341,11 +341,17 @@ class ViewWorkflowTests(unittest.TestCase):
                         w.update_tab3_plot_payload({'header':{'comm_count':seq,'packet_duration_seconds':1},
                             'curve2_das_time':seq+np.arange(100)/100.,'curve2_das_values':values})
                 feed('fip',0); feed('das',0); w._render_view_plots()
+                self.app.processEvents()
+                plot_geometry = w.tab3_curve1_plot.geometry()
                 previous = w.tab3_curve1_plot.viewRange()[0]
                 feed(leading,1); w._render_view_plots()
+                self.app.processEvents()
+                self.assertEqual(w.tab3_curve1_plot.geometry(),plot_geometry)
                 np.testing.assert_allclose(w.tab3_curve1_plot.viewRange()[0],previous)
                 self.assertFalse(w.view_alignment_notice.isHidden())
                 feed('das' if leading=='fip' else 'fip',1); w._render_view_plots()
+                self.app.processEvents()
+                self.assertEqual(w.tab3_curve1_plot.geometry(),plot_geometry)
                 self.assertTrue(w.view_alignment_notice.isHidden())
                 lo,hi=w.tab3_curve1_plot.viewRange()[0]
                 for item in (w.tab3_curve1_fip_curve,w.tab3_curve2_das_curve):
