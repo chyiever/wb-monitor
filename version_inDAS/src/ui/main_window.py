@@ -1277,11 +1277,11 @@ class MainWindow(QMainWindow):
         layout.addWidget(QLabel("联合格式"), 3, 0)
         self.tab3_joint_format_combo = QComboBox()
         self.tab3_joint_format_combo.addItem("bin32 (DAS float32 / FIP float64)", "bin32")
-        self.tab3_joint_format_combo.addItem("bin (裸二进制流式)", "bin")
+        self.tab3_joint_format_combo.addItem("bin6432 (DAS int32 整数 / FIP float64)", "bin")
         self.tab3_joint_format_combo.addItem("npz (快速无压缩)", "npz")
         self.tab3_joint_format_combo.addItem("h5 (HDF5)", "h5")
         self.tab3_joint_format_combo.setCurrentIndex(0)
-        self.tab3_joint_format_combo.setToolTip("bin32: float32 DAS, float64 FIP；bin: 裸二进制流式写盘；npz: 无压缩归档，优先写入速度，文件较大；h5: HDF5 可选 gzip 压缩。持续吞吐取决于磁盘和实际数据量。")
+        self.tab3_joint_format_combo.setToolTip("bin: DAS 原始 int32 相位整数 / FIP float64；bin32: DAS float32 弧度 / FIP float64；npz: 无压缩归档；h5: HDF5 可选 gzip。持续吞吐取决于磁盘和实际数据量。")
         layout.addWidget(self.tab3_joint_format_combo, 3, 1)
         layout.addWidget(QLabel("H5压缩"), 4, 0)
         self.tab3_joint_h5_compress_combo = QComboBox()
@@ -2822,7 +2822,7 @@ class MainWindow(QMainWindow):
                 edas_rate = channel_count * samples_per_channel * 8 / packet_duration
             else:
                 edas_rate = 0.0
-            joint_rate = joint_fip_rate + edas_rate * (0.5 if self.tab3_joint_format_combo.currentData() == "bin32" else 1.0)
+            joint_rate = joint_fip_rate + edas_rate * (0.5 if self.tab3_joint_format_combo.currentData() in ("bin", "bin32") else 1.0)
             joint_bytes = joint_rate * joint_interval
         except Exception:
             joint_bytes = None

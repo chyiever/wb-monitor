@@ -35,7 +35,7 @@ python .\fipedasREAD\run.py D:\PCCP\FIPeDASDATA\FIPeDAS-20260916-120000.000.npz
 | FIP 独立 | `*.npz` | `wb-monitor-tab1-fip-v3`，字段 `phase_data` |
 | eDAS 独立 | `*.bin + *.json` | `wb-monitor-edas-raw-v1`，二进制矩阵 + JSON 元数据 |
 | FIP+eDAS 联合 | `*.npz` | `wb-monitor-joint-v5` / `-v6` |
-| FIP+eDAS 联合 | `*.bin` | `wb-monitor-joint-bin-v1`，magic `FIPeDAS1` 自描述 |
+| FIP+eDAS 联合 | `*.bin` / `*.bin6432` | v1 `FIPeDAS1` DAS float64 弧度；v2 `FIPeDAS2` DAS float32 弧度；v3 `FIPeDAS3` DAS int32 相位整数，FIP 均为 float64 |
 | FIP+eDAS 联合 | `*.h5` | `wb-monitor-joint-h5-v1`，HDF5 容器（依赖 h5py） |
 
 只含 FIP 或只含 eDAS 的文件也能正常打开：缺失的数据源对应曲线/图显示「无 FIP 数据」/「无 eDAS 数据」，文件信息栏会标注数据类型（`FIP`、`eDAS` 或 `FIP+eDAS`）。

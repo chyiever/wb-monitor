@@ -258,7 +258,7 @@ class AlignedSessionCoordinator(QObject):
         if self._retention_floor_comm_count is None: return ''
         seen, total = set(), 0
         for packet in list(self._fip_packets.values()) + list(self._das_packets.values()):
-            arrays = [getattr(packet, name, None) for name in ('matrix', 'unwrapped_data', 'display_data')]
+            arrays = [getattr(packet, name, None) for name in ('matrix', 'raw_matrix', 'unwrapped_data', 'display_data')]
             for name in ('unwrapped_by_sensor', 'display_by_sensor'):
                 arrays.extend(getattr(packet, name, {}).values())
             for arr in arrays:
@@ -284,6 +284,7 @@ class AlignedSessionCoordinator(QObject):
                     total += sum(int(getattr(value, "nbytes", 0) or 0) for value in mapping.values())
         if self._last_das_comm_count is not None and self._last_das_comm_count in self._das_packets:
             total += int(getattr(self._das_packets[self._last_das_comm_count].matrix, "nbytes", 0) or 0)
+            total += int(getattr(self._das_packets[self._last_das_comm_count].raw_matrix, 'nbytes', 0) or 0)
         return total
 
     def _latest_packet_duration_locked(self) -> float:

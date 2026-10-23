@@ -416,9 +416,9 @@ class EDASManager(QObject):
         started = time.perf_counter()
         if self._joint_storage_enabled and not self._stopping:
             pending = self.coordinator.get_frames_since(self._last_snapshot_end_comm)
-            retained = sum((f.das_packet.matrix.nbytes if f.das_packet else 0) +
+            retained = sum((f.das_packet.matrix.nbytes + getattr(f.das_packet.raw_matrix, 'nbytes', 0) if f.das_packet else 0) +
                 (f.fip_packet.unwrapped_data.nbytes if f.fip_packet else 0) for f in pending)
-            if retained + raw_packet.data_1d.nbytes > self.coordinator.max_cache_bytes:
+            if retained + raw_packet.data_1d.nbytes + getattr(raw_packet.raw_matrix, 'nbytes', 0) > self.coordinator.max_cache_bytes:
                 message = "联合存储未写入数据超过2 GiB；磁盘或FIP对齐落后，停止采集"
                 if not self._storage_fault_latched:
                     self._storage_fault_latched = True
@@ -449,6 +449,7 @@ class EDASManager(QObject):
                 matrix=parsed.matrix,
                 channel_start=parsed.header.channel_start,
                 channel_step=parsed.header.channel_step,
+                raw_matrix=parsed.raw_matrix,
             )
         )
         storage_queued = False
@@ -530,6 +531,12 @@ class EDASManager(QObject):
         matrix = np.ascontiguousarray(
             raw_packet.data_1d.reshape(header.channel_count, samples_per_channel)
         )
+        if raw_packet.raw_matrix is not None:
+            if raw_packet.raw_matrix.dtype != np.dtype('int32') or raw_packet.raw_matrix.shape != matrix.shape:
+                raise ValueError('Invalid raw DAS integer matrix')
+            matrix = raw_packet.raw_matrix.astype(np.float32)
+            matrix *= np.float32(np.pi / 32767.0)
+            matrix.setflags(write=False)
         packet_start_time = header.comm_count * header.packet_duration_seconds
         packet_end_time = packet_start_time + header.packet_duration_seconds
         self.logger.debug(
@@ -544,6 +551,7 @@ class EDASManager(QObject):
             matrix=matrix,
             packet_start_time=packet_start_time,
             packet_end_time=packet_end_time,
+            raw_matrix=raw_packet.raw_matrix,
         )
 
     def _maybe_store_snapshot(self) -> None:

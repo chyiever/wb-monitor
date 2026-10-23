@@ -1,6 +1,7 @@
 """Same manager-facing interface as the receiver, backed by a bounded mailbox."""
 import threading
 import time
+import numpy as np
 from collections import deque
 from PyQt5.QtCore import QTimer
 from .tcp_server import DASTCPServer
@@ -63,17 +64,18 @@ class LocalDASSource(DASTCPServer):
         if abs(packet.header.packet_duration_seconds - self.panel.fip_period_provider()) > 1e-6:
             raise ValueError('共享周期与FIP包时长不一致，请停止两路后统一参数')
         with self._mailbox_lock:
-            if self._mailbox_bytes + packet.data_1d.nbytes > self.MEMORY_BUDGET:
+            packet_bytes = self._packet_bytes(packet)
+            if self._mailbox_bytes + packet_bytes > self.MEMORY_BUDGET:
                 raise BufferError('eDAS路由缓存超过1 GiB，接收端消费速度不足')
             self._mailbox.append(packet)
-            self._mailbox_bytes += packet.data_1d.nbytes
+            self._mailbox_bytes += packet_bytes
 
     def _drain_one(self):
         with self._mailbox_lock:
             if not self._mailbox:
                 return False
             packet = self._mailbox.popleft()
-            self._mailbox_bytes -= packet.data_1d.nbytes
+            self._mailbox_bytes -= self._packet_bytes(packet)
         self._last_data_time = time.time()
         self.packets_received += 1
         count = packet.header.comm_count
@@ -86,3 +88,9 @@ class LocalDASSource(DASTCPServer):
         self.statistics_updated.emit({'packets_received': self.packets_received,
             'total_data_received': self.total_data_received, 'missing_packets': self.missing_packets})
         return True
+
+    @staticmethod
+    def _packet_bytes(packet):
+        raw = packet.raw_matrix
+        extra = raw.nbytes if raw is not None and not np.shares_memory(raw, packet.data_1d) else 0
+        return packet.data_1d.nbytes + extra

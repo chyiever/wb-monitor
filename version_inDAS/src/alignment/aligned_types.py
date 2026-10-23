@@ -43,6 +43,7 @@ class DASSessionPacket:
     matrix: np.ndarray
     channel_start: int = 0
     channel_step: int = 1
+    raw_matrix: Optional[np.ndarray] = None
 
 
 @dataclass

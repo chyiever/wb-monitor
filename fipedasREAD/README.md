@@ -1,6 +1,8 @@
 # FIP/eDAS Joint Replay
 
-`fipedasREAD` 是独立的 FIP/eDAS 数据回放工具，支持 wb-monitor 联合 NPZ、BIN v1（FIPeDAS1）、bin32 v2（FIPeDAS2）、H5，以及已有的独立 FIP / eDAS 文件格式。
+`fipedasREAD` 是独立的 FIP/eDAS 数据回放工具，支持 wb-monitor 联合 NPZ、BIN v1（FIPeDAS1）、bin32 v2（FIPeDAS2）、BIN6432 v3（FIPeDAS3，`.bin6432`）、H5，以及已有的独立 FIP / eDAS 文件格式。
+
+新版 `.bin6432` 保存 DAS int32 相位整数和全部接收路数的 FIP float64。读取器按文件魔数/类型校验，DAS 使用只读内存映射保留 int32，不自动转换弧度；信息栏显示“相位整数”。曲线/时空图显示整数幅值，回放去均值或滤波仍按用户参数生效。不同单位的整数文件与历史弧度文件不能混合拼接，应分别打开。旧 `.bin` v1/v2 保持原有弧度解释，不通过改后缀转换数据。旧 dist EXE 未重打包，读取新格式需运行当前源码或自行重新打包。
 
 ## 2026-10-23 大文件快速查看
 

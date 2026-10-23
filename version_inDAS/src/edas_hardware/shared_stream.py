@@ -144,23 +144,25 @@ class SharedStreamManager(QObject):
             if not settings['enabled']:
                 continue
             matrix = pieces[0] if len(pieces) == 1 else np.concatenate(pieces, axis=0)
-            # Channel-first float32 radians match the old TCP semantics while
-            # avoiding its bytes serialization and float64 expansion.
-            radians = np.ascontiguousarray(matrix[::temporal_step, start:end + 1:spatial_step].T, dtype=np.float32)
-            radians *= np.float32(np.pi / 32767.0)
-            radians.setflags(write=False)
+            # Transport exact integers. The consumer derives radians only for
+            # display/float formats, so the routing mailbox owns one matrix.
+            # Preserve exact device integers for BIN; never reconstruct them
+            # from rounded float32 radians. Own the selected block independently.
+            raw_matrix = np.array(matrix[::temporal_step, start:end + 1:spatial_step].T,
+                                  dtype=np.int32, order='C', copy=True)
+            raw_matrix.setflags(write=False)
             duration = period_frames / float(params.basic.scan_rate)
             rate = float(params.basic.scan_rate) / temporal_step
-            header = DASPacketHeader(count, rate, radians.shape[0], radians.nbytes, duration)
+            header = DASPacketHeader(count, rate, raw_matrix.shape[0], raw_matrix.nbytes, duration)
             header.channel_start = start
             header.channel_step = spatial_step
             if self.sink is not None:
-                self.sink(DASRawPacket(header, radians.reshape(-1), time.time()))
+                self.sink(DASRawPacket(header, raw_matrix.reshape(-1), time.time(), raw_matrix))
             self._sent += 1
-            self._total_bytes += radians.nbytes
+            self._total_bytes += raw_matrix.nbytes
             self.statistics_changed.emit({'acquired_packets': self._count, 'sent_packets': self._sent,
-                'last_comm_count': count, 'bytes_sent': self._total_bytes, 'channel_count': radians.shape[0],
-                'sample_rate_hz': rate, 'packet_duration_seconds': duration, 'data_bytes': radians.nbytes})
+                'last_comm_count': count, 'bytes_sent': self._total_bytes, 'channel_count': raw_matrix.shape[0],
+                'sample_rate_hz': rate, 'packet_duration_seconds': duration, 'data_bytes': raw_matrix.nbytes})
 
     def get_diagnostics_snapshot(self):
         return {'queued_bytes': self._bytes, 'queued_blocks': len(self._queue),

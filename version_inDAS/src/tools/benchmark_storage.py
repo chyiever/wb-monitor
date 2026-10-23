@@ -20,7 +20,7 @@ from das.joint_formats import save_bin
 
 
 def run(directory, seconds, joint_format="bin"):
-    das_dtype = "<f4" if joint_format == "bin32" else "<f8"
+    das_dtype = "<f4" if joint_format == "bin32" else "<i4"
     block_frames, points, scan_rate = 5000, 3000, 50000
     raw = np.random.default_rng(7821).integers(-32767, 32768, block_frames * points, dtype=np.int32)
     matrix = np.ascontiguousarray(raw.reshape(block_frames, points).T, dtype=np.float32)
@@ -58,7 +58,8 @@ def run(directory, seconds, joint_format="bin"):
             if mode in ('joint', 'combined'):
                 for second in range(seconds):
                     frames = [AlignedPacketFrame(second * 10 + i, second + i / 10, .1,
-                        das_packet=DASSessionPacket(second * 10 + i, .1, scan_rate, points, matrix),
+                        das_packet=DASSessionPacket(second * 10 + i, .1, scan_rate, points, matrix,
+                            raw_matrix=raw.reshape(block_frames, points).T),
                         fip_missing=True) for i in range(10)]
                     save_bin(frames, str(folder / 'joint'), 'synthetic-benchmark', das_dtype=das_dtype)
             if producer: producer.join()
@@ -66,7 +67,7 @@ def run(directory, seconds, joint_format="bin"):
             if saver: saver.stop()
             elapsed = time.monotonic() - started
             drain = time.monotonic() - drain_started
-            written = sum(p.stat().st_size for p in folder.rglob('*.bin'))
+            written = sum(p.stat().st_size for p in folder.rglob('*.bin*') if not p.name.endswith('.part'))
             mode_result = {'elapsed_s': round(elapsed, 4), 'written_bytes': written,
                 'output_MB_s': round(written / elapsed / 1e6, 2),
                 'equivalent_input_MB_s': round(raw.nbytes * blocks / elapsed / 1e6, 2),

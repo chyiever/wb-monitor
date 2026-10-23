@@ -302,8 +302,8 @@ class AcquisitionSettingsTests(unittest.TestCase):
                 self.assertEqual(len(packets), 1)
                 packet = packets[0]
                 self.assertEqual(packet.header.sample_rate_hz, 500)
-                expected_shared = raw[::2, 2:12:2].T * (np.pi / 32767.)
-                np.testing.assert_allclose(packet.data_1d.reshape(5, 500), expected_shared, rtol=1e-6)
+                expected_shared = raw[::2, 2:12:2].T
+                np.testing.assert_array_equal(packet.data_1d.reshape(5, 500), expected_shared)
                 files = sorted((folder / 'raw').glob('*.bin'))
                 self.assertEqual(len(files), 5)
                 saved = np.concatenate([np.fromfile(path, dtype=np.int32).reshape(-1, 100) for path in files])

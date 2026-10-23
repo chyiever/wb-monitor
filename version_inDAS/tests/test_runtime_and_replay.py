@@ -114,8 +114,8 @@ class RuntimeAndReplayTests(unittest.TestCase):
             stream._consume(raw,params,settings)
             stream._consume(raw,params,dict(settings,channel_end=width-1))
             self.assertEqual(packets[0].header.channel_count,width)
-            expected = np.concatenate([raw,raw]).T * np.float32(np.pi/32767)
-            np.testing.assert_allclose(packets[0].data_1d.reshape(width,4),expected,rtol=1e-6)
+            expected = np.concatenate([raw,raw]).T
+            np.testing.assert_array_equal(packets[0].data_1d.reshape(width,4),expected)
         finally: stream.shutdown()
 
     def test_missing_history_bounded_but_totals_preserved(self):

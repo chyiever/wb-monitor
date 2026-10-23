@@ -240,7 +240,8 @@ def _compute_curve(curve_index: int, request: CurveRequest, data: JointReplayDat
     else:
         times = rel_t
     plot_times, plot_values = decimate_for_plot(times, y, request.max_points)
-    return CurveResult(plot_times, plot_values, f"Waveform {curve_index}: {request.source}")
+    unit = ' [phase integer]' if request.source not in ('FIP1', 'FIP2') and data.das_units == 'phase_integer' else ''
+    return CurveResult(plot_times, plot_values, f"Waveform {curve_index}: {request.source}{unit}")
 
 
 def _compute_space(request: SpaceRequest, data: JointReplayData) -> tuple[np.ndarray, tuple[float, float, float, float], tuple[float, float]]:
@@ -307,6 +308,7 @@ def _file_info_text(data: JointReplayData) -> str:
         f"时长: {duration:.3f} s（{data.frame_count} 帧）",
         f"采样率: FIP {fip_rate}  |  DAS {das_rate}",
         f"DAS通道数: {das_channels}",
+        f"DAS单位: {'相位整数 (int32，未换算弧度)' if data.das_units == 'phase_integer' else data.das_units}",
         f"数据量: FIP {_human_samples(fip_samples)}  |  DAS {_human_samples(das_samples)}  |  文件 {_human_bytes(file_size)}",
     ]
     return "\n".join(lines)

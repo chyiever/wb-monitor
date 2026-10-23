@@ -27,6 +27,7 @@ class DASRawPacket:
     header: DASPacketHeader
     data_1d: np.ndarray
     receive_timestamp: float = 0.0
+    raw_matrix: np.ndarray = None
 
 
 @dataclass
@@ -37,3 +38,4 @@ class DASParsedPacket:
     matrix: np.ndarray
     packet_start_time: float
     packet_end_time: float
+    raw_matrix: np.ndarray = None

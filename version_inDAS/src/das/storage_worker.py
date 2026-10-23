@@ -68,6 +68,7 @@ def _estimate_frame_bytes(frame: Any) -> int:
                 total += sum(_array_nbytes(value) for value in mapping.values())
     if das_packet is not None:
         total += _array_nbytes(getattr(das_packet, "matrix", None))
+        total += _array_nbytes(getattr(das_packet, "raw_matrix", None))
     return total
 
 

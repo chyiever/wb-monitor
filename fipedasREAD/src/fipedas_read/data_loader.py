@@ -6,6 +6,7 @@ Supported formats (see docs/FIP／eDAS 通信协议与数据存储机制.md):
 - eDAS 独立 `.bin + .json`  (`wb-monitor-edas-raw-v1`)
 - FIP+eDAS 联合 `.npz`      (`wb-monitor-joint-v5` / `-v6`)
 - FIP+eDAS 联合 `.bin`      (`wb-monitor-joint-bin-v1`, magic "FIPeDAS1")
+- FIP+eDAS 联合 `.bin6432`  (v3 FIPeDAS3, DAS int32 / FIP float64)
 - FIP+eDAS 联合 `.h5`       (`wb-monitor-joint-h5-v1`)
 """
 
@@ -48,6 +49,7 @@ class JointReplayData:
     fip_present: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))
     das_present: np.ndarray = field(default_factory=lambda: np.array([], dtype=bool))
     source_paths: list[Path] = field(default_factory=list)
+    das_units: str = 'rad'
 
     def __post_init__(self) -> None:
         if not self.source_paths:
@@ -88,6 +90,7 @@ def iter_replay_files(path: Path) -> list[Path]:
     files: list[Path] = []
     files += sorted(path.glob("FIPeDAS-*.npz"))
     files += sorted(path.glob("FIPeDAS-*.bin"))
+    files += sorted(path.glob('*.bin6432'))
     files += sorted(path.glob("FIPeDAS-*.h5"))
     files += sorted(p for p in path.glob("*-FIP-*.npz"))
     files += sorted(p for p in path.glob("*-FIP2-*.npz"))
@@ -116,6 +119,8 @@ def load_data_file(path: Path) -> JointReplayData:
         return load_fip_npz(path)
     if suffix == ".h5":
         return load_joint_h5(path)
+    if suffix == '.bin6432':
+        return load_joint_bin(path, lazy=True)
     if suffix == ".bin":
         if path.name.startswith("FIPeDAS-"):
             return load_joint_bin(path, lazy=True)
@@ -287,14 +292,16 @@ def load_joint_bin(path: Path, lazy: bool = False) -> JointReplayData:
             f.seek(size, 1)
             return arr if lazy else arr.copy()
         magic = f.read(8)
-        if magic not in (b"FIPeDAS1", b"FIPeDAS2"):
+        if magic not in (b"FIPeDAS1", b"FIPeDAS2", b"FIPeDAS3"):
             raise ValueError(f"不是 FIPeDAS joint bin 文件: {path.name}")
         header_len = struct.unpack("<I", exact(4))[0]
         if header_len > 16 * 1024 * 1024: raise ValueError('联合 BIN 元数据头超过 16 MiB')
         header = json.loads(exact(header_len).decode("utf-8"))
         format_version = str(header.get("format_version", "wb-monitor-joint-bin-v1"))
         created_at = str(header.get("created_at", "") or header.get("wall_clock_start", ""))
-        das_dtype = np.dtype("<f4" if magic == b"FIPeDAS2" else "<f8")
+        das_dtype = np.dtype({b'FIPeDAS1': '<f8', b'FIPeDAS2': '<f4', b'FIPeDAS3': '<i4'}[magic])
+        if magic == b'FIPeDAS3' and (header.get('das_dtype') != '<i4' or header.get('das_units') != 'phase_integer'):
+            raise ValueError('joint bin v3 requires int32 DAS phase integers')
         if magic == b"FIPeDAS2" and header.get("das_dtype") != "<f4":
             raise ValueError("joint bin v2 DAS dtype must be float32")
 
@@ -344,7 +351,7 @@ def load_joint_bin(path: Path, lazy: bool = False) -> JointReplayData:
             das_rates.append(das_r)
             das_counts.append(das_c)
 
-    return _make_joint(
+    result = _make_joint(
         path=path,
         format_version=format_version,
         created_at=created_at,
@@ -360,6 +367,8 @@ def load_joint_bin(path: Path, lazy: bool = False) -> JointReplayData:
         fip_present=fip_present,
         das_present=das_present,
     )
+    result.das_units = str(header.get('das_units', 'rad'))
+    return result
 
 
 def load_joint_h5(path: Path) -> JointReplayData:
@@ -443,6 +452,9 @@ def merge_joint_data(datasets: list[JointReplayData]) -> JointReplayData:
         raise ValueError("没有可合并的数据文件")
     if len(datasets) == 1:
         return datasets[0]
+    units = {data.das_units for data in datasets if data.has_das}
+    if len(units) > 1:
+        raise ValueError('不能混合拼接 DAS 相位整数与弧度文件，请分别打开')
 
     ordered = sorted(datasets, key=lambda d: (d.start_time, d.created_at or "", str(d.path)))
 
@@ -510,6 +522,7 @@ def merge_joint_data(datasets: list[JointReplayData]) -> JointReplayData:
         fip_present=np.asarray(fip_present, dtype=bool),
         das_present=np.asarray(das_present, dtype=bool),
         source_paths=[data.path for data in ordered],
+        das_units=next(iter(units), 'rad'),
     )
 
 
@@ -685,6 +698,8 @@ def _is_supported_file(path: Path) -> bool:
     if path.suffix.lower() == ".npz":
         return True
     if path.suffix.lower() == ".h5":
+        return True
+    if path.suffix.lower() == '.bin6432':
         return True
     if path.suffix.lower() == ".bin":
         return path.name.startswith("FIPeDAS-") or path.with_suffix(".json").exists()

@@ -1,7 +1,7 @@
 """Pluggable joint (FIP+eDAS) storage backends: bin / npz / h5.
 
 Design goals:
-    bin  - bare-binary streaming writer. No compression, pure buffered I/O.
+    bin  - int32 DAS + float64 FIP, FIPeDAS3, .bin6432.
            Sustains the full raw data rate (target >= 500 MB/s on NVMe/SSD).
     npz  - uncompressed per-chunk archive (legacy keys, backward compatible).
     h5   - h5py container with optional gzip compression and chunking.
@@ -173,26 +173,35 @@ def save_bin(
 
     Layout (little-endian):
         magic(8) | header_len(u32) | header_json | frame records...
-    Each frame record:
+    Each frame record (DAS dtype selected by magic/header):
         comm(i32) start(f64) duration(f64) fip_present(u8) das_present(u8)
         fip_sensor_count(i32) fip_sample_rate(f64)
         das_channel_count(i32) das_sample_rate(f64) n_fip_arrays(i32)
         then for each fip array: pts(i32) + raw f64 bytes
-        then das: rows(i32) cols(i32) + raw f64 bytes
+        then das: rows(i32) cols(i32) + DAS bytes (i4/f4/f8)
+
+    The low-level default remains legacy f8 for old callers. The application's
+    save_joint('bin') selects i4 and .bin6432; bin32 selects f4 and .bin.
 
     ``fip_downsample`` decimates each FIP sensor array (arr[::factor]) and the
     reported FIP sample rate is divided by the same factor.
     """
     meta = build_chunk_metadata(frames, created_at, wall_clock_start, fip_downsample)
-    if das_dtype not in ("<f4", "<f8"):
+    if das_dtype not in ("<f4", "<f8", "<i4"):
         raise ValueError("Unsupported DAS binary dtype")
-    meta["format_version"] = "wb-monitor-joint-bin-v2" if das_dtype == "<f4" else FORMAT_VERSION_BIN
+    meta["format_version"] = {'<f4': 'wb-monitor-joint-bin-v2', '<i4': 'wb-monitor-joint-bin-v3'}.get(das_dtype, FORMAT_VERSION_BIN)
     meta["das_dtype"] = das_dtype
-    file_path = _chunk_timestamp_path(output_dir, ".bin")
+    meta['fip_dtype'] = '<f8'
+    if das_dtype == '<i4':
+        meta['das_units'] = 'phase_integer'
+        meta['das_scale_to_rad'] = float(np.pi / 32767.0)
+        meta['das_storage_source'] = 'device_phase_after_crop_and_shared_selection'
+    suffix = '.bin6432' if das_dtype == '<i4' else '.bin'
+    file_path = _chunk_timestamp_path(output_dir, suffix)
     header_json = json.dumps(meta, ensure_ascii=False).encode("utf-8")
-    partial_path = file_path.with_suffix(".bin.part")
+    partial_path = file_path.with_suffix(suffix + '.part')
     with open(partial_path, "wb", buffering=4 * 1024 * 1024) as handle:
-        handle.write(b"FIPeDAS2" if das_dtype == "<f4" else BIN_MAGIC)
+        handle.write({'<f4': b'FIPeDAS2', '<i4': b'FIPeDAS3'}.get(das_dtype, BIN_MAGIC))
         handle.write(struct.pack("<I", len(header_json)))
         handle.write(header_json)
         for frame in frames:
@@ -208,6 +217,16 @@ def _write_bin_frame(handle: Any, frame: Any, fip_downsample: int = 1, das_dtype
     das = getattr(frame, "das_packet", None)
     fip_arrays = _frame_fip_arrays(frame, fip_downsample) if fip is not None else []
     das_matrix = _frame_das_matrix(frame)
+    if das_dtype == '<i4' and das is not None:
+        raw = getattr(das, 'raw_matrix', None)
+        if raw is None and das_matrix.dtype == np.dtype('int32'):
+            raw = das_matrix
+        if raw is None or np.asarray(raw).dtype != np.dtype('int32'):
+            raise ValueError('BIN int32 requires original DAS integers; radians cannot be converted back losslessly')
+        raw = np.asarray(raw)
+        if raw.shape != das_matrix.shape:
+            raise ValueError('BIN raw DAS shape does not match shared matrix')
+        das_matrix = raw
     fip_factor = max(1, int(fip_downsample or 1))
     fip_sensor_count = int(getattr(fip, "sensor_count", 0)) if fip is not None else 0
     fip_rate = float(getattr(fip, "sample_rate_hz", 0.0)) / fip_factor if fip is not None else 0.0
@@ -444,7 +463,7 @@ def save_joint(
     if fmt == "bin32":
         return save_bin(frames, output_dir, created_at, wall_clock_start, factor, das_dtype="<f4")
     if fmt == "bin":
-        return save_bin(frames, output_dir, created_at, wall_clock_start, factor)
+        return save_bin(frames, output_dir, created_at, wall_clock_start, factor, das_dtype='<i4')
     if fmt == "h5":
         try:
             return save_h5(
@@ -462,5 +481,5 @@ def save_joint(
             logger.warning(
                 "h5py is not installed; falling back joint storage from h5 to bin for this chunk"
             )
-            return save_bin(frames, output_dir, created_at, wall_clock_start, factor)
+            return save_bin(frames, output_dir, created_at, wall_clock_start, factor, das_dtype='<i4')
     return save_npz(frames, output_dir, created_at, wall_clock_start, factor)

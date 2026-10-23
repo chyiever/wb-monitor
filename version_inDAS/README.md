@@ -4,7 +4,7 @@
 
 软件将 PCIe-7821 eDAS 上位机与 wb-monitor 合并在同一进程，提供 eDAS 独立采集、FIP 独立通信和两路联合运行。相邻 `version_exDAS` 为外置 eDAS TCP 版本，阶段版本 `v_exDAS_261021`，对应 `master1/dev1`。
 
-存储格式、BIN/BIN32 区别、DAS/FIP 是否滤波及“原始数据”的边界，详见 **[数据存储说明](docs/数据存储说明.md)**。联合 BIN 使用 DAS float64，BIN32 使用 DAS float32，FIP 均为 float64；两者都不经过 GUI 显示滤波。当前内置共享 DAS 本身已是 float32 弧度，使用 BIN 不会增加源数据精度。设备相位处理、Crop、共享与存储降采样仍会影响保存数据；Tab2 Save DS 是空间抽点，FIP 独立存储还可能修复异常极值。
+存储格式、BIN/BIN32 区别、DAS/FIP 是否滤波及“原始数据”的边界，详见 **[数据存储说明](docs/数据存储说明.md)**。新版联合 BIN 在界面标为 **bin6432**：DAS 保存原始 int32 相位整数，不转换弧度；FIP 保持 float64；文件后缀 `.bin6432`，魔数 `FIPeDAS3`。BIN32 保持 DAS float32 弧度、FIP float64。两者均不经过 GUI 显示滤波。设备相位处理、Crop、共享与存储降采样仍影响保存范围和样本；Tab2 Save DS 是空间抽点，FIP 独立存储还可能修复异常极值。
 
 ## 1. 安装和启动
 
@@ -215,7 +215,7 @@ TCP 为字节流，接收端按包头/包体长度读取，支持分次到达。
 | eDAS 独立 BZ | 原始 int32，经 Bitshuffle + Zstd 压缩；吞吐取决于数据可压缩性、CPU 与线程设置。 |
 | FIP 独立 NPZ | 未压缩 NPZ，保存 FIP 保存链路数据和元数据；双传感器按两路组织。 |
 | 联合 bin32（默认） | 魔数 `FIPeDAS2`；FIP float64、DAS float32 弧度，兼顾容量与吞吐。float32 约 7 位有效数字。 |
-| 联合 bin | 旧魔数 `FIPeDAS1`，DAS 使用 float64；同等 DAS 数据所需空间约为 int32 的两倍。 |
+| 联合 bin6432（配置键 bin） | 新魔数 `FIPeDAS3`，后缀 `.bin6432`；DAS int32 相位整数，FIP float64。直接保存保留的设备整数，不从弧度反算；旧 `.bin` v1 浮点文件仍可回读。 |
 | 联合 npz | 快速无压缩 NPZ，保留原字段与精度，现有 fipedasREAD 可读；文件较大，避免高吞吐时 ZIP 压缩积压。历史压缩 NPZ 仍可读取。 |
 | 联合 h5 | HDF5 可选压缩；压缩会增加 CPU 开销。需可用的 h5py；缺少依赖时实现会回退到 BIN，应检查日志和实际文件。 |
 
@@ -331,7 +331,7 @@ EXE 的 `config/` 和 `logs/` 保存在 EXE 同目录，不放在单文件解压
 
 ### 9.3 联合文件快速查看
 
-根目录 `fipedasREAD` 的当前源码支持联合 BIN v1、bin32 v2、NPZ、H5。运行：
+根目录 `fipedasREAD` 的当前源码支持联合 BIN v1、bin32 v2、新 BIN6432 v3、NPZ、H5。v3 按 int32 原样加载，信息栏显示整数单位，不自动换算弧度；整数与弧度文件应分别打开。运行：
 
 ```powershell
 python ../fipedasREAD/run.py D:/PCCP/FIPeDASDATA

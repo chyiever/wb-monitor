@@ -189,9 +189,9 @@ class DASPlotWorker(QThread):
     @staticmethod
     def _packet_bytes(packet: DASParsedPacket) -> int:
         try:
-            return max(int(packet.header.data_bytes), int(getattr(packet.matrix, "nbytes", 0)))
+            return max(int(packet.header.data_bytes), int(getattr(packet.matrix, "nbytes", 0))) + int(getattr(packet.raw_matrix, 'nbytes', 0) or 0)
         except Exception:
-            return int(getattr(packet.matrix, "nbytes", 0) or 0)
+            return int(getattr(packet.matrix, "nbytes", 0) or 0) + int(getattr(packet.raw_matrix, 'nbytes', 0) or 0)
 
     def _process_packet(self, packet: DASParsedPacket) -> None:
         with self._settings_lock:
