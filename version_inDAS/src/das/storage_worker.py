@@ -77,7 +77,7 @@ class DASStorageWorker(QThread):
     # snapshot cursor only when ok=True. Negative end_comm is never expected.
     request_finished = pyqtSignal(int, bool)
 
-    """独立线程，消费存储请求并执行 np.savez_compressed 写盘。
+    """独立线程，消费存储请求并按选择的格式写盘。
 
     主线程通过 enqueue_request(request) 将 DASStorageRequest 放入队列，
     本线程在后台持续消费，不阻塞主线程的 Qt 事件循环。

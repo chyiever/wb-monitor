@@ -194,6 +194,54 @@ class RuntimeAndReplayTests(unittest.TestCase):
             self.assertNotEqual(first,second)
             self.assertTrue(first.exists() and second.exists())
 
+    def test_stop_tail_respects_one_second_files_and_fixed_boundary(self):
+        from das.manager import EDASManager
+        with self.helper.window() as (w, folder):
+            c = AlignedSessionCoordinator(); c.start_session()
+            w.tab3_joint_storage_toggle_btn.setChecked(True)
+            w.tab3_storage_interval_spin.setValue(1)
+            w.tab3_storage_path_edit.setText(str(folder / 'joint'))
+            m = EDASManager(w,c); m.sync_from_ui()
+            for seq in range(3):
+                arr=np.arange(4.)
+                c.push_fip_packet(FIPSessionPacket(seq,1,4,arr,arr))
+                c.push_das_packet(DASSessionPacket(seq,1,4,2,np.zeros((2,4))))
+            # New FIP-only data may still arrive during an independent DAS stop.
+            def late_packet(seq, ok):
+                if seq==0:
+                    arr=np.arange(4.)
+                    c.push_fip_packet(FIPSessionPacket(3,1,4,arr,arr))
+            m.storage_worker.request_finished.connect(late_packet)
+            m.storage_worker.start()
+            try:
+                m._flush_joint_on_stop()
+                self.assertEqual(m._last_snapshot_end_comm,2)
+                self.assertEqual(m.storage_worker.stats['requests_saved'],3)
+                files=list((folder/'joint').iterdir())
+                self.assertEqual(len(files),3)
+                for path in files:
+                    self.assertEqual(len(load_data_file(path).comm_counts),1)
+            finally: m.stop()
+
+    def test_joint_and_manager_stop_ignore_reentrant_calls(self):
+        from das.manager import EDASManager
+        with self.helper.window() as (w, folder):
+            calls=[]
+            def during_drain():
+                calls.append('drain')
+                self.assertFalse(w.data_comm_both_btn.isEnabled())
+                self.assertFalse(w.joint_stop_btn.isEnabled())
+                w._stop_joint_acquisition()
+            w.joint_stop_preparing.connect(lambda:calls.append('cut-input'))
+            w.tab3_stop_requested.connect(during_drain)
+            w._stop_joint_acquisition()
+            self.assertEqual(calls,['cut-input','drain'])
+            m=EDASManager(w,AlignedSessionCoordinator())
+            with patch.object(m,'_stop_pipeline',side_effect=m.stop) as stop:
+                m.stop()
+                self.assertEqual(stop.call_count,1)
+            self.assertFalse(m._stopping)
+
     def test_backlog_chunking_preserves_all_frames_in_order(self):
         from das.manager import EDASManager
         frames = [AlignedPacketFrame(i,float(i),1.,das_packet=DASSessionPacket(i,1,4,2,np.zeros((2,4)))) for i in range(13)]
@@ -221,7 +269,7 @@ class RuntimeAndReplayTests(unittest.TestCase):
             data = load_data_file(Path(path))
             np.testing.assert_array_equal(data.das_frames[1],matrix)
             self.assertFalse(list(Path(folder).glob('*.part')))
-            with patch('das.joint_formats.np.savez_compressed',side_effect=OSError('disk full')):
+            with patch('das.joint_formats.np.savez',side_effect=OSError('disk full')):
                 with self.assertRaises(OSError): save_npz(frames,folder,'test')
             self.assertEqual(len(list(Path(folder).glob('*.npz'))),1)
             self.assertFalse(list(Path(folder).glob('*.part')))

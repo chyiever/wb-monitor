@@ -58,6 +58,8 @@ class EDASManager(QObject):
         self._watchdog_timer.timeout.connect(self._check_disconnect_timeout)
         self._last_snapshot_end_comm = -1
         self._joint_write_pending = False
+        self._stopping = False
+        self._storage_fault_latched = False
         self._pending_wall_start: Optional[str] = None
         self._disconnect_alert_active = False
         self._setup_connections()
@@ -122,6 +124,15 @@ class EDASManager(QObject):
         return False
 
     def stop(self) -> None:
+        if self._stopping:
+            return
+        self._stopping = True
+        try:
+            self._stop_pipeline()
+        finally:
+            self._stopping = False
+
+    def _stop_pipeline(self) -> None:
         """Stop the Tab3 pipeline."""
         if not self.storage_worker.isRunning() and not self.plot_worker.isRunning():
             return
@@ -131,6 +142,7 @@ class EDASManager(QObject):
         self.server.stop_server()
         try:
             self._flush_joint_on_stop()
+            self.coordinator.protect_unflushed_frames_after(None)
         except Exception as exc:
             self.logger.exception('Joint storage tail was NOT fully persisted')
             self.main_window.show_tab3_error(f'联合尾部保存失败：{exc}；请保留日志并检查磁盘')
@@ -149,6 +161,8 @@ class EDASManager(QObject):
 
     def _flush_joint_on_stop(self):
         from PyQt5.QtWidgets import QApplication
+        initial_frames = self.coordinator.get_frames_since(self._last_snapshot_end_comm)
+        tail_end_comm = initial_frames[-1].comm_count if initial_frames else self._last_snapshot_end_comm
         deadline = time.monotonic() + 60.0
         while self._joint_write_pending and time.monotonic() < deadline:
             QApplication.processEvents()
@@ -158,10 +172,13 @@ class EDASManager(QObject):
         settings = self.main_window.get_tab3_settings()
         if not settings['storage'].get('joint_enabled', False):
             return
-        frames = self.coordinator.get_frames_since(self._last_snapshot_end_comm)
+        frames = [f for f in self.coordinator.get_frames_since(self._last_snapshot_end_comm) if f.comm_count <= tail_end_comm]
+        # Freeze the stop boundary. An independently running FIP source must
+        # not extend this tail while the event loop delivers write completions.
         while frames:
             frames, _boundary = self._storage_prefix(frames)
-            frames, _byte_boundary = self._bounded_storage_prefix(frames)
+            frames, _byte_boundary = self._bounded_storage_prefix(frames,
+                interval_seconds=max(1., float(settings['storage'].get('interval_seconds', self._joint_interval_seconds))))
             # Persist tail pairs and explicit missing-source flags on shutdown.
             request = DASStorageRequest(frames, settings['storage']['path'], frames[-1].comm_count,
                 wall_clock_start=self._pending_wall_start, fip_downsample=self._joint_fip_downsample)
@@ -175,11 +192,12 @@ class EDASManager(QObject):
             if self._last_snapshot_end_comm < request.end_comm:
                 detail = self.storage_worker.last_error or '存储请求未返回成功，请检查日志'
                 raise OSError('联合尾部写盘失败，游标未推进；原因：' + detail)
-            frames = self.coordinator.get_frames_since(self._last_snapshot_end_comm)
+            frames = [f for f in self.coordinator.get_frames_since(self._last_snapshot_end_comm) if f.comm_count <= tail_end_comm]
 
     def reset(self) -> None:
         """Reset local state for a new monitoring session."""
         self._last_snapshot_end_comm = -1
+        self._storage_fault_latched = False
         self._joint_write_pending = False
         self._pending_wall_start = None
         self._disconnect_alert_active = False
@@ -392,14 +410,18 @@ class EDASManager(QObject):
 
     def _handle_raw_packet(self, raw_packet: DASRawPacket) -> None:
         started = time.perf_counter()
-        if self._joint_storage_enabled:
+        if self._joint_storage_enabled and not self._stopping:
             pending = self.coordinator.get_frames_since(self._last_snapshot_end_comm)
             retained = sum((f.das_packet.matrix.nbytes if f.das_packet else 0) +
                 (f.fip_packet.unwrapped_data.nbytes if f.fip_packet else 0) for f in pending)
             if retained + raw_packet.data_1d.nbytes > self.coordinator.max_cache_bytes:
                 message = "联合存储未写入数据超过2 GiB；磁盘或FIP对齐落后，停止采集"
-                self.main_window.edas_panel.pipeline_fault.emit(message)
-                self.logger.error(message)
+                if not self._storage_fault_latched:
+                    self._storage_fault_latched = True
+                    self.logger.error(message)
+                    self.main_window._storage_error = message
+                    self.main_window.status_bar.showMessage(message, 30000)
+                    QTimer.singleShot(0, self.main_window._stop_joint_acquisition)
                 return
         parsed = self._parse_packet(raw_packet)
         self._log_das_value_stats(parsed)
@@ -604,7 +626,8 @@ class EDASManager(QObject):
                 first_incomplete.das_missing,
             )
         frames, shape_boundary = self._storage_prefix(complete_frames)
-        frames, byte_boundary = self._bounded_storage_prefix(frames)
+        frames, byte_boundary = self._bounded_storage_prefix(frames,
+            interval_seconds=max(1., float(storage_settings.get('interval_seconds', self._joint_interval_seconds))))
         end_comm = frames[-1].comm_count
 
         interval_seconds = max(1.0, float(storage_settings.get("interval_seconds", self._joint_interval_seconds)))
@@ -663,7 +686,7 @@ class EDASManager(QObject):
         )
 
     @staticmethod
-    def _bounded_storage_prefix(frames, max_bytes=256 * 1024 * 1024):
+    def _bounded_storage_prefix(frames, max_bytes=256 * 1024 * 1024, interval_seconds=None):
         """Bound backlog writes, including retries and stop tails, in comm order.
 
         One acquisition frame is indivisible. Oversized single frames retain the
@@ -671,6 +694,8 @@ class EDASManager(QObject):
         """
         total = 0
         for index, frame in enumerate(frames):
+            if index and interval_seconds is not None and frame.packet_start_time >= frames[0].packet_start_time + interval_seconds - 1e-9:
+                return frames[:index], True
             size = _estimate_frame_bytes(frame)
             if index and total + size > max_bytes:
                 return frames[:index], True

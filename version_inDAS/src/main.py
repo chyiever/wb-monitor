@@ -393,6 +393,7 @@ class PCCPMonitorApp:
         # Connect main window signals
         self.main_window.start_monitoring.connect(self._start_monitoring)
         self.main_window.stop_monitoring.connect(self._stop_monitoring)
+        self.main_window.joint_stop_preparing.connect(self._prepare_joint_stop)
         self.main_window.config_changed.connect(self._update_configuration)
 
         # Connect visualization control signals (optimized thread system)
@@ -869,6 +870,14 @@ class PCCPMonitorApp:
         except Exception as e:
             self.logger.error(f"Error stopping monitoring: {e}")
 
+    def _prepare_joint_stop(self):
+        try:
+            self._stop_fip_ingress()
+        except Exception as exc:
+            self.logger.exception('FIP ingress stop failed before joint drain')
+            self.main_window._storage_error = f'FIP 停止输入失败：{exc}'
+            self.main_window.status_bar.showMessage(self.main_window._storage_error, 30000)
+
     def _stop_fip_ingress(self):
         """Join the producer and deliver received Qt packets before storage drains."""
         if self.tcp_server:
@@ -1115,6 +1124,8 @@ class PCCPMonitorApp:
 
     def _start_tab3_monitoring(self):
         """Start the independent DAS monitoring pipeline."""
+        if getattr(self, '_stopping_edas', False):
+            return
         try:
             self.logger.info("Starting eDAS monitoring...")
             self.logger.debug("TAB3_NODE main.start requested")
@@ -1139,6 +1150,9 @@ class PCCPMonitorApp:
 
     def _stop_tab3_monitoring(self):
         """Stop the independent DAS monitoring pipeline."""
+        if getattr(self, '_stopping_edas', False):
+            return
+        self._stopping_edas = True
         try:
             self.logger.info("Stopping eDAS monitoring...")
             self.logger.debug("TAB3_NODE main.stop requested")
@@ -1150,6 +1164,8 @@ class PCCPMonitorApp:
             self._maybe_stop_alignment_session()
         except Exception as e:
             self.logger.error(f"Failed to stop Tab3 monitoring: {e}")
+        finally:
+            self._stopping_edas = False
 
     def _ensure_alignment_session_started(self):
         """Start a shared alignment session if neither source is active yet."""

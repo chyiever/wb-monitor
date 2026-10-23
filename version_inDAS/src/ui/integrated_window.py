@@ -1,7 +1,7 @@
 """wb-monitor with the acquisition host integrated as its second tab."""
 from PyQt5.QtWidgets import (QLabel, QGroupBox, QPushButton, QHBoxLayout, QVBoxLayout,
     QFormLayout, QWidget, QFileDialog, QMessageBox)
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import QTimer, Qt, pyqtSignal
 from dataclasses import asdict
 from pathlib import Path
 import time
@@ -17,10 +17,13 @@ from edas_hardware.config import AllParams, DataSource
 
 
 class MainWindow(BaseWindow):
+    joint_stop_preparing = pyqtSignal()
+
     def __init__(self, simulation_mode=False):
         self.simulation_mode = simulation_mode
         self._view_settings_dialog = None
         self._joint_start_pending = False
+        self._joint_stopping = False
         self._joint_start_stage = None
         self._joint_start_timer = None
         self._storage_settings_dialog = None
@@ -335,15 +338,15 @@ class MainWindow(BaseWindow):
     def _update_data_comm_buttons(self):
         super()._update_data_comm_buttons()
         if hasattr(self, 'joint_stop_btn') and hasattr(self, 'data_comm_both_btn'):
-            busy = self._joint_start_pending or (self.monitoring_active and self._edas_monitoring_active)
+            busy = self._joint_stopping or self._joint_start_pending or (self.monitoring_active and self._edas_monitoring_active)
             self.data_comm_both_btn.setText('Start')
             self.data_comm_both_btn.setEnabled(not busy)
-            self.joint_stop_btn.setEnabled(self._joint_start_pending or self.monitoring_active or self._edas_monitoring_active)
+            self.joint_stop_btn.setEnabled(not self._joint_stopping and (self._joint_start_pending or self.monitoring_active or self._edas_monitoring_active))
             self._style_action_button(self.joint_stop_btn, True, min_height=44)
         if self._parameters_ready: self._refresh_dashboard()
 
     def _toggle_both_communication(self, _checked=False):
-        if self._joint_start_pending or (self.monitoring_active and self._edas_monitoring_active):
+        if self._joint_stopping or self._joint_start_pending or (self.monitoring_active and self._edas_monitoring_active):
             return
         if self.monitoring_active or self._edas_monitoring_active or self.edas_panel.acquisition_running():
             # Stop handlers drain synchronously. Arm the restart only after both
@@ -453,10 +456,24 @@ class MainWindow(BaseWindow):
         self._update_data_comm_buttons()
 
     def _stop_joint_acquisition(self):
+        if self._joint_stopping:
+            return
+        self._joint_stopping = True
+        self.joint_state_label.setText('正在停止采集并保存剩余数据，请等待…')
+        self._update_data_comm_buttons()
+        try:
+            self._perform_joint_stop()
+        finally:
+            self._joint_stopping = False
+            self._update_data_comm_buttons()
+
+    def _perform_joint_stop(self):
         self._joint_start_pending = False
         self._joint_start_stage = None
         self._both_comm_requested = False
         if self._joint_start_timer is not None: self._joint_start_timer.stop()
+        # Cut FIP input before waiting for the eDAS/joint storage tail.
+        self.joint_stop_preparing.emit()
         # Drain eDAS first, then stop FIP; both stop handlers are idempotent.
         self.tab3_stop_requested.emit()
         self.stop_monitoring.emit()

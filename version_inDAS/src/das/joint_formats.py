@@ -3,7 +3,7 @@
 Design goals:
     bin  - bare-binary streaming writer. No compression, pure buffered I/O.
            Sustains the full raw data rate (target >= 500 MB/s on NVMe/SSD).
-    npz  - per-chunk np.savez_compressed archive (legacy, backward compatible).
+    npz  - uncompressed per-chunk archive (legacy keys, backward compatible).
     h5   - h5py container with optional gzip compression and chunking.
 
 All three formats embed the same file-level metadata so a reader can recover,
@@ -260,7 +260,7 @@ def save_npz(
     wall_clock_start: Optional[str] = None,
     fip_downsample: int = 1,
 ) -> str:
-    """Write one np.savez_compressed chunk (legacy joint format + metadata)."""
+    """Write a fast uncompressed NPZ chunk with legacy keys and metadata."""
     meta = build_chunk_metadata(frames, created_at, wall_clock_start, fip_downsample)
     fip_factor = max(1, int(fip_downsample or 1))
     file_path = _chunk_timestamp_path(output_dir, ".npz")
@@ -328,7 +328,9 @@ def save_npz(
     partial = file_path.with_suffix(file_path.suffix + '.part')
     try:
         with partial.open('wb') as stream:
-            np.savez_compressed(stream, **payload)
+            # Acquisition throughput takes priority over ZIP/DEFLATE size.
+            # This remains a standard NPZ readable with np.load(allow_pickle=True).
+            np.savez(stream, **payload)
         os.replace(partial, file_path)
     except Exception:
         partial.unlink(missing_ok=True)
